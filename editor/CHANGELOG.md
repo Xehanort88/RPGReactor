@@ -12,6 +12,8 @@
 
 - **Giving a sprite the texture it already has is free again.** Every canvas texture the runtime hands out is flagged `dynamic`, and the compat wrapper around `Sprite.texture` re-wires an "update" listener for dynamic textures -- which it did *before* PIXI's own same-texture early return. So re-assigning an unchanged texture still unhooked and re-hooked a listener, and with many sprites sharing one canvas texture each unhook walked all of their listeners. A weather plugin re-dressing a pool of ~3000 sprites every frame measured ~105 us per assignment and ~300 ms a frame in the browser harness; with the wrapper returning early on an unchanged texture it measured ~0.03 us. A real texture change still wires the new listener. `pixi-canvas-texture-compat.test.cjs`, red on the unfixed source. Runtime only; no new strings.
 
+- **Door and Treasure quick events play their opening animation.** Both pages are made with Direction Fix on, so the closed graphic cannot turn toward the player, and their Set Movement Route then turned left, right and up without releasing it. The runtime ignores a turn while direction is fixed (`Game_CharacterBase.setDirection`), so a chest stayed shut until its Self Switch A page appeared and a door never opened before the transfer. The route now starts with Direction Fix OFF, as chests made by MZ's own Treasure quick event do; `EventManager.quickEventOpenRoute` builds it for both. Events made before this fix keep the old route; add Direction Fix OFF at the top of their movement route by hand.
+
 ### Development
 
 - **CI's GUI smokes run again.** Every run since September 14 was red at the interaction-order audit, the first smoke that draws a map: a GitHub runner has no GPU, and NW.js 0.107's Chromium refuses a WebGL context there unless `--enable-unsafe-swiftshader` is given (the Web persistence smoke already passed it; the NW.js ones did not), so the editor could not open a map and the smoke died before writing its evidence. `webdriver-client.cjs` adds the flag to every NW.js session, and honours `RR_NW_ARGS` (`--disable-gpu` emulates the runner on a desktop). The interaction audit writes its result file even when the project fails to open, so the artifact is there to read next time. The keyboard-navigation smoke, which had never run on CI, assumed ArrowDown from map 1 lands on map 2; the Demo's tree puts North Haven second, so it reads the next map from the tree. All four GUI smokes pass with the GPU disabled.
@@ -2007,7 +2009,7 @@ Follow-up runtime work on the v7→v8 migration: with the bundle and corescript 
 - **Image picker "Open in Folder" button**: When selecting face graphics, character sprites, or SV battlers, a new "Open in Folder" button next to "Select This Image" opens the file in the system file manager (e.g. Dolphin) for quick access to external editing tools
 - **Editor Distribution Builder** (`Build → Package Editor for Distribution...`): New in-editor tool for packaging RPG Reactor itself for release on itch.io / GitHub Releases. Uses the same worker_threads architecture as the game build system.
   - **3 package types**:
-    - *Platform-Specific*: One archive per OS with bundled NW.js runtime (Linux → `.tar.gz`, Windows/macOS → `.zip`)
+   - *Platform-Specific*: One archive per OS with bundled NW.js runtime (Linux → `.tar.gz`, Windows/macOS → `.zip`)
     - *Universal*: Single `.zip` with all 3 platform runtimes included
     - *Minimal*: Editor only, bootstrap launchers auto-download NW.js on first run
   - **NW.js edition selection**: Normal or SDK (includes DevTools)
