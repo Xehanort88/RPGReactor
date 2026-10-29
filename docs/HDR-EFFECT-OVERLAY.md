@@ -94,6 +94,16 @@ intensity nonnegative, radiusScale positive. `tints` are scalar bloom weights.
 The six sizes follow UE 4.27's width-relative bloom radii; Gaussian sigma is
 `viewWidth * size * 0.04 * 0.5 / sqrt(33.4) * radiusScale`.
 
+`bloom.prefilter` (optional, runtime 20261029.1) is Unity post-processing's bloom
+prefilter, for effects from Unity games: `{ "threshold": t, "knee": k, "clamp": c }`
+(`clamp` optional, Unity's default 65472). The setup light is clamped to `c` per
+channel, then multiplied by `max(b - t, s) / max(b, 0.0001)`, where `b` is its
+brightest channel and `s = clamp(b - t + k, 0, 2k)^2 / (4k + 0.0001)`, as Unity's
+bloom prefilter does: every pixel at or above the clamp blooms alike. It runs where
+`bloom.threshold` would (below) and takes its place when both are given. A capture's
+values are in its prefilter pass's constants: `threshold - knee`, `2 * knee` and
+`1 / (4 * knee)` in one row, the threshold and the clamp in others.
+
 `bloom.threshold` (optional, runtime 20261027.1) is UE 4's bloom setup threshold.
 When it is a number, the light is multiplied by
 `clamp((dot(rgb, (0.3, 0.59, 0.11)) - threshold) * 0.5, 0, 1)` before any blur, as

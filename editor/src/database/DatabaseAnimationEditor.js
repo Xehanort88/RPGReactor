@@ -19,7 +19,10 @@ function RR_isValidHdrSidecar(s) {
         && s.bloom.tints.every(x => finite(x) && x >= 0)
         && finite(s.bloom.intensity) && s.bloom.intensity >= 0
         && finite(s.bloom.radiusScale) && s.bloom.radiusScale > 0
-        && (s.bloom.threshold === undefined || finite(s.bloom.threshold)));
+        && (s.bloom.threshold === undefined || finite(s.bloom.threshold))
+        && (s.bloom.prefilter === undefined || (!!s.bloom.prefilter && typeof s.bloom.prefilter === 'object'
+            && finite(s.bloom.prefilter.threshold) && finite(s.bloom.prefilter.knee) && s.bloom.prefilter.knee >= 0
+            && (s.bloom.prefilter.clamp === undefined || (finite(s.bloom.prefilter.clamp) && s.bloom.prefilter.clamp > 0)))));
 }
 
 /**
