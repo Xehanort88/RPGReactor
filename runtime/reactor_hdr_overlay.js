@@ -282,8 +282,9 @@
                 // times larger than in the game covers that pixel with radiusScale of ours: level log2(radiusScale).
                 // Every Gaussian reads that level or a coarser one, so all of the bloom is thresholded. A preview
                 // draws a game pixel as pixelScale of its own, which moves the level with it. A Unity prefilter
-                // (s.prefilter) takes the threshold's place.
-                const pf = prefilterOf(s.prefilter);
+                // (s.prefilter, or the sidecar's own when a caller does not pass one: an editor built before
+                // runtime 20261029.1 previews with this file) takes the threshold's place.
+                const pf = prefilterOf(s.prefilter !== undefined ? s.prefilter : sc.bloom && sc.bloom.prefilter);
                 const setupLevel = Number.isFinite(s.threshold) || pf ?
                     Math.min(H.levels.length - 1, Math.max(0, Math.round(Math.log2(s.bloomScale * (s.pixelScale > 0 ? s.pixelScale : 1))))) : -1;
                 const setupUniforms = () => {

@@ -112,6 +112,12 @@ test('a Unity bloom prefilter takes the setup pass with its clamp, threshold and
     assert.equal(e.calls.filter(c=>c[0]==='uniform1f'&&c[2]===1).length,1,'the Unity switch set once');
     assert.equal(e.calls.filter(c=>c[0]==='drawArrays').length,21,'1 full-resolution setup, 7 downsamples, 12 blurs, 1 grade');
 });
+test('a caller that passes no prefilter (an older editor preview) still gets the sidecar\'s',async()=>{
+    const e=environment(),pre={threshold:0.674,knee:0.464,clamp:0.8};
+    const R=e.c.ReactorHdrRenderer.create(e.gl);assert.ok(R.ensure(128,72));R.begin();
+    R.post({bloom:0.65,bloomScale:1},{...side,bloom:{...side.bloom,radiusScale:1,prefilter:pre}});
+    for(const v of [0.674,0.464,0.8])assert.equal(e.calls.filter(c=>c[0]==='uniform1f'&&c[2]===v).length,1,'one '+v);
+});
 test('a prefilter without a clamp uses Unity\'s default 65472',async()=>{
     const e=environment({...side,bloom:{...side.bloom,prefilter:{threshold:0.9,knee:0.45}}}),s=e.sprite();await e.ready(s);
     e.api.canStart(s);e.api.render({},[s]);
