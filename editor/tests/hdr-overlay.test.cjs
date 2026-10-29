@@ -105,6 +105,25 @@ test('without a threshold every downsample is a plain average',async()=>{
     assert.equal(e.calls.filter(c=>c[0]==='uniform1f'&&c[2]===0.15).length,0);
     assert.equal(e.calls.filter(c=>c[0]==='drawArrays').length,20);
 });
+test('a Unity bloom prefilter takes the setup pass with its clamp, threshold and knee',async()=>{
+    const e=environment({...side,bloom:{...side.bloom,radiusScale:1,prefilter:{threshold:0.674,knee:0.464,clamp:0.8}}}),s=e.sprite();await e.ready(s);
+    e.api.canStart(s);e.api.render({},[s]);
+    for(const v of [0.674,0.464,0.8])assert.equal(e.calls.filter(c=>c[0]==='uniform1f'&&c[2]===v).length,1,'one '+v);
+    assert.equal(e.calls.filter(c=>c[0]==='uniform1f'&&c[2]===1).length,1,'the Unity switch set once');
+    assert.equal(e.calls.filter(c=>c[0]==='drawArrays').length,21,'1 full-resolution setup, 7 downsamples, 12 blurs, 1 grade');
+});
+test('a prefilter without a clamp uses Unity\'s default 65472',async()=>{
+    const e=environment({...side,bloom:{...side.bloom,prefilter:{threshold:0.9,knee:0.45}}}),s=e.sprite();await e.ready(s);
+    e.api.canStart(s);e.api.render({},[s]);
+    assert.equal(e.calls.filter(c=>c[0]==='uniform1f'&&c[2]===65472).length,1);
+    assert.equal(e.calls.filter(c=>c[0]==='drawArrays').length,20,'7 downsamples (1 setup), 12 blurs, 1 grade');
+});
+test('an invalid bloom prefilter fails closed',async()=>{
+    for(const prefilter of [{threshold:'0.9',knee:0.45},{threshold:0.9,knee:-1},{threshold:0.9,knee:0.45,clamp:0},null]){
+        const e=environment({...side,bloom:{...side.bloom,prefilter}}),s=e.sprite();await e.ready(s);
+        assert.equal(e.api.canStart(s),false,JSON.stringify(prefilter));assert.equal(s._playing,false);
+    }
+});
 test('a non-numeric bloom threshold fails closed',async()=>{
     const e=environment({...side,bloom:{...side.bloom,threshold:'0.15'}}),s=e.sprite();await e.ready(s);
     assert.equal(e.api.canStart(s),false);assert.equal(s._playing,false);
