@@ -17,12 +17,21 @@
         "void main(){ gl_FragColor = 0.25 * (texture2D(uTex, vUv + uTexel * vec2(-0.5,-0.5)) + texture2D(uTex, vUv + uTexel * vec2(0.5,-0.5))" +
         " + texture2D(uTex, vUv + uTexel * vec2(-0.5,0.5)) + texture2D(uTex, vUv + uTexel * vec2(0.5,0.5))); }";
     // the first downsample with UE 4's bloom setup threshold (PostProcessBloomSetup): light below the threshold in
-    // luminance does not bloom, ramping to full over 2 units above it
+    // luminance does not bloom, ramping to full over 2 units above it. With uUnity, Unity post-processing's bloom
+    // prefilter instead: each channel clamped to uClampMax, then a soft-knee threshold on the brightest channel
     const FS_SETUP = "precision highp float; varying vec2 vUv; uniform sampler2D uTex; uniform vec2 uTexel; uniform float uThreshold;" +
+        "uniform float uUnity; uniform float uKnee; uniform float uClampMax;" +
         "void main(){ vec4 c = 0.25 * (texture2D(uTex, vUv + uTexel * vec2(-0.5,-0.5)) + texture2D(uTex, vUv + uTexel * vec2(0.5,-0.5))" +
         " + texture2D(uTex, vUv + uTexel * vec2(-0.5,0.5)) + texture2D(uTex, vUv + uTexel * vec2(0.5,0.5)));" +
-        " float lum = dot(c.rgb, vec3(0.3, 0.59, 0.11)); c.rgb *= clamp((lum - uThreshold) * 0.5, 0.0, 1.0);" +
+        " if (uUnity > 0.5) { c.rgb = min(c.rgb, vec3(uClampMax)); float br = max(c.r, max(c.g, c.b));" +
+        " float sf = clamp(br - uThreshold + uKnee, 0.0, 2.0 * uKnee); sf = sf * sf / (4.0 * uKnee + 0.0001);" +
+        " c.rgb *= max(br - uThreshold, sf) / max(br, 0.0001); }" +
+        " else { float lum = dot(c.rgb, vec3(0.3, 0.59, 0.11)); c.rgb *= clamp((lum - uThreshold) * 0.5, 0.0, 1.0); }" +
         " gl_FragColor = c; }";
+    // Unity post-processing's bloom prefilter, when a sidecar gives one
+    function prefilterOf(p) {
+        return p ? {threshold: p.threshold, knee: p.knee, clamp: p.clamp === undefined ? 65472 : p.clamp} : null;
+    }
     // separable Gaussian, sigma in texels (<= ~5), +-3 sigma
     const FS_BLUR = "precision highp float; varying vec2 vUv; uniform sampler2D uTex; uniform vec2 uStep; uniform float uSigma;" +
         "void main(){ vec4 s = vec4(0.0); float w = 0.0; for (int i = -16; i <= 16; i++) { float x = float(i);" +
@@ -38,7 +47,11 @@
             !s.bloom.tints.every(x => Number.isFinite(x) && x >= 0) ||
             !Number.isFinite(s.bloom.intensity) || s.bloom.intensity < 0 ||
             !Number.isFinite(s.bloom.radiusScale) || s.bloom.radiusScale <= 0 ||
-            (s.bloom.threshold !== undefined && !Number.isFinite(s.bloom.threshold))) throw Error("invalid HDR sidecar");
+            (s.bloom.threshold !== undefined && !Number.isFinite(s.bloom.threshold)) ||
+            (s.bloom.prefilter !== undefined && (!s.bloom.prefilter || typeof s.bloom.prefilter !== "object" ||
+                !Number.isFinite(s.bloom.prefilter.threshold) || !Number.isFinite(s.bloom.prefilter.knee) || s.bloom.prefilter.knee < 0 ||
+                (s.bloom.prefilter.clamp !== undefined && !(Number.isFinite(s.bloom.prefilter.clamp) && s.bloom.prefilter.clamp > 0)))))
+            throw Error("invalid HDR sidecar");
         return s;
     }
 
@@ -244,7 +257,7 @@
             gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         }
         // Bloom the light buffer, grade it once, and screen it over the default
-        // framebuffer, or s.framebuffer. `s` is { bloom, bloomScale, threshold, coverage,
+        // framebuffer, or s.framebuffer. `s` is { bloom, bloomScale, threshold, prefilter, coverage,
         // debugScale, measureGpu, alphaFromColor, bloomWidth, pixelScale, framebuffer };
         // the overlay sets none of the last four.
         function post(s, sc, out) {
@@ -268,9 +281,19 @@
                 // The threshold acts at the game's bloom setup resolution, half its screen. An effect drawn radiusScale
                 // times larger than in the game covers that pixel with radiusScale of ours: level log2(radiusScale).
                 // Every Gaussian reads that level or a coarser one, so all of the bloom is thresholded. A preview
-                // draws a game pixel as pixelScale of its own, which moves the level with it.
-                const setupLevel = Number.isFinite(s.threshold) ?
+                // draws a game pixel as pixelScale of its own, which moves the level with it. A Unity prefilter
+                // (s.prefilter, or the sidecar's own when a caller does not pass one: an editor built before
+                // runtime 20261029.1 previews with this file) takes the threshold's place.
+                const pf = prefilterOf(s.prefilter !== undefined ? s.prefilter : sc.bloom && sc.bloom.prefilter);
+                const setupLevel = Number.isFinite(s.threshold) || pf ?
                     Math.min(H.levels.length - 1, Math.max(0, Math.round(Math.log2(s.bloomScale * (s.pixelScale > 0 ? s.pixelScale : 1))))) : -1;
+                const setupUniforms = () => {
+                    gl.uniform1f(H.setup.u.uUnity, pf ? 1 : 0);
+                    if (!pf) { gl.uniform1f(H.setup.u.uThreshold, s.threshold); return; }
+                    gl.uniform1f(H.setup.u.uThreshold, pf.threshold);
+                    gl.uniform1f(H.setup.u.uKnee, pf.knee);
+                    gl.uniform1f(H.setup.u.uClampMax, pf.clamp);
+                };
                 let base = H.main;
                 if (setupLevel === 0) {
                     if (!H.pre) H.pre = target(H.w, H.h, H.type, false);
@@ -278,7 +301,7 @@
                     gl.useProgram(H.setup.p);
                     bind(0, H.main.t, H.setup.u.uTex);
                     gl.uniform2f(H.setup.u.uTexel, 0, 0);
-                    gl.uniform1f(H.setup.u.uThreshold, s.threshold);
+                    setupUniforms();
                     quad(H.setup, H.pre);
                     base = H.pre;
                 }
@@ -289,7 +312,7 @@
                     gl.useProgram(prog.p);
                     bind(0, src.t, prog.u.uTex);
                     gl.uniform2f(prog.u.uTexel, 1 / src.w, 1 / src.h);
-                    if (prog === H.setup) gl.uniform1f(prog.u.uThreshold, s.threshold);
+                    if (prog === H.setup) setupUniforms();
                     quad(prog, H.levels[l]);
                 }
                 // six Gaussians, each blurred at the level where its sigma is 2-4 texels (never finer than the setup)
@@ -379,6 +402,7 @@
     function settings(sidecar) {
         return Object.assign({ bloom: Number(params.bloomIntensity ?? sidecar.bloom.intensity),
             bloomScale: Number(params.bloomRadiusScale ?? sidecar.bloom.radiusScale), threshold: sidecar.bloom.threshold,
+            prefilter: sidecar.bloom.prefilter,
             debug: (params.debug === true || params.debug === "true") },
             window.REACTOR_HDR || {});
     }
