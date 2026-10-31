@@ -13,6 +13,9 @@ function RR_isValidHdrSidecar(s) {
     return !!(s && s.version === 1 && s.gradeInput === 'hdr' && typeof s.grade === 'string'
         && /\bhdr\b/.test(s.grade) && /\btmOut\b/.test(s.grade)
         && typeof s.fallback === 'string' && s.fallback
+        && (s.companion === undefined || (typeof s.companion === 'string' && s.companion.trim()
+            && !/\.efkefc$/i.test(s.companion) && s.companion !== s.fallback))
+        && (s.companionOccludes === undefined || typeof s.companionOccludes === 'boolean')
         && s.bloom && Array.isArray(s.bloom.sizes) && Array.isArray(s.bloom.tints)
         && s.bloom.sizes.length === 6 && s.bloom.tints.length === 6
         && s.bloom.sizes.every(x => finite(x) && x > 0)
@@ -53,6 +56,11 @@ function RR_resolveHdrPreviewTwin(effectPath) {
         throw refuse(`Cannot read ${sidecarPath}: ${error.message}`);
     }
     if (!RR_isValidHdrSidecar(sidecar)) throw refuse(`Invalid HDR sidecar ${sidecarPath}`);
+    if (sidecar.companion) {
+        const resolve = other => other.includes('/') ? other : effectPath.replace(/\\/g, '/').split('/effects/').pop().replace(/[^/]+$/, '') + other;
+        const self = effectPath.replace(/\\/g, '/').split('/effects/').pop().replace(/\.efkefc$/i, '');
+        if (resolve(sidecar.companion) === self || resolve(sidecar.companion) === resolve(sidecar.fallback)) throw refuse(`Invalid HDR companion ${sidecarPath}`);
+    }
     // As in the runtime: a name without '/' sits beside the HDR effect, one
     // with '/' is relative to the effects folder.
     let root = dir;

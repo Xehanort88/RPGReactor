@@ -38,7 +38,7 @@
         " if (abs(x) > 3.0 * uSigma + 0.5) continue; float k = exp(-0.5 * x * x / (uSigma * uSigma));" +
         " s += k * texture2D(uTex, vUv + uStep * x); w += k; } gl_FragColor = s / w; }";
 
-    function valid(s) {
+    function valid(s, effectName) {
         if (!s || s.version !== 1 || s.gradeInput !== "hdr" || typeof s.grade !== "string" ||
             !/\bhdr\b/.test(s.grade) || !/\btmOut\b/.test(s.grade) || typeof s.fallback !== "string" || !s.fallback ||
             !s.bloom || !Array.isArray(s.bloom.sizes) || !Array.isArray(s.bloom.tints) ||
@@ -52,6 +52,9 @@
                 !Number.isFinite(s.bloom.prefilter.threshold) || !Number.isFinite(s.bloom.prefilter.knee) || s.bloom.prefilter.knee < 0 ||
                 (s.bloom.prefilter.clamp !== undefined && !(Number.isFinite(s.bloom.prefilter.clamp) && s.bloom.prefilter.clamp > 0)))))
             throw Error("invalid HDR sidecar");
+        if (s.companion !== undefined && (typeof s.companion !== "string" || !s.companion.trim() || /\.efkefc$/i.test(s.companion) || s.companion === s.fallback)) throw Error("invalid HDR companion");
+        if (s.companionOccludes !== undefined && typeof s.companionOccludes !== "boolean") throw Error("invalid companionOccludes");
+        if (effectName && s.companion && (resolveName(effectName, s.companion) === effectName || resolveName(effectName, s.companion) === resolveName(effectName, s.fallback))) throw Error("HDR companion must differ from effect and fallback");
         return s;
     }
 
@@ -432,7 +435,7 @@
         const timer = setTimeout(() => controller.abort(), 15000);
         entry.promise = fetch(url, {signal: controller.signal})
             .then(r => { if (r.status === 404) return null; if (!r.ok) throw Error("sidecar HTTP " + r.status); return r.json(); })
-            .then(s => { entry.sidecar = s && valid(s); })
+            .then(s => { entry.sidecar = s && valid(s, name); })
             .catch(e => { entry.error = String(e); console.warn("[ReactorHdrOverlay] " + name + ": " + e); })
             .finally(() => { clearTimeout(timer); entry.ready = true; });
         return entry;
@@ -447,12 +450,47 @@
         return e && e.sidecar || (forced(sprite) && api.overrides[a.effectName]) || null;
     }
     // The context an effect is loaded into: the scene's for an in-scene sprite, the overlay's otherwise.
-    function load(sprite, name) {
-        return sprite._effekseerInScene ? Sprite_Animation.SceneLayer.load(name) : EffectManager.load(name);
+    function load(sprite, name, onError) {
+        return sprite._effekseerInScene ? Sprite_Animation.SceneLayer.load(name, onError) : EffectManager.load(name, onError);
     }
-    function fallbackName(sprite, sc) {
-        const name = sprite._animation.effectName;
-        return sc.fallback.includes('/') ? sc.fallback : name.slice(0, name.lastIndexOf('/') + 1) + sc.fallback;
+    function resolveName(name, other) {
+        return other.includes('/') ? other : name.slice(0, name.lastIndexOf('/') + 1) + other;
+    }
+    function fallbackName(sprite, sc) { return resolveName(sprite._animation.effectName, sc.fallback); }
+    api.stopCompanion = function(sprite) {
+        try { sprite._companionHandle?.stop(); } catch (error) { /* lost WASM context */ } finally { sprite._companionHandle = null; sprite._companionEffect = null; }
+    };
+    function companionFailure(sprite, reason) {
+        // A timed-out soft load must not strand a later scene in isReady().
+        const effect = sprite._companionEffect, sc = sidecarFor(sprite);
+        if (effect && !effect.isLoaded && sc?.companion) {
+            const name = resolveName(sprite._animation.effectName, sc.companion);
+            if (sprite._effekseerInScene) {
+                const cache = Sprite_Animation.SceneLayer.cache;
+                if (cache?.get(name) === effect) cache.delete(name);
+            } else {
+                const url = EffectManager.makeUrl(name);
+                if (EffectManager._cache?.[url] === effect) delete EffectManager._cache[url];
+            }
+        }
+        if (!sprite._companionWarned) {
+            sprite._companionWarned = true;
+            console.warn("[ReactorHdrOverlay] " + sprite._animation.effectName + ": companion unavailable (" + reason + "); selecting twin");
+        }
+        scene.fallBack(sprite);
+        sprite._hdrSelected = true;
+    }
+    function companionReady(sprite) {
+        if (!sprite._hdrActive || !sprite._companionEffect) return true;
+        if (sprite._companionLoadError) { companionFailure(sprite, sprite._companionLoadError); return true; }
+        const entry = sprite._companionEntry;
+        if (!entry.ready) return false;
+        if (entry.sidecar || entry.error) { companionFailure(sprite, "companion has HDR metadata"); return true; }
+        if (sprite._companionEffect.isLoaded) return true;
+        if (sprite._companionEffect.isError || performance.now() >= sprite._companionDeadline) {
+            companionFailure(sprite, "load failed or timed out"); return true;
+        }
+        return false;
     }
     api.setup = function(sprite, animation) {
         if ((!sprite._effectContext || sprite._effekseerInScene) && animation.effectName) {
@@ -470,7 +508,7 @@
             if ((inScene ? scene.gl() : Graphics._effekseerGL)?.isContextLost()) return false;
             let sc = sidecarFor(this);
             try {
-                if (sc) sc = valid(sc);
+                if (sc) sc = valid(sc, this._animation.effectName);
                 if ((forced(this) || /-hdr$/i.test(this._animation.effectName)) && !sc) throw Error("HDR effect requires a sidecar or ReactorHdrOverlay.overrides entry");
             } catch (e) {
                 console.warn("[ReactorHdrOverlay] " + e.message); this._playing = false; return false;
@@ -489,10 +527,22 @@
                 }
             }
             if (sc && !this._hdrActive) this._effect = load(this, fallbackName(this, sc));
+            if (this._hdrActive && sc.companion) {
+                const name = resolveName(this._animation.effectName, sc.companion);
+                if (typeof Utils !== "undefined" && Utils.localAssetExists && Utils.localAssetExists(EffectManager.makeUrl(name)) === false) {
+                    companionFailure(this, "missing " + name);
+                } else {
+                    this._companionEntry = request(name);
+                    this._companionDeadline = performance.now() + 15000;
+                    try { this._companionEffect = load(this, name, (message, url) => { this._companionLoadError = String(message) + " " + url; }); }
+                    catch (error) { companionFailure(this, String(error)); }
+                    if (!this._companionEffect && this._hdrActive) companionFailure(this, "load returned no effect");
+                }
+            }
             if (this._hdrActive) active.add(this);
             this._hdrSelected = true;
         }
-        return true;
+        return companionReady(this);
     }
     api.contextLost = function() {
         // Old WASM handles cannot be resumed in the replacement Effekseer context.
@@ -501,13 +551,14 @@
         for (const sprite of active) {
             if (sprite._effekseerInScene) continue;
             sprite._handle?.stop();
+            api.stopCompanion(sprite);
             sprite._hdrActive = false; sprite._playing = false; sprite._started = false;
             active.delete(sprite);
         }
         R?.lost();
     };
     api.contextRestored = function() { R?.restored(); };
-    api.release = function(sprite) { active.delete(sprite); };
+    api.release = function(sprite) { active.delete(sprite); api.stopCompanion(sprite); };
     api.configure = function(options) {
         Object.assign(params, options);
     };
@@ -517,7 +568,7 @@
         if (gl?.isContextLost()) { api.contextLost(); return; }
         if (!gl || !ensure(gl, canvas.width, canvas.height)) {
             // Never draw HDR light into the display buffer. Existing effects are stopped on loss by the engine.
-            for (const sprite of draws) { sprite._handle.stop(); sprite._started = false;
+            for (const sprite of draws) { api.stopCompanion(sprite); sprite._handle.stop(); sprite._started = false;
                 active.delete(sprite);
                 sprite._hdrActive = false; sprite._effect = EffectManager.load(fallbackName(sprite, sidecarFor(sprite))); }
             return;
@@ -531,6 +582,16 @@
         try {
             for (const group of groups.values()) {
                 R.begin();
+                try {
+                    gl.colorMask(false, false, false, false);
+                    gl.depthMask(true);
+                    for (const sprite of group.sprites) if (sprite._companionHandle?.exists && sidecarFor(sprite).companionOccludes !== false) {
+                        sprite.setProjectionMatrix(renderer); sprite.setCameraMatrix(renderer); sprite.setViewport(renderer);
+                        const efx = Graphics.effekseer;
+                        efx.beginDraw(); efx.drawHandle(sprite._companionHandle); efx.endDraw();
+                        Graphics.settleEffekseerState();
+                    }
+                } finally { gl.colorMask(true, true, true, true); }
                 for (const sprite of group.sprites) {
                     sprite.setProjectionMatrix(renderer); sprite.setCameraMatrix(renderer); sprite.setViewport(renderer);
                     const efx = Graphics.effekseer;
@@ -547,6 +608,7 @@
             R.fail();
             for (const sprite of draws) {
                 active.delete(sprite);
+                api.stopCompanion(sprite);
                 sprite._handle.stop(); sprite._started = false; sprite._hdrActive = false;
                 sprite._effect = EffectManager.load(fallbackName(sprite, sidecarFor(sprite)));
             }
@@ -595,12 +657,13 @@
         // A pass that failed: this sprite plays its twin from here on.
         fallBack(sprite) {
             active.delete(sprite);
+            api.stopCompanion(sprite);
             try { sprite._handle?.stop(); } catch (e) { /* a lost context */ }
             sprite._started = false; sprite._hdrActive = false;
             sprite._effect = load(sprite, fallbackName(sprite, sidecarFor(sprite)));
         },
         lost() {
-            for (const sprite of active) if (sprite._effekseerInScene) active.delete(sprite);
+            for (const sprite of active) if (sprite._effekseerInScene) { api.stopCompanion(sprite); active.delete(sprite); }
             RS?.lost();
         },
         restored() { RS?.restored(); }

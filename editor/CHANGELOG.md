@@ -1,5 +1,7 @@
 # Editor changelog
 
+- HDR sidecars can pair an ordinary companion with shared seed, transforms and lifetime, drawn before HDR light with optional depth occlusion (runtime 20261031.1). Missing companions select the graded twin; editor previews use the same pairing.
+
 The full technical list, one file per release or labeled development checkpoint, newest first. The short version of each release is in the [root changelog](../CHANGELOG.md).
 
 - [0.99.2](changelog/0.99.2.md) - 2026-10-25

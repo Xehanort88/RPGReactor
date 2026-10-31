@@ -44,12 +44,13 @@ as usual.
 
 ## Installing an HDR effect
 
-Install all three files together, along with their referenced resources:
+Install the graded twin first, an optional ordinary companion second, and the HDR effect with its sidecar last, along with their referenced resources:
 
 ```text
 effects/MyEffect/MyEffect-hdr.efkefc
 effects/MyEffect/MyEffect-hdr.hdr.json
 effects/MyEffect/MyEffect-ldr.efkefc
+effects/MyEffect/MyEffect-body.efkefc
 effects/MyEffect/Materials/...
 effects/MyEffect/Texture/...
 effects/MyEffect/Model/...
@@ -76,7 +77,9 @@ fails closed. Reload the game after changing a cached sidecar.
     "tints": [0.3465, 0.138, 0.1176, 0.066, 0.066, 0.061],
     "radiusScale": 2.4
   },
-  "fallback": "MyEffect-ldr"
+  "fallback": "MyEffect-ldr",
+  "companion": "MyEffect-body",
+  "companionOccludes": true
 }
 ```
 
@@ -88,6 +91,25 @@ grade string. The example is a simple test grade.
 Fallback names without `/` resolve beside the HDR effect; names containing `/`
 resolve from the `effects/` root. Do not include `.efkefc`. The fallback must be
 an independently usable, normally graded effect, not another HDR asset.
+
+`companion` (optional, runtime **20261031.1**) names one normally graded effect
+for opaque bodies or ordinary refraction layers omitted from the HDR asset. Its
+name follows the fallback's resolution rules, without `.efkefc`. Empty or
+non-string names, extension-bearing names, and aliases of the HDR effect or
+fallback are invalid. A companion with its own HDR metadata is refused at selection.
+Missing or failed companion loads select the complete graded twin and warn once.
+Older runtimes ignore these fields and play HDR alone, without its companion.
+
+Both handles start together, share one fresh random seed per cast, and receive
+the same transforms and speed. Authors must preserve node order, spawn/life and
+random-consuming renderer parameters in both exports. Playback waits for both
+loads and ends only after both handles end. The twin path plays no companion.
+
+`companionOccludes` is an optional boolean, default true. The ordinary companion
+draws before the HDR light. With occlusion enabled it also draws depth into the
+cleared light target with colour writes disabled; opaque companion nodes must
+have depth writes enabled, and transparent placeholder nodes must not write
+depth. Effekseer uses `LEQUAL`, allowing coincident emissive surfaces to draw.
 
 Sizes and tints contain six finite values: sizes must be positive, tints and
 intensity nonnegative, radiusScale positive. `tints` are scalar bloom weights.
@@ -176,9 +198,10 @@ complete `ReactorHdrOverlay.overrides[effectName]` entry, including fallback.
   their clock. New animations wait until the context is restored.
 - This supports the PixiJS 8 WebGL1 effect overlay. Scene-owned 3D effects and
   older inline Pixi render paths do not use it. Refraction/distortion nodes must
-  be excluded from HDR assets. A future authoring approach can start a separate
-  ordinary refraction twin alongside the HDR effect; Effekseer cannot filter
-  individual nodes during a draw. That synchronized twin is not implemented here.
+  be excluded from HDR assets. A sidecar can now start one synchronized ordinary companion beside its HDR
+  effect. It draws before the light, with optional depth occlusion. This does
+  not interleave the two effects per node; Effekseer cannot filter individual
+  nodes during a draw.
 
 ## Editor previews
 
@@ -188,7 +211,9 @@ Skills/Items animation picker, Show Animation's picker, and the effect layers
 of Action Sequences, the 3D database and the map's 3D view. Each preview's
 WebGL context gets a renderer of its own; the sidecar's bloom and grade apply
 as they do in battle. Database › Animations says under the preview which of
-the following happened.
+the following happened. When HDR plays with a companion, the status names it.
+The preview pairs both effects with the same seed, transforms, clock and draw
+order; fallback and HDR-off modes load only the graded twin.
 
 - **In HDR.** The two pickers and Database › Animations clear their canvas to
   the backdrop (or copy it in) before drawing, so the graded light is screened
@@ -229,5 +254,9 @@ shared grading, resize/restoration, ordinary draw order, and plugin migration;
 `hdr-preview-render.test.cjs` and `hdr-preview-twin.test.cjs` for the editor
 previews' choices, loading, draw order and cleanup;
 `effekseer-in-scene.test.cjs` for the in-scene light pass and its grouping. Manifest and template tests
-cover loading and distribution. Unit tests do not establish GPU rendering or
+cover loading and distribution. Companion tests cover metadata, load gating, fallback, seeds, lifecycle and
+draw order. A real-WASM random-position fixture must compare equal pixels for
+equal seeds and different pixels for different seeds. Check zero colour after
+the depth prepass and measure retained vein light with occlusion on and off.
+Unit tests do not establish GPU rendering or
 appearance; check those on screen.
