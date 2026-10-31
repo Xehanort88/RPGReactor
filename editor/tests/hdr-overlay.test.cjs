@@ -295,3 +295,38 @@ test('EffectManager soft failures are local; ordinary failures retain their queu
  let soft=0;c.EffectManager.load('Body',()=>soft++);callback('bad','body');assert.equal(soft,1);assert.equal(reported,0);assert.equal(Object.keys(c.EffectManager._cache).length,0);
  c.EffectManager.load('Ordinary');callback('bad','ordinary');assert.equal(reported,1);
 });
+
+test('bloom.intensityKeys play as straight lines between keys, held before the first and after the last',()=>{
+ const e=environment(),f=e.c.ReactorHdrRenderer.bloomIntensity,b={intensity:1,intensityKeys:[[0,1.374],[66.4,2],[147.3,0.122]]};
+ assert.equal(f(b,-5),1.374);assert.equal(f(b,0),1.374);assert.equal(f(b,66.4),2);assert.equal(f(b,400),0.122);
+ assert.ok(Math.abs(f(b,33.2)-1.687)<1e-9);assert.ok(Math.abs(f(b,106.85)-1.061)<1e-9);
+ assert.equal(f({intensity:0.675},50),0.675,'no keys: intensity');assert.equal(f(b,undefined),1.374,'no frame: frame 0');
+});
+test('a keyed intensity draws with the value at the sprite\'s effect frame',async()=>{
+ const e=environment({...side,bloom:{...side.bloom,intensityKeys:[[0,2],[60,0.5]]}}),s=e.sprite();await e.ready(s);
+ e.api.canStart(s);s._effectFrame=30;e.api.render({},[s]);
+ const w=e.calls.filter(c=>c[0]==='uniform1fv').at(-1)[2];
+ assert.deepEqual(Array.from(w).map(x=>+x.toFixed(9)),side.bloom.tints.map(t=>+(t*1.25).toFixed(9)));
+});
+test('same-grade animations at different keyed intensities bloom in separate passes; equal ones share one',async()=>{
+ const keys=[[0,2],[60,0.5]],e=environment({...side,bloom:{...side.bloom,intensityKeys:keys}}),a=e.sprite(),b=e.sprite();await e.ready(a);
+ e.api.canStart(a);e.api.canStart(b);a._effectFrame=10;b._effectFrame=10;e.api.render({},[a,b]);assert.equal(e.api.stats.groups,1);
+ b._effectFrame=40;e.api.render({},[a,b]);assert.equal(e.api.stats.groups,3);
+ assert.equal(e.api.scene.intensity(a),e.c.ReactorHdrRenderer.bloomIntensity({intensityKeys:keys},10));
+});
+test('invalid bloom.intensityKeys fail closed',async()=>{
+ for(const intensityKeys of [[],[[0,1],[0,2]],[[5,1],[2,2]],[[0,-1]],[[0,'1']],[[0,1,2]],{0:1},null]){
+  const e=environment({...side,bloom:{...side.bloom,intensityKeys}}),s=e.sprite();await e.ready(s);
+  assert.equal(e.api.canStart(s),false,JSON.stringify(intensityKeys));assert.equal(s._playing,false);
+ }
+});
+test('the effect clock steps with each Effekseer update, at the animation\'s speed, and slow motion scales it',()=>{
+ const sprites=fs.readFileSync(path.join(runtime,'reactor_sprites.js'),'utf8');
+ assert.ok(sprites.includes('if (this._started) this._effectFrame += (globalThis.SceneManager?._effekseerStep ?? 1) * this._animation.speed / 100;'));
+ assert.ok(fs.readFileSync(path.join(runtime,'reactor_fight_camera.js'),'utf8').includes('this._effekseerStep = (this._effekseerStep || 0) * scale;'));
+ const managers=fs.readFileSync(path.join(runtime,'reactor_managers.js'),'utf8');
+ const a=managers.indexOf('SceneManager.updateEffekseer = function'),body=managers.slice(a,managers.indexOf('\n};',a)+4);
+ const c={Graphics:{effekseer:{update(){}}},SceneManager:{isGameActive:()=>true}};
+ vm.runInNewContext(body,c);c.SceneManager.updateEffekseer();assert.equal(c.SceneManager._effekseerStep,1);
+ c.SceneManager.isGameActive=()=>false;c.SceneManager.updateEffekseer();assert.equal(c.SceneManager._effekseerStep,0,'a paused game does not step effects');
+});

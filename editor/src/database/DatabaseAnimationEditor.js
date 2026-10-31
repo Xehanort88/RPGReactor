@@ -23,6 +23,9 @@ function RR_isValidHdrSidecar(s) {
         && finite(s.bloom.intensity) && s.bloom.intensity >= 0
         && finite(s.bloom.radiusScale) && s.bloom.radiusScale > 0
         && (s.bloom.threshold === undefined || finite(s.bloom.threshold))
+        && (s.bloom.intensityKeys === undefined || (Array.isArray(s.bloom.intensityKeys) && s.bloom.intensityKeys.length > 0
+            && s.bloom.intensityKeys.every((k, i, all) => Array.isArray(k) && k.length === 2 && finite(k[0]) && finite(k[1])
+                && k[1] >= 0 && (i === 0 || k[0] > all[i - 1][0]))))
         && (s.bloom.prefilter === undefined || (!!s.bloom.prefilter && typeof s.bloom.prefilter === 'object'
             && finite(s.bloom.prefilter.threshold) && finite(s.bloom.prefilter.knee) && s.bloom.prefilter.knee >= 0
             && (s.bloom.prefilter.clamp === undefined || (finite(s.bloom.prefilter.clamp) && s.bloom.prefilter.clamp > 0)))));
@@ -4396,8 +4399,9 @@ class DatabaseAnimationEditor {
                             handle.location ? handle.location : 'not available');
                     }
                     if (hdr) {
+                        const frame = currentFrame * (animation.speed || 100) / 100;
                         RRHdrPreview.draw(gl, hdr, { width: canvas.width, height: canvas.height,
-                            bloomWidth: RRHdrPreview.bloomWidth(canvas.height) }, () => {
+                            bloomWidth: RRHdrPreview.bloomWidth(canvas.height), frame }, () => {
                             effekseerContext.beginDraw();
                             effekseerContext.drawHandle(handle);
                             effekseerContext.endDraw();
@@ -5296,6 +5300,7 @@ class DatabaseAnimationEditor {
                 // Render loop
                 let lastTime = Date.now();
                 let accumulator = 0;
+                let previewTicks = 0;
                 const fixedTimeStep = 1000 / 60;
 
                 const render = () => {
@@ -5310,6 +5315,7 @@ class DatabaseAnimationEditor {
                     while (accumulator >= fixedTimeStep) {
                         previewEffekseerContext.update();
                         accumulator -= fixedTimeStep;
+                        previewTicks++;
                     }
 
                     if (accumulator > fixedTimeStep * 5) {
@@ -5341,7 +5347,7 @@ class DatabaseAnimationEditor {
                     const hdr = previewEffect && previewEffect.rrHdr;
                     if (previewHandle && previewHandle.exists && hdr) {
                         RRHdrPreview.draw(previewGL, hdr, { width: previewCanvas.width, height: previewCanvas.height,
-                            bloomWidth: RRHdrPreview.bloomWidth(previewCanvas.height) }, () => {
+                            bloomWidth: RRHdrPreview.bloomWidth(previewCanvas.height), frame: previewTicks * (animation.speed || 100) / 100 }, () => {
                             previewEffekseerContext.beginDraw();
                             previewEffekseerContext.drawHandle(previewHandle);
                             previewEffekseerContext.endDraw();

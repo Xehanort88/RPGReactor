@@ -186,6 +186,25 @@ test('a frame draws into the light buffer, then composites over the canvas where
     } finally { p.done(); }
 });
 
+test('a keyed bloom intensity follows the frame the preview says', () => {
+    const p = project();
+    try {
+        const w = editor();
+        const { gl, calls } = fakeGl();
+        const choice = w.RRHdrPreview.choose(gl, p.file('Fire-hdr'), 1600, 900);
+        choice.sidecar = { ...choice.sidecar, bloom: { ...choice.sidecar.bloom, intensityKeys: [[0, 2], [60, 0.5]] } };
+        const weights = frame => {
+            calls.length = 0;
+            w.RRHdrPreview.draw(gl, choice, { width: 1600, height: 900, frame }, () => {});
+            return Array.from(calls.findLast(c => c[0] === 'uniform1fv')[2]);
+        };
+        const tints = choice.sidecar.bloom.tints, close = (a, b) => a.every((x, i) => Math.abs(x - b[i]) < 1e-9);
+        assert.ok(close(weights(30), tints.map(t => t * 1.25)), 'halfway between the keys');
+        assert.ok(close(weights(undefined), tints.map(t => t * 2)), 'no frame: frame 0');
+        assert.ok(close(weights(120), tints.map(t => t * 0.5)), 'held after the last key');
+    } finally { p.done(); }
+});
+
 test('bloom radii follow the game screen\'s width as the preview draws it, not the canvas\'s', () => {
     const p = project();
     try {
