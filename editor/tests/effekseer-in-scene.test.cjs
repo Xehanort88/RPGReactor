@@ -321,3 +321,16 @@ test('EffectManager preloads into the scene layer while screen animations play t
     assert.equal(c.EffectManager.preload('Wind'), true);
     assert.deepEqual(overlayLoads, ['Wind'], 'off: the overlay\'s context loads it');
 });
+
+test('HDR companions draw into the saved target before light and participate in the depth prepass',()=>{
+ const e=environment(),order=[];
+ const R={ensure(){e.gl.bindFramebuffer(e.gl.FRAMEBUFFER,null);return true;},begin(){order.push('begin');},post(){order.push('post');}};
+ e.c.ReactorHdrOverlay={scene:{sidecar:()=>({grade:'g',companionOccludes:true}),renderer:()=>R,settings:()=>({}),lost(){}}};
+ const s=e.sprite('light');e.layer.adopt(s);s._hdrActive=true;s._companionHandle={exists:true,name:'body'};e.layer.frame.push(s);
+ const draw=e.context.drawHandle;e.context.drawHandle=h=>{order.push(h.name);draw(h);};
+ e.layer.drawHdr(e.renderer,s);assert.deepEqual(order,['body','begin','body','light','post']);
+ const nullAt=e.calls.findIndex(c=>c[0]==='bindFramebuffer'&&c[2]===null);
+ assert.ok(e.calls.slice(nullAt+1).some(c=>c[0]==='bindFramebuffer'&&c[2]?.fb==='filter'));
+ assert.ok(e.calls.some(c=>c[0]==='colorMask'&&c.slice(1).every(v=>v===false)));
+ e.layer.lost();assert.equal(s._companionHandle,null);assert.equal(s._companionEffect,null);
+});

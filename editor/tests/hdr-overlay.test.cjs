@@ -218,3 +218,80 @@ test('the composite lands in the framebuffer the caller names',()=>{
     e.calls.length=0;R.post({bloom:0,bloomScale:1},side);
     assert.equal(e.calls.filter(c=>c[0]==='bindFramebuffer').at(-1)[2],null,'unnamed: the default framebuffer, as before');
 });
+
+test('companion validation refuses invalid fields and resolved aliases',()=>{
+ const e=environment();
+ for(const companion of ['', ' ',null,3,'Body.efkefc','Twin'])assert.throws(()=>e.c.ReactorHdrRenderer.valid({...side,companion}));
+ for(const companionOccludes of [1,'true',null])assert.throws(()=>e.c.ReactorHdrRenderer.valid({...side,companionOccludes}));
+ for(const companion of ['Effect-hdr','Nested/Effect-hdr','Nested/Twin'])assert.throws(()=>e.c.ReactorHdrRenderer.valid({...side,companion},'Nested/Effect-hdr'));
+});
+test('companion waits for metadata and loading and is stopped on fallback',async()=>{
+ const e=environment({...side,companion:'Body'}),s=e.sprite();await e.ready(s);
+ const entry={ready:false,sidecar:null};e.api.cache.set('Nested/Body',entry);
+ const effect={isLoaded:false};e.c.EffectManager.load=n=>{e.loads.push(n);return effect;};
+ assert.equal(e.api.canStart(s),false);entry.ready=true;assert.equal(e.api.canStart(s),false);
+ effect.isLoaded=true;assert.equal(e.api.canStart(s),true);
+ const h={stop(){this.stopped=true;}};s._companionHandle=h;e.api.scene.fallBack(s);
+ assert.equal(h.stopped,true);assert.equal(s._companionEffect,null);assert.equal(s._hdrActive,false);
+});
+test('missing and HDR companions fall back; the twin loads no companion',async()=>{
+ for(const failure of ['missing','hdr']){
+  const e=environment({...side,companion:'Body'}),s=e.sprite();await e.ready(s);
+  e.c.Utils={localAssetExists:url=>failure==='missing'&&url.endsWith('Body.efkefc')?false:null};
+  e.api.cache.set('Nested/Body',{ready:true,sidecar:failure==='hdr'?side:null});
+  e.api.canStart(s);assert.equal(s._hdrActive,false);assert.equal(s._effect,'Nested/Twin');assert.equal(e.warnings.length,1);
+ }
+ const e=environment({...side,companion:'Body'},false),s=e.sprite();await e.ready(s);e.api.canStart(s);
+ assert.deepEqual(e.loads,['Nested/Twin']);
+});
+test('companion prepass precedes HDR light and restores colour writes',async()=>{
+ const e=environment({...side,companion:'Body'}),s=e.sprite();await e.ready(s);
+ e.api.cache.set('Nested/Body',{ready:true,sidecar:null});e.api.canStart(s);
+ const h=s._companionHandle={name:'body',exists:true,stop(){this.stopped=true;}};
+ e.api.render({},[s]);assert.deepEqual(e.drawn,['body',s._handle.name]);
+ assert.ok(e.calls.some(c=>c[0]==='depthMask'&&c[1]===true));
+ const masks=e.calls.filter(c=>c[0]==='colorMask'); const off=masks.findIndex(c=>c[1]===false); assert.ok(off>=0); assert.deepEqual(masks[off+1],['colorMask',true,true,true,true]);
+ e.api.release(s);assert.equal(h.stopped,true);assert.equal(s._companionHandle,null);
+});
+
+test('one fresh cast seed reaches both handles before transforms; either handle holds the animation open',()=>{
+ const text=fs.readFileSync(path.join(runtime,'reactor_sprites.js'),'utf8');
+ const extract=name=>{const a=text.indexOf('Sprite_Animation.prototype.'+name+' =');return text.slice(a,text.indexOf('\n};',a)+4);};
+ const calls=[];let i=0;
+ const handles=[0,1].map(n=>({exists:true,setRandomSeed(seed){calls.push(['seed',n,seed]);},setLocation(...v){calls.push(['location',n,...v]);},setRotation(...v){calls.push(['rotation',n,...v]);},setScale(...v){calls.push(['scale',n,...v]);},setSpeed(...v){calls.push(['speed',n,...v]);}}));
+ const c={Sprite_Animation:function(){},Sprite:{prototype:{update(){}}},Graphics:{effekseer:{play(){calls.push(['play',i]);return handles[i++];}}},Math};
+ for(const name of ['update','updateEffectGeometry','forEachEffectHandle','setRotation','checkEnd'])vm.runInNewContext(extract(name),c);
+ const s=new c.Sprite_Animation();Object.assign(s,{_playing:true,_effect:{isLoaded:true},_companionEffect:{isLoaded:true},_hdrActive:true,_animation:{scale:125,speed:80,rotation:{x:10,y:20,z:30}},canStart:()=>true,reactor3DScale:()=>1,updateMain(){},updateFlash(){}});
+ s.update();assert.deepEqual(calls.slice(0,4).map(x=>x[0]),['play','play','seed','seed']);assert.equal(calls[2][2],calls[3][2]);
+ for(const method of ['location','rotation','scale','speed']){const pair=calls.filter(x=>x[0]===method);assert.equal(pair.length,2);assert.deepEqual(pair[0].slice(2),pair[1].slice(2));}
+ s._frameIndex=20;s._maxTimingFrames=0;s._flashDuration=0;handles[0].exists=false;s.checkEnd();assert.equal(s._playing,true);handles[1].exists=false;s.checkEnd();assert.equal(s._playing,false);
+});
+
+test('all adapter termination paths stop and drop the companion',async()=>{
+ for(const action of ['release','lost','sceneLost','fallback','failedRender']){
+  const e=environment({...side,companion:'Body'}),s=e.sprite();await e.ready(s);e.api.cache.set('Nested/Body',{ready:true,sidecar:null});e.api.canStart(s);
+  const h=s._companionHandle={exists:true,name:'body',stop(){this.stopped=true;}};
+  if(action==='release')e.api.release(s);
+  if(action==='lost')e.api.contextLost();
+  if(action==='sceneLost'){s._effekseerInScene=true;e.api.scene.lost();}
+  if(action==='fallback')e.api.scene.fallBack(s);
+  if(action==='failedRender'){e.c.Graphics.effekseer.drawHandle=()=>{throw Error('draw failure');};e.api.render({},[s]);}
+  assert.equal(h.stopped,true,action);assert.equal(s._companionHandle,null,action);assert.equal(s._companionEffect,null,action);
+ }
+});
+
+test('a companion load callback selects the twin without raising a global load error',async()=>{
+ const e=environment({...side,companion:'Body'}),s=e.sprite();await e.ready(s);e.api.cache.set('Nested/Body',{ready:true,sidecar:null});
+ let failure; e.c.EffectManager.load=(name,onError)=>{if(onError){failure=onError;return {isLoaded:false};}return name;};
+ assert.equal(e.api.canStart(s),false);failure('resource failed','effects/Nested/Body.efkefc');
+ assert.equal(e.api.canStart(s),true);assert.equal(s._hdrActive,false);assert.equal(s._effect,'Nested/Twin');
+});
+test('EffectManager soft failures are local; ordinary failures retain their queue',()=>{
+ const text=fs.readFileSync(path.join(runtime,'reactor_managers.js'),'utf8');
+ const take=name=>{const a=text.indexOf('EffectManager.'+name+' =');return text.slice(a,text.indexOf('\n};',a)+4);};
+ let callback,reported=0;
+ const c={EffectManager:{_cache:{},_softLoadErrors:new Map(),onLoad(){},onError(){reported++;},makeUrl:n=>'effects/'+n+'.efkefc'},Graphics:{effekseer:{loadEffect(url,scale,loaded,failed){callback=failed;return {isLoaded:false};}}}};
+ for(const name of ['load','startLoading'])vm.runInNewContext(take(name),c);
+ let soft=0;c.EffectManager.load('Body',()=>soft++);callback('bad','body');assert.equal(soft,1);assert.equal(reported,0);assert.equal(Object.keys(c.EffectManager._cache).length,0);
+ c.EffectManager.load('Ordinary');callback('bad','ordinary');assert.equal(reported,1);
+});

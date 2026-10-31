@@ -70,7 +70,7 @@ function editor() {
     const context = {
         console: { info() {}, warn() {}, error() {} },
         require: name => ({ fs, path })[name],
-        process, Buffer, ArrayBuffer, Uint8Array, Float32Array, performance, setTimeout: () => 0, clearTimeout() {},
+        queueMicrotask, process, Buffer, ArrayBuffer, Uint8Array, Float32Array, performance, setTimeout: () => 0, clearTimeout() {},
         location: { pathname: path.join(editorRoot, 'index.html') }
     };
     context.window = context;
@@ -300,4 +300,18 @@ test('every animation preview loads through RRHdrPreview, which index.html loads
         assert.equal(direct, 0, `${file} loads effects through RRHdrPreview.load`);
         assert.match(source, /RRHdrPreview\.release\(/, `${file} frees its HDR targets with its context`);
     }
+});
+
+test('shared preview pairing loads both, seeds and transforms both, and draws body before light',async()=>{
+ const p=project();try{
+  fs.writeFileSync(p.file('Body'),'BODY');fs.writeFileSync(p.file('Fire-hdr').replace('.efkefc','.hdr.json'),JSON.stringify({...sidecar,companion:'Body'}));
+  const w=editor(),{gl}=fakeGl(),calls=[];let n=0;
+  w.RR_loadEffekseerEffectFromFile=(ctx,file,scale,done)=>{const effect={isLoaded:true,file};queueMicrotask(()=>done?.());return effect;};
+  const ctx={play(effect){const id=n++;return {exists:true,id,setRandomSeed(seed){calls.push(['seed',id,seed]);},setScale(...v){calls.push(['scale',id,...v]);},stop(){this.exists=false;calls.push(['stop',id]);}};},drawHandle(h){calls.push(['draw',h.id]);},releaseEffect(){}};
+  let loaded=0;const effect=w.RRHdrPreview.load(ctx,gl,p.file('Fire-hdr'),1,()=>loaded++,null,view);await new Promise(r=>setImmediate(r));assert.equal(loaded,1);
+  const handle=ctx.play(effect);assert.equal(calls[0][2],calls[1][2]);handle.setScale(2,2,2);assert.equal(calls.filter(x=>x[0]==='scale').length,2);
+  w.RRHdrPreview.draw(gl,effect.rrHdr,view,()=>ctx.drawHandle(handle));assert.deepEqual(calls.filter(x=>x[0]==='draw').map(x=>x[1]),[1,1,0]);
+  handle.stop();assert.equal(calls.filter(x=>x[0]==='stop').length,2);
+  const off=w.RRHdrPreview.load(ctx,gl,p.file('Fire-hdr'),1,null,null,view,{off:true});assert.equal(off.rrHdr,undefined);assert.equal(off.rrHdrTwin.twinName,'Fire-ldr');
+ }finally{p.done();}
 });

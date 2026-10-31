@@ -1372,12 +1372,17 @@ function EffectManager() {
 
 EffectManager._cache = {};
 EffectManager._errorUrls = [];
+EffectManager._softLoadErrors = new Map();
 
-EffectManager.load = function(filename) {
+EffectManager.load = function(filename, onError) {
     if (filename) {
         globalThis.ReactorHdrOverlay?.request(filename);
         const url = this.makeUrl(filename);
         const cache = this._cache;
+        if (typeof onError === "function" && !cache[url]?.isLoaded) {
+            if (!this._softLoadErrors.has(url)) this._softLoadErrors.set(url, new Set());
+            this._softLoadErrors.get(url).add(onError);
+        }
         if (!cache[url] && Graphics.effekseer) {
             this.startLoading(url);
         }
@@ -1388,8 +1393,15 @@ EffectManager.load = function(filename) {
 };
 
 EffectManager.startLoading = function(url) {
-    const onLoad = () => this.onLoad(url);
-    const onError = (message, url) => this.onError(url);
+    const onLoad = () => { this._softLoadErrors.delete(url); this.onLoad(url); };
+    const onError = (message, resourceUrl) => {
+        const handlers = this._softLoadErrors.get(url);
+        if (handlers) {
+            this._softLoadErrors.delete(url);
+            delete this._cache[url];
+            for (const failed of handlers) failed(message, resourceUrl || url);
+        } else this.onError(resourceUrl || url);
+    };
     const effect = Graphics.effekseer.loadEffect(url, 1, onLoad, onError);
     this._cache[url] = effect;
     return effect;
@@ -1401,6 +1413,7 @@ EffectManager.clear = function() {
         Graphics.effekseer.releaseEffect(effect);
     }
     this._cache = {};
+    this._softLoadErrors.clear();
 };
 
 EffectManager.onLoad = function(/*url*/) {
