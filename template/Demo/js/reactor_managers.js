@@ -3507,7 +3507,10 @@ SceneManager.updateInputData = function() {
 };
 
 SceneManager.updateEffekseer = function() {
+    // Frames this update steps the effects by (Sprite_Animation's effect clock); battle slow motion scales it.
+    this._effekseerStep = 0;
     if (Graphics.effekseer && this.isGameActive()) {
+        this._effekseerStep = 1;
         Graphics.effekseer._makeContextCurrent?.();
         Graphics.effekseer.update();
         // The in-scene context steps with the same update, battle slow motion included.

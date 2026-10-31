@@ -259,7 +259,9 @@
      * `premultiplied` for a premultiplied canvas with nothing behind it in GL;
      * `bloomWidth` (see bloomWidth), the buffer's width when absent. The
      * sidecar's bloom threshold (or prefilter) acts on the game's setup pixels, which the
-     * same width converts into the preview's.
+     * same width converts into the preview's. `frame`, the effect's own frame
+     * (updates since its play times its speed), picks the bloom intensity
+     * when the sidecar keys it (bloom.intensityKeys); frame 0 when absent.
      * False when this context can no longer render HDR; nothing was drawn.
      */
     function draw(gl, choice, view, drawEffect) {
@@ -281,7 +283,8 @@
             }
             drawEffect();
             renderer.post({
-                bloom: sidecar.bloom.intensity,
+                bloom: root.ReactorHdrRenderer.bloomIntensity ? root.ReactorHdrRenderer.bloomIntensity(sidecar.bloom, view.frame)
+                    : sidecar.bloom.intensity,
                 bloomScale: sidecar.bloom.radiusScale,
                 alphaFromColor: !!view.premultiplied,
                 bloomWidth: view.bloomWidth,

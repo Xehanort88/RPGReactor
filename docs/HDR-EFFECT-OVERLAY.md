@@ -139,6 +139,19 @@ negative threshold blooms dark light partly (-0.8 passes 40 % at zero). Without 
 every pixel blooms, as before. Like the other bloom settings, it is taken from the
 first sidecar of a grade group.
 
+`bloom.intensityKeys` (optional, runtime **20261031.2**) animates the bloom
+intensity over the effect: `[[frame, intensity], ...]`, at least one key, frames
+increasing, intensities nonnegative. Frames are the effect's own clock, as
+Effekseer counts them: 60 a second at speed 100, `speed / 100` per update at other
+speeds, and slowed with battle slow motion (Sprite_Animation's `_effectFrame`).
+The intensity runs in a straight line between keys and holds the first key's value
+before it and the last key's after it. Bravely Default II, for one, sets its
+tonemapper's bloom per spell and animates it within one (Electon: 2.0 at 1.1 s,
+1.31 at 1.9 s, 0.12 at 2.45 s). Keep `intensity`: runtimes before 20261031.2
+ignore the keys and play it, as does any caller that gives no frame. Animations
+of one grade group whose intensities differ at a frame bloom in separate passes,
+one per intensity.
+
 ## Authoring and tuning
 
 An HDR asset's materials output exposed linear light, not display-graded colour,

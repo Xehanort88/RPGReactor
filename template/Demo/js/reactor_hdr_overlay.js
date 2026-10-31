@@ -38,6 +38,27 @@
         " if (abs(x) > 3.0 * uSigma + 0.5) continue; float k = exp(-0.5 * x * x / (uSigma * uSigma));" +
         " s += k * texture2D(uTex, vUv + uStep * x); w += k; } gl_FragColor = s / w; }";
 
+    // bloom.intensityKeys: [[frame, intensity], ...] on the effect's own clock (60 frames a second at speed 100),
+    // frames increasing, played as straight lines between keys and held before the first and after the last
+    function keysValid(k) {
+        return Array.isArray(k) && k.length > 0 && k.every((key, i) => Array.isArray(key) && key.length === 2 &&
+            Number.isFinite(key[0]) && Number.isFinite(key[1]) && key[1] >= 0 && (i === 0 || key[0] > k[i - 1][0]));
+    }
+    // The bloom intensity at an effect frame: the keys when the sidecar has them, bloom.intensity otherwise
+    // (and in runtimes before 20261031.2, which play bloom.intensity whatever the keys say).
+    function bloomIntensity(bloom, frame) {
+        const k = bloom.intensityKeys;
+        if (!k) return bloom.intensity;
+        const f = Number.isFinite(frame) ? frame : 0;
+        if (f <= k[0][0]) return k[0][1];
+        for (let i = 1; i < k.length; i++) {
+            if (f > k[i][0]) continue;
+            const [f0, v0] = k[i - 1], [f1, v1] = k[i];
+            return v0 + (v1 - v0) * (f - f0) / (f1 - f0);
+        }
+        return k[k.length - 1][1];
+    }
+
     function valid(s, effectName) {
         if (!s || s.version !== 1 || s.gradeInput !== "hdr" || typeof s.grade !== "string" ||
             !/\bhdr\b/.test(s.grade) || !/\btmOut\b/.test(s.grade) || typeof s.fallback !== "string" || !s.fallback ||
@@ -48,6 +69,7 @@
             !Number.isFinite(s.bloom.intensity) || s.bloom.intensity < 0 ||
             !Number.isFinite(s.bloom.radiusScale) || s.bloom.radiusScale <= 0 ||
             (s.bloom.threshold !== undefined && !Number.isFinite(s.bloom.threshold)) ||
+            (s.bloom.intensityKeys !== undefined && !keysValid(s.bloom.intensityKeys)) ||
             (s.bloom.prefilter !== undefined && (!s.bloom.prefilter || typeof s.bloom.prefilter !== "object" ||
                 !Number.isFinite(s.bloom.prefilter.threshold) || !Number.isFinite(s.bloom.prefilter.knee) || s.bloom.prefilter.knee < 0 ||
                 (s.bloom.prefilter.clamp !== undefined && !(Number.isFinite(s.bloom.prefilter.clamp) && s.bloom.prefilter.clamp > 0)))))
@@ -392,7 +414,7 @@
             get size() { return [H.w, H.h]; }
         };
     }
-    window.ReactorHdrRenderer = { create: createRenderer, valid };
+    window.ReactorHdrRenderer = { create: createRenderer, valid, bloomIntensity };
 
     // ---- The game's adapter ------------------------------------------------
     const params = {};
@@ -402,8 +424,9 @@
     const api = window.ReactorHdrOverlay = { native: true, cache, stats: { groups: 0, draws: 0, postMs: 0 },
         // Testing overrides still require a grade and a safe twin.
         overrides: Object.create(null) };
-    function settings(sidecar) {
-        return Object.assign({ bloom: Number(params.bloomIntensity ?? sidecar.bloom.intensity),
+    // A sprite's settings at its effect frame (Sprite_Animation's _effectFrame).
+    function settings(sidecar, frame) {
+        return Object.assign({ bloom: Number(params.bloomIntensity ?? bloomIntensity(sidecar.bloom, frame)),
             bloomScale: Number(params.bloomRadiusScale ?? sidecar.bloom.radiusScale), threshold: sidecar.bloom.threshold,
             prefilter: sidecar.bloom.prefilter,
             debug: (params.debug === true || params.debug === "true") },
@@ -573,11 +596,12 @@
                 sprite._hdrActive = false; sprite._effect = EffectManager.load(fallbackName(sprite, sidecarFor(sprite))); }
             return;
         }
+        // One pass per grade and bloom intensity: keyed intensities differ between animations at different frames.
         const groups = new Map();
         for (const sprite of draws) {
-            const sc = sidecarFor(sprite);
-            if (!groups.has(sc.grade)) groups.set(sc.grade, { sc, sprites: [] });
-            groups.get(sc.grade).sprites.push(sprite);
+            const sc = sidecarFor(sprite), frame = sprite._effectFrame, key = sc.grade + " " + bloomIntensity(sc.bloom, frame);
+            if (!groups.has(key)) groups.set(key, { sc, frame, sprites: [] });
+            groups.get(key).sprites.push(sprite);
         }
         try {
             for (const group of groups.values()) {
@@ -599,7 +623,7 @@
                     Graphics.settleEffekseerState();
                     api.stats.draws++;
                 }
-                const config = settings(group.sc);
+                const config = settings(group.sc, group.frame);
                 if (config.probeScale && (!config.probeFrame || group.sprites.some(x => x._frameIndex === config.probeFrame))) R.probe(config.probeScale);
                 R.post(config, group.sc);
             }
@@ -654,6 +678,8 @@
         },
         sidecar: sidecarFor,
         settings,
+        // The bloom intensity an in-scene sprite draws with now: sprites of one grade share a pass only when it agrees.
+        intensity(sprite) { return bloomIntensity(sidecarFor(sprite).bloom, sprite._effectFrame); },
         // A pass that failed: this sprite plays its twin from here on.
         fallBack(sprite) {
             active.delete(sprite);

@@ -2587,6 +2587,7 @@ Sprite_Animation.prototype.initMembers = function() {
     this._playing = false;
     this._started = false;
     this._frameIndex = 0;
+    this._effectFrame = 0;
     this._maxTimingFrames = 0;
     this._flashColor = [0, 0, 0, 0];
     this._flashDuration = 0;
@@ -2638,6 +2639,9 @@ Sprite_Animation.prototype.setup = function(
 
 Sprite_Animation.prototype.update = function() {
     Sprite.prototype.update.call(this);
+    // The effect's own clock in frames: what this update's Effekseer step moved its handle by (battle slow
+    // motion included), at the animation's speed. HDR sidecars key their bloom intensity to it.
+    if (this._started) this._effectFrame += (globalThis.SceneManager?._effekseerStep ?? 1) * this._animation.speed / 100;
     if (this._delay > 0) {
         this._delay--;
     } else if (this._playing) {
@@ -2655,6 +2659,7 @@ Sprite_Animation.prototype.update = function() {
                     }
                     Graphics.effekseer._makeContextCurrent?.();
                     this._started = true;
+                    this._effectFrame = 0;
                 } else {
                     EffectManager.checkErrors();
                 }
@@ -3266,7 +3271,8 @@ Sprite_Animation.SceneLayer = {
         const hdr = globalThis.ReactorHdrOverlay.scene;
         const sc = hdr.sidecar(sprite);
         const group = this.frame.filter(other => other !== sprite && other._hdrActive && other.parent === sprite.parent
-            && other._handle && other._handle.exists && hdr.sidecar(other) && hdr.sidecar(other).grade === sc.grade);
+            && other._handle && other._handle.exists && hdr.sidecar(other) && hdr.sidecar(other).grade === sc.grade
+            && hdr.intensity(other) === hdr.intensity(sprite));
         group.unshift(sprite);
         for (const member of group) this.drawn.add(member);
         const gl = renderer.gl, saved = this.save(gl, renderer), start = performance.now();
@@ -3289,7 +3295,7 @@ Sprite_Animation.SceneLayer = {
             } finally { gl.colorMask(true, true, true, true); }
             this.context._makeContextCurrent?.();
             this.drawHandles(gl, renderer, view, group, scale, false);
-            R.post(Object.assign(hdr.settings(sc), {
+            R.post(Object.assign(hdr.settings(sc, sprite._effectFrame), {
                 framebuffer: saved.framebuffer,
                 // The bloom's radii are fractions of the game screen's width, in the light's pixels.
                 bloomWidth: Graphics.width * view.ppu * scale,

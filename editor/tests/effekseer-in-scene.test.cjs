@@ -188,7 +188,7 @@ test('HDR animations of one grade in one container share a light pass, composite
     const e = environment();
     const passes = [], fallbacks = [];
     const R = { ensure: (w, h) => { passes.push(['ensure', w, h]); return true; }, begin: () => passes.push(['begin']), post: (s, sc, out) => passes.push(['post', s, out]) };
-    e.c.ReactorHdrOverlay = { scene: { sidecar: s => ({ grade: s.grade }), renderer: () => R, settings: () => ({ bloom: 1 }), fallBack: s => fallbacks.push(s) } };
+    e.c.ReactorHdrOverlay = { scene: { sidecar: s => ({ grade: s.grade }), renderer: () => R, settings: () => ({ bloom: 1 }), intensity: () => 1, fallBack: s => fallbacks.push(s) } };
     const a = e.sprite('A'), b = e.sprite('B'), other = e.sprite('C');
     for (const s of [a, b, other]) { e.layer.adopt(s); s._hdrActive = true; s.grade = 'g'; }
     other.grade = 'h';
@@ -325,7 +325,7 @@ test('EffectManager preloads into the scene layer while screen animations play t
 test('HDR companions draw into the saved target before light and participate in the depth prepass',()=>{
  const e=environment(),order=[];
  const R={ensure(){e.gl.bindFramebuffer(e.gl.FRAMEBUFFER,null);return true;},begin(){order.push('begin');},post(){order.push('post');}};
- e.c.ReactorHdrOverlay={scene:{sidecar:()=>({grade:'g',companionOccludes:true}),renderer:()=>R,settings:()=>({}),lost(){}}};
+ e.c.ReactorHdrOverlay={scene:{sidecar:()=>({grade:'g',companionOccludes:true}),renderer:()=>R,settings:()=>({}),intensity:()=>1,lost(){}}};
  const s=e.sprite('light');e.layer.adopt(s);s._hdrActive=true;s._companionHandle={exists:true,name:'body'};e.layer.frame.push(s);
  const draw=e.context.drawHandle;e.context.drawHandle=h=>{order.push(h.name);draw(h);};
  e.layer.drawHdr(e.renderer,s);assert.deepEqual(order,['body','begin','body','light','post']);
