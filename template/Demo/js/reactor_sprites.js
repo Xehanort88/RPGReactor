@@ -3113,6 +3113,7 @@ Sprite_Animation.SceneLayer = {
         this.deadlines.clear();
         this.loadErrors.clear();
         this.depth = null;
+        this.backdropCopy = null;
         globalThis.ReactorHdrOverlay?.scene?.lost();
     },
     restored() {
@@ -3213,6 +3214,62 @@ Sprite_Animation.SceneLayer = {
         }
     },
     /**
+     * Effekseer copies the bound framebuffer into its RGBA backdrop texture (copyTexSubImage2D). From the canvas WebGL
+     * refuses that copy (INVALID_OPERATION) when the context has no alpha channel, as PIXI creates it (alpha: false),
+     * so the backdrop stayed black and every distortion layer drew black at its opacity instead of bending the scene
+     * (BD2 Meltdown's sphere in battle, 2026-11-04: the right scene point, darkened by the layer's alpha). The canvas
+     * is blitted into an RGBA scratch target the size of the effect's square viewport (WebGL2's blit converts the
+     * format) and copied from there. The square reaches past the screen (it is twice the screen's height), so the
+     * scratch's off-screen margins repeat the screen's edge rows and columns, as UE clamps its distortion to the screen;
+     * read as zeros they showed as black bands where the layer pushed samples outwards. Filter targets are RGBA
+     * textures and copy as they are.
+     */
+    captureBackground(gl, context, rect, framebuffer) {
+        if (!context.captureBackground) return;
+        const attrs = gl.getContextAttributes && gl.getContextAttributes();
+        if (framebuffer || typeof gl.blitFramebuffer !== "function" || !attrs || attrs.alpha) {
+            context.captureBackground(rect.x, rect.y, rect.side, rect.side);
+            return;
+        }
+        const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight, S = rect.side;
+        const x0 = Math.max(rect.x, 0), y0 = Math.max(rect.y, 0), x1 = Math.min(rect.x + S, W), y1 = Math.min(rect.y + S, H);
+        if (x1 <= x0 || y1 <= y0) {
+            context.captureBackground(rect.x, rect.y, S, S);
+            return;
+        }
+        let copy = this.backdropCopy;
+        if (!copy || copy.side !== S) {
+            if (copy) { gl.deleteFramebuffer(copy.fb); gl.deleteRenderbuffer(copy.rb); }
+            copy = this.backdropCopy = { fb: gl.createFramebuffer(), rb: gl.createRenderbuffer(), side: S };
+            gl.bindRenderbuffer(gl.RENDERBUFFER, copy.rb);
+            gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, S, S);
+            gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+            gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, copy.fb);
+            gl.framebufferRenderbuffer(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, copy.rb);
+        }
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, copy.fb);
+        const ox = rect.x, oy = rect.y;
+        // [source x0, y0, x1, y1] on the screen -> [destination] in the square, stretched with NEAREST
+        const blit = (sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1) => {
+            if (dx1 > dx0 && dy1 > dy0) gl.blitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+        };
+        const ix0 = x0 - ox, iy0 = y0 - oy, ix1 = x1 - ox, iy1 = y1 - oy;
+        blit(x0, y0, x1, y1, ix0, iy0, ix1, iy1);                                  // the screen itself
+        blit(x0, y0, x0 + 1, y1, 0, iy0, ix0, iy1);                                // left margin: the left column
+        blit(x1 - 1, y0, x1, y1, ix1, iy0, S, iy1);                                // right margin
+        blit(x0, y0, x1, y0 + 1, ix0, 0, ix1, iy0);                                // bottom margin: the bottom row
+        blit(x0, y1 - 1, x1, y1, ix0, iy1, ix1, S);                                // top margin
+        blit(x0, y0, x0 + 1, y0 + 1, 0, 0, ix0, iy0);                              // corners
+        blit(x1 - 1, y0, x1, y0 + 1, ix1, 0, S, iy0);
+        blit(x0, y1 - 1, x0 + 1, y1, 0, iy1, ix0, S);
+        blit(x1 - 1, y1 - 1, x1, y1, ix1, iy1, S, S);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, copy.fb);
+        context.captureBackground(0, 0, S, S);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    },
+    /**
      * Draw `sprites`' handles through `view`, into a buffer `scale` times
      * the target's pixels whose origin is the target viewport's (the HDR
      * light), or into the target itself (scale 1, `inTarget`).
@@ -3233,7 +3290,7 @@ Sprite_Animation.SceneLayer = {
             // A target stored upside down: the effect is drawn upside down into it (its winding with it).
             if (view.flipped) for (const i of [1, 5, 9, 13]) projection[i] = -projection[i];
             // The scene beneath the effect, for its distortion layers: what this target holds now.
-            if (inTarget && context.captureBackground) context.captureBackground(rect.x, rect.y, rect.side, rect.side);
+            if (inTarget) this.captureBackground(gl, context, rect, this.targetFramebuffer);
             context.setProjectionMatrix(projection);
             context.setCameraMatrix(this.camera);
             gl.viewport(rect.x, rect.y, rect.side, rect.side);
@@ -3250,6 +3307,7 @@ Sprite_Animation.SceneLayer = {
         const gl = renderer.gl, saved = this.save(gl, renderer), start = performance.now();
         try {
             const view = this.view(renderer);
+            this.targetFramebuffer = saved.framebuffer;
             gl.bindVertexArray(null);
             this.withDepth(gl, renderer, saved);
             this.context._makeContextCurrent?.();
@@ -3283,6 +3341,7 @@ Sprite_Animation.SceneLayer = {
             gl.bindVertexArray(null);
             if (!R.ensure(Math.max(1, Math.round(view.vp.w * scale)), Math.max(1, Math.round(view.vp.h * scale)))) throw Error("no HDR targets on PIXI's context");
             gl.bindFramebuffer(gl.FRAMEBUFFER, saved.framebuffer);
+            this.targetFramebuffer = saved.framebuffer;
             this.withDepth(gl, renderer, saved);
             this.context._makeContextCurrent?.();
             this.drawHandles(gl, renderer, view, group, 1, true, member => member._companionHandle);

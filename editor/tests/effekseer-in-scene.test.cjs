@@ -137,6 +137,39 @@ test('screen animations are taken where PIXI is WebGL2 and in-scene is on; ancho
     assert.equal(environment({ webGLVersion: 1 }).layer.adopt({}), false, 'a WebGL1 renderer keeps the overlay');
 });
 
+test('on the alpha-less canvas the scene is blitted into an RGBA square with clamped edges before the distortion copy', () => {
+    // PIXI creates the canvas with alpha: false; WebGL refuses copyTexSubImage2D from it into Effekseer's RGBA backdrop,
+    // so distortion layers drew black (BD2 Meltdown, 2026-11-04). A filter's texture is RGBA and copies directly.
+    const e = environment({ framebuffer: null, flipped: false });
+    e.gl.getContextAttributes = () => ({ alpha: false });
+    e.gl.drawingBufferWidth = 800; e.gl.drawingBufferHeight = 600;
+    const s = e.sprite();
+    e.layer.adopt(s);
+    e.calls.length = 0;
+    s.children[0].render(e.renderer);
+    const name = c => c[0];
+    assert.deepEqual(e.drawn, ['Fire']);
+    assert.deepEqual(e.captures, [[0, 0, 1200, 1200]], 'copied from the scratch square, whose origin is the viewport origin');
+    assert.deepEqual(e.calls.find(c => name(c) === 'renderbufferStorage' && c[3] === 1200).slice(3), [1200, 1200], 'an RGBA square of the viewport size');
+    const blits = e.calls.filter(c => name(c) === 'blitFramebuffer');
+    assert.deepEqual(blits[0].slice(1, 9), [0, 0, 800, 600, 200, 300, 1000, 900], 'the screen at its place in the square');
+    assert.equal(blits.length, 9, 'the screen, four edge strips and four corners: off-screen texels repeat the edge, as UE clamps');
+    assert.deepEqual(blits[1].slice(1, 9), [0, 0, 1, 600, 0, 300, 200, 900], 'the left margin repeats the left column');
+    const reads = e.calls.filter(c => name(c) === 'bindFramebuffer' && c[1] === e.gl.READ_FRAMEBUFFER).map(c => c[2]);
+    assert.ok(reads.length >= 2 && reads[0] === null && reads[reads.length - 1] && reads[reads.length - 1].made, 'blitted from the canvas, copied from the square');
+    assert.deepEqual(e.reads, [], 'still no GL state read back');
+    // a second draw reuses the square
+    e.calls.length = 0;
+    s.children[0].render(e.renderer);
+    assert.equal(e.calls.filter(c => name(c) === 'createFramebuffer').length, 0);
+    // with an alpha channel, or into a filter's texture, the copy is direct
+    const f = environment();
+    f.gl.getContextAttributes = () => ({ alpha: false });
+    const t = f.sprite(); f.layer.adopt(t); t.children[0].render(f.renderer);
+    assert.deepEqual(f.captures, [[-200, -300, 1200, 1200]]);
+    assert.equal(f.calls.filter(c => name(c) === 'blitFramebuffer').length, 0);
+});
+
 test('an animation draws into the target PIXI is rendering to, then leaves PIXI as it found it', () => {
     const e = environment();
     const s = e.sprite();
