@@ -3330,7 +3330,8 @@ Sprite_Animation.SceneLayer = {
         const sc = hdr.sidecar(sprite);
         const group = this.frame.filter(other => other !== sprite && other._hdrActive && other.parent === sprite.parent
             && other._handle && other._handle.exists && hdr.sidecar(other) && hdr.sidecar(other).grade === sc.grade
-            && hdr.intensity(other) === hdr.intensity(sprite));
+            && hdr.sidecar(other).gradeB === sc.gradeB && hdr.intensity(other) === hdr.intensity(sprite)
+            && hdr.gradeMix?.(other) === hdr.gradeMix?.(sprite));
         group.unshift(sprite);
         for (const member of group) this.drawn.add(member);
         const gl = renderer.gl, saved = this.save(gl, renderer), start = performance.now();

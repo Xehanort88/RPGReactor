@@ -314,6 +314,26 @@ test('same-grade animations at different keyed intensities bloom in separate pas
  b._effectFrame=40;e.api.render({},[a,b]);assert.equal(e.api.stats.groups,3);
  assert.equal(e.api.scene.intensity(a),e.c.ReactorHdrRenderer.bloomIntensity({intensityKeys:keys},10));
 });
+const twoGrades={...side,gradeB:'vec3 tmOut = hdr * 0.5;',gradeKeys:[[10,0],[30,1]]};
+test('gradeKeys weigh the second grade on the effect clock, clamped and held at the ends',()=>{
+ const f=environment().c.ReactorHdrRenderer.gradeMix;
+ assert.equal(f(twoGrades,0),0);assert.equal(f(twoGrades,20),0.5);assert.equal(f(twoGrades,90),1);assert.equal(f(side,20),0);
+});
+test('gradeB compiles both grades in their own functions and leaves a one-grade program as it was',()=>{
+ const e=environment(),R=e.c.ReactorHdrRenderer.create(e.c.Graphics._effekseerGL);
+ R.gradeProgram(twoGrades.grade,twoGrades.gradeB);R.gradeProgram(side.grade);
+ const fs=e.calls.filter(c=>c[0]==='shaderSource'&&/uHdr/.test(c[2])).map(c=>c[2]);
+ assert.match(fs[0],/vec3 rr_gradeA\(vec3 hdr\)\{\nvec3 tmOut = hdr \/ \(hdr \+ vec3\(1\.0\)\);\nreturn tmOut;/);
+ assert.match(fs[0],/vec3 rr_gradeB\(vec3 hdr\)\{\nvec3 tmOut = hdr \* 0\.5;\nreturn tmOut;/);
+ assert.match(fs[0],/mix\(rr_gradeA\(hdr\), rr_gradeB\(hdr\), uGradeMix\)/);
+ assert.doesNotMatch(fs[1],/uGradeMix|rr_grade/);
+});
+test('invalid gradeB or gradeKeys fail closed',async()=>{
+ for(const bad of [{gradeB:'vec3 x;',gradeKeys:[[0,1]]},{gradeB:twoGrades.gradeB},{gradeB:twoGrades.gradeB,gradeKeys:[]},{gradeB:twoGrades.gradeB,gradeKeys:[[0,2]]},{gradeKeys:[[0,1]]}]){
+  const e=environment({...side,...bad}),s=e.sprite();await e.ready(s);
+  assert.equal(e.api.canStart(s),false,JSON.stringify(bad));
+ }
+});
 test('invalid bloom.intensityKeys fail closed',async()=>{
  for(const intensityKeys of [[],[[0,1],[0,2]],[[5,1],[2,2]],[[0,-1]],[[0,'1']],[[0,1,2]],{0:1},null]){
   const e=environment({...side,bloom:{...side.bloom,intensityKeys}}),s=e.sprite();await e.ready(s);

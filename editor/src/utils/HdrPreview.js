@@ -156,7 +156,7 @@
         if (!renderer) return fallback(runtimeState === 'loading' ? 'the HDR renderer is still loading' : 'the HDR renderer is not available');
         if (!renderer.ensure(Math.max(1, width | 0), Math.max(1, height | 0))) return fallback('this WebGL context has no float render targets');
         try {
-            renderer.gradeProgram(twin.sidecar.grade);
+            renderer.gradeProgram(twin.sidecar.grade, twin.sidecar.gradeB);
         } catch (error) {
             return fallback('its grade does not compile: ' + (error && error.message));
         }
@@ -261,7 +261,7 @@
      * sidecar's bloom threshold (or prefilter) acts on the game's setup pixels, which the
      * same width converts into the preview's. `frame`, the effect's own frame
      * (updates since its play times its speed), picks the bloom intensity
-     * when the sidecar keys it (bloom.intensityKeys); frame 0 when absent.
+     * and the second grade's weight when the sidecar keys them (bloom.intensityKeys, gradeKeys); frame 0 when absent.
      * False when this context can no longer render HDR; nothing was drawn.
      */
     function draw(gl, choice, view, drawEffect) {
@@ -285,6 +285,7 @@
             renderer.post({
                 bloom: root.ReactorHdrRenderer.bloomIntensity ? root.ReactorHdrRenderer.bloomIntensity(sidecar.bloom, view.frame)
                     : sidecar.bloom.intensity,
+                gradeMix: root.ReactorHdrRenderer.gradeMix ? root.ReactorHdrRenderer.gradeMix(sidecar, view.frame) : 0,
                 bloomScale: sidecar.bloom.radiusScale,
                 alphaFromColor: !!view.premultiplied,
                 bloomWidth: view.bloomWidth,

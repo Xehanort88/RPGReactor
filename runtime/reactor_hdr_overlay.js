@@ -48,7 +48,15 @@
     // (and in runtimes before 20261031.2, which play bloom.intensity whatever the keys say).
     function bloomIntensity(bloom, frame) {
         const k = bloom.intensityKeys;
-        if (!k) return bloom.intensity;
+        return k ? keyedValue(k, frame) : bloom.intensity;
+    }
+    // gradeB + gradeKeys (runtime 20261108.1): a second grade over part of the effect, the sidecar's `grade` at weight 0
+    // and `gradeB` at weight 1, [[frame, weight 0..1], ...] on the same clock as bloom.intensityKeys. Runtimes before
+    // 20261108.1 ignore both fields and play `grade`.
+    function gradeMix(sc, frame) {
+        return sc && sc.gradeKeys ? Math.min(1, Math.max(0, keyedValue(sc.gradeKeys, frame))) : 0;
+    }
+    function keyedValue(k, frame) {
         const f = Number.isFinite(frame) ? frame : 0;
         if (f <= k[0][0]) return k[0][1];
         for (let i = 1; i < k.length; i++) {
@@ -70,6 +78,9 @@
             !Number.isFinite(s.bloom.radiusScale) || s.bloom.radiusScale <= 0 ||
             (s.bloom.threshold !== undefined && !Number.isFinite(s.bloom.threshold)) ||
             (s.bloom.intensityKeys !== undefined && !keysValid(s.bloom.intensityKeys)) ||
+            (s.gradeB !== undefined && (typeof s.gradeB !== "string" || !/\bhdr\b/.test(s.gradeB) || !/\btmOut\b/.test(s.gradeB) ||
+                !keysValid(s.gradeKeys) || !s.gradeKeys.every(k => k[1] <= 1))) ||
+            (s.gradeKeys !== undefined && s.gradeB === undefined) ||
             (s.bloom.prefilter !== undefined && (!s.bloom.prefilter || typeof s.bloom.prefilter !== "object" ||
                 !Number.isFinite(s.bloom.prefilter.threshold) || !Number.isFinite(s.bloom.prefilter.knee) || s.bloom.prefilter.knee < 0 ||
                 (s.bloom.prefilter.clamp !== undefined && !(Number.isFinite(s.bloom.prefilter.clamp) && s.bloom.prefilter.clamp > 0)))))
@@ -124,15 +135,20 @@
             } catch (e) { gl.deleteProgram(p); throw e; }
             finally { for (const shader of shaders) gl.deleteShader(shader); }
         }
-        function gradeProgram(grade) {
-            if (H.programs.has(grade)) return H.programs.get(grade);
+        function gradeProgram(grade, gradeB) {
+            const id = gradeB ? grade + "\n/*gradeB*/\n" + gradeB : grade;
+            if (H.programs.has(id)) return H.programs.get(id);
+            // Two grades: each in its own function (both declare tmOut and their temporaries), mixed by uGradeMix
+            const twoGrades = gradeB ? "vec3 rr_gradeA(vec3 hdr){\n" + grade + "\nreturn tmOut; }\n" +
+                "vec3 rr_gradeB(vec3 hdr){\n" + gradeB + "\nreturn tmOut; }\nuniform float uGradeMix;\n" : "";
+            const body = gradeB ? "vec3 tmOut = mix(rr_gradeA(hdr), rr_gradeB(hdr), uGradeMix);" : grade;
             const fs = "precision highp float; varying vec2 vUv; uniform sampler2D uHdr; uniform sampler2D uG0; uniform sampler2D uG1;" +
             "uniform sampler2D uG2; uniform sampler2D uG3; uniform sampler2D uG4; uniform sampler2D uG5; uniform float uW[6];" +
-            "uniform float uDebug; uniform float uAlphaFromColor;" +
+            "uniform float uDebug; uniform float uAlphaFromColor;" + twoGrades +
             "void main(){ vec3 hdr = texture2D(uHdr, vUv).rgb;" +
             " hdr += uW[0] * texture2D(uG0, vUv).rgb + uW[1] * texture2D(uG1, vUv).rgb + uW[2] * texture2D(uG2, vUv).rgb" +
             " + uW[3] * texture2D(uG3, vUv).rgb + uW[4] * texture2D(uG4, vUv).rgb + uW[5] * texture2D(uG5, vUv).rgb;" +
-            " hdr = max(hdr, vec3(0.0));" + "\n" + grade + "\n" +
+            " hdr = max(hdr, vec3(0.0));" + "\n" + body + "\n" +
             // Alpha from colour: for a premultiplied canvas the page blends
             // over what lies behind it, with no backdrop in this buffer. The
             // screen the game does ignores coverage, so dark quads stay clear.
@@ -141,7 +157,7 @@
             " gl_FragColor = uDebug > 0.0 ? vec4(clamp(texture2D(uHdr, vUv).rgb / uDebug, 0.0, 1.0), 1.0) : vec4(rr_o, rr_a); }";
 
             const program = compile(VS, fs);
-            H.programs.set(grade, program);
+            H.programs.set(id, program);
             return program;
         }
         function tex(w, h, type) {
@@ -290,7 +306,7 @@
             if (s.measureGpu) gl.finish();
             const start = performance.now();
             const SIZES = sc.bloom.sizes, TINTS = sc.bloom.tints;
-            H.comp = gradeProgram(sc.grade);
+            H.comp = gradeProgram(sc.grade, sc.gradeB);
             gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.SCISSOR_TEST); gl.disable(gl.STENCIL_TEST);
             gl.colorMask(true, true, true, true);
             gl.disable(gl.BLEND);
@@ -374,6 +390,7 @@
             gl.uniform1fv(H.comp.u.uW, weights.length ? weights : [0,0,0,0,0,0]);
             gl.uniform1f(H.comp.u.uDebug, s.debugScale || 0);
             gl.uniform1f(H.comp.u.uAlphaFromColor, s.alphaFromColor ? 1 : 0);
+            if (sc.gradeB) gl.uniform1f(H.comp.u.uGradeMix, s.gradeMix || 0);
             gl.enable(gl.BLEND);
             gl.blendEquation(gl.FUNC_ADD);
             gl.blendFunc(gl.ONE, s.coverage ? gl.ONE_MINUS_SRC_ALPHA : gl.ONE_MINUS_SRC_COLOR);
@@ -414,7 +431,7 @@
             get size() { return [H.w, H.h]; }
         };
     }
-    window.ReactorHdrRenderer = { create: createRenderer, valid, bloomIntensity };
+    window.ReactorHdrRenderer = { create: createRenderer, valid, bloomIntensity, gradeMix };
 
     // ---- The game's adapter ------------------------------------------------
     const params = {};
@@ -427,6 +444,7 @@
     // A sprite's settings at its effect frame (Sprite_Animation's _effectFrame).
     function settings(sidecar, frame) {
         return Object.assign({ bloom: Number(params.bloomIntensity ?? bloomIntensity(sidecar.bloom, frame)),
+            gradeMix: gradeMix(sidecar, frame),
             bloomScale: Number(params.bloomRadiusScale ?? sidecar.bloom.radiusScale), threshold: sidecar.bloom.threshold,
             prefilter: sidecar.bloom.prefilter,
             debug: (params.debug === true || params.debug === "true") },
@@ -546,7 +564,7 @@
                 const gl = Graphics._effekseerGL, canvas = Graphics._effekseerCanvas;
                 this._hdrActive = !!(sc && gl && canvas && !gl.isContextLost() && ensure(gl, canvas.width, canvas.height));
                 if (this._hdrActive) {
-                    try { R.gradeProgram(sc.grade); } catch (e) { this._hdrActive = false; console.warn("[ReactorHdrOverlay] " + e); }
+                    try { R.gradeProgram(sc.grade, sc.gradeB); } catch (e) { this._hdrActive = false; console.warn("[ReactorHdrOverlay] " + e); }
                 }
             }
             if (sc && !this._hdrActive) this._effect = load(this, fallbackName(this, sc));
@@ -596,10 +614,10 @@
                 sprite._hdrActive = false; sprite._effect = EffectManager.load(fallbackName(sprite, sidecarFor(sprite))); }
             return;
         }
-        // One pass per grade and bloom intensity: keyed intensities differ between animations at different frames.
+        // One pass per grade, bloom intensity and grade weight: keyed intensities differ between animations at different frames.
         const groups = new Map();
         for (const sprite of draws) {
-            const sc = sidecarFor(sprite), frame = sprite._effectFrame, key = sc.grade + " " + bloomIntensity(sc.bloom, frame);
+            const sc = sidecarFor(sprite), frame = sprite._effectFrame, key = sc.grade + " " + (sc.gradeB || "") + " " + bloomIntensity(sc.bloom, frame) + " " + gradeMix(sc, frame);
             if (!groups.has(key)) groups.set(key, { sc, frame, sprites: [] });
             groups.get(key).sprites.push(sprite);
         }
@@ -668,7 +686,7 @@
                 return !!layer.guard(gl => {
                     const R = scene.renderer(gl);
                     if (!R.ensure(Math.max(1, Graphics.width | 0), Math.max(1, Graphics.height | 0))) return false;
-                    R.gradeProgram(sc.grade);
+                    R.gradeProgram(sc.grade, sc.gradeB);
                     return true;
                 });
             } catch (e) {
@@ -680,6 +698,8 @@
         settings,
         // The bloom intensity an in-scene sprite draws with now: sprites of one grade share a pass only when it agrees.
         intensity(sprite) { return bloomIntensity(sidecarFor(sprite).bloom, sprite._effectFrame); },
+        // Likewise the weight of the sidecar's second grade (gradeB, gradeKeys).
+        gradeMix(sprite) { return gradeMix(sidecarFor(sprite), sprite._effectFrame); },
         // A pass that failed: this sprite plays its twin from here on.
         fallBack(sprite) {
             active.delete(sprite);

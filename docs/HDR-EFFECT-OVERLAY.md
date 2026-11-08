@@ -152,6 +152,13 @@ ignore the keys and play it, as does any caller that gives no frame. Animations
 of one grade group whose intensities differ at a frame bloom in separate passes,
 one per intensity.
 
+`gradeB` and `gradeKeys` (optional, runtime **20261108.1**, always together) blend a
+second grade in over the effect: `gradeB` is a grade string like `grade`, and `gradeKeys` is
+`[[frame, weight], ...]`, frames increasing, weights 0..1 (0 plays `grade`, 1 plays `gradeB`), on the same clock
+and with the same straight lines and held ends as `bloom.intensityKeys`. The two grades' outputs are mixed by the
+weight in one program, each grade in its own function, so both may declare the same names. Animations whose weights
+differ at a frame are graded in separate passes. Runtimes before 20261108.1 ignore both fields and play `grade`.
+
 ## Authoring and tuning
 
 An HDR asset's materials output exposed linear light, not display-graded colour,
