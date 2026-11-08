@@ -16,6 +16,11 @@ function RR_isValidHdrSidecar(s) {
         && (s.companion === undefined || (typeof s.companion === 'string' && s.companion.trim()
             && !/\.efkefc$/i.test(s.companion) && s.companion !== s.fallback))
         && (s.companionOccludes === undefined || typeof s.companionOccludes === 'boolean')
+        && (s.gradeB === undefined || (typeof s.gradeB === 'string' && /\bhdr\b/.test(s.gradeB) && /\btmOut\b/.test(s.gradeB)
+            && Array.isArray(s.gradeKeys) && s.gradeKeys.length > 0
+            && s.gradeKeys.every((k, i, all) => Array.isArray(k) && k.length === 2 && finite(k[0]) && finite(k[1])
+                && k[1] >= 0 && k[1] <= 1 && (i === 0 || k[0] > all[i - 1][0]))))
+        && (s.gradeKeys === undefined || s.gradeB !== undefined)
         && s.bloom && Array.isArray(s.bloom.sizes) && Array.isArray(s.bloom.tints)
         && s.bloom.sizes.length === 6 && s.bloom.tints.length === 6
         && s.bloom.sizes.every(x => finite(x) && x > 0)

@@ -1,5 +1,6 @@
 # Editor changelog
 
+- HDR sidecars can blend a second grade in over the effect with `gradeB` and `gradeKeys` (`[[frame, weight], ...]`, weight 0..1, straight lines between keys) on the effect's own clock (runtime 20261108.1). Older runtimes ignore both and play `grade`.
 - Distortion layers of screen animations drawn in the battle scene bend the scene again instead of drawing a dark copy of it (runtime 20261104.1). WebGL refused Effekseer's backdrop copy from the alpha-less canvas, leaving the backdrop black; the scene is now blitted into an RGBA square first, its off-screen margins repeating the screen's edges.
 - HDR sidecars can animate their bloom intensity over the effect with `bloom.intensityKeys` (`[[frame, intensity], ...]`, straight lines between keys) on the effect's own clock, slow motion included (runtime 20261031.2). Editor previews follow the keys; older runtimes play `bloom.intensity`.
 - HDR sidecars can pair an ordinary companion with shared seed, transforms and lifetime, drawn before HDR light with optional depth occlusion (runtime 20261031.1). Missing companions select the graded twin; editor previews use the same pairing.
