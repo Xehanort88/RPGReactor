@@ -82,6 +82,30 @@ class BuildManager {
                                             <span style="display: block; color: var(--color-text-muted); font-size: 10px; line-height: 1.35; margin-top: 2px;">${tt('A few zip archives in place of many files, for web hosts with file limits.')}</span>
                                         </span>
                                     </label>
+
+                                    <label class="build-option-label" style="display: flex; align-items: center; padding: 8px 10px; background: var(--color-bg-panel); border: 1px solid var(--color-border); border-radius: 4px; cursor: pointer; transition: all 0.2s;">
+                                        <input type="checkbox" id="build-platform-online" value="online" class="system-checkbox" style="margin-right: 10px;">
+                                        <div style="flex: 1;">
+                                            <div style="color: var(--color-text); font-weight: 600; font-size: 13px;">${tt('Online Server')}</div>
+                                            <div style="color: var(--color-text-muted); font-size: 11px;">${tt('Puts the game and its server in a web folder, ready for players')}</div>
+                                        </div>
+                                    </label>
+                                    <div id="build-online-option" style="display: none; margin-left: 28px; padding: 7px 9px; background: var(--color-bg-surface); border: 1px solid var(--color-border-subtle); border-left: 2px solid var(--color-accent-border); border-radius: 4px;">
+                                        <label for="build-online-folder" style="display: block; color: var(--color-text); font-weight: 600; font-size: 12px;">${tt('Server folder')}</label>
+                                        <div style="display: flex; gap: 6px; margin-top: 4px;">
+                                            <input id="build-online-folder" class="rr-input" type="text" spellcheck="false" readonly style="flex: 1; min-width: 0; font-size: 12px; padding: 5px 7px;">
+                                            <button id="build-online-folder-btn" type="button" class="graphic-selector-button" style="padding: 4px 10px; font-size: 11px; flex-shrink: 0;">${tt('Choose...')}</button>
+                                        </div>
+                                        <div id="build-online-summary" style="margin-top: 8px; color: var(--color-text-muted); font-size: 11px; line-height: 1.35;"></div>
+                                        <div style="color: var(--color-text-muted); font-size: 10px; line-height: 1.35; margin-top: 4px;">${tt('Files in this folder stay unless the game replaces them. Desktop builds made at the same time connect to this address.')}</div>
+                                        <label style="display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; cursor: pointer;">
+                                            <input id="build-online-pack" type="checkbox" class="system-checkbox" style="width: 16px; height: 16px; min-width: 16px; min-height: 16px; max-width: 16px; max-height: 16px; flex: 0 0 16px; margin: 1px 0 0;">
+                                            <span>
+                                                <span style="display: block; color: var(--color-text); font-weight: 600; font-size: 12px;">${tt('Pack files into archives')}</span>
+                                                <span style="display: block; color: var(--color-text-muted); font-size: 10px; line-height: 1.35; margin-top: 2px;">${tt('Leave this off unless your host limits how many files you can have.')}</span>
+                                            </span>
+                                        </label>
+                                    </div>
                                 </div>
                             </div>
 
@@ -172,6 +196,23 @@ class BuildManager {
                             </div>
 
                             <div style="margin-top: 20px;">
+                                <h3 style="color: var(--color-text); margin-bottom: 10px; font-size: 15px;">${tt('Unused Files')}</h3>
+                                <label style="display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--color-bg-panel); border: 1px solid var(--color-border); border-radius: 4px; cursor: pointer;">
+                                    <input id="build-unused-files" type="checkbox" class="system-checkbox" style="width: 16px; height: 16px; min-width: 16px; min-height: 16px; max-width: 16px; max-height: 16px; flex: 0 0 16px; margin: 0;">
+                                    <span style="color: var(--color-text); font-weight: 600; font-size: 12px;">${tt("Don't bundle unused files")}</span>
+                                </label>
+                                <div style="color: var(--color-text-muted); font-size: 10px; line-height: 1.35; margin-top: 6px;">${tt('A picture, sound, movie, effect, model or font is left out only when nothing names it: the database, maps and events, plugin parameters, the code of the plugins switched on, and what playtests loaded.')}</div>
+                                <button id="build-unused-review" class="graphic-selector-button" style="margin-top: 8px; padding: 6px 14px; font-size: 12px;">${tt('Review unused files...')}</button>
+                                <div id="build-unused-panel" style="display: none; margin-top: 8px; padding: 8px 10px; background: var(--color-bg-panel); border: 1px solid var(--color-border); border-radius: 4px;">
+                                    <div id="build-unused-summary" style="color: var(--color-text); font-size: 12px; line-height: 1.4;"></div>
+                                    <div id="build-unused-list" style="margin-top: 6px; max-height: 220px; overflow: auto; font-size: 11px; border-top: 1px solid var(--color-border-subtle);"></div>
+                                    <label for="build-unused-keep" style="display: block; margin-top: 8px; color: var(--color-text-muted); font-size: 11px;">${tt('Always include: one file, folder or pattern per line (* matches any name). Saved with the project.')}</label>
+                                    <textarea id="build-unused-keep" class="rr-input" rows="3" spellcheck="false" style="width: 100%; box-sizing: border-box; margin-top: 4px; font-size: 12px; font-family: monospace; resize: vertical;" placeholder="audio/bgm/Bonus*"></textarea>
+                                    <button id="build-unused-keep-save" class="graphic-selector-button" style="margin-top: 6px; padding: 6px 14px; font-size: 12px;">${tt('Save and check again')}</button>
+                                </div>
+                            </div>
+
+                            <div style="margin-top: 20px;">
                                 <h3 style="color: var(--color-text); margin-bottom: 10px; font-size: 15px;">${tt('Encryption')}</h3>
                                 <div style="display: flex; flex-direction: column; gap: 6px;">
                                     <label style="display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--color-bg-panel); border: 1px solid var(--color-border); border-radius: 4px; cursor: pointer;">
@@ -238,6 +279,7 @@ class BuildManager {
         this.setupLocaleOptions();
         this.setupAssetOptimizationOptions();
         this.setupEncryptionOptions();
+        this.setupUnusedFileOptions();
         this.versionPicker = new NwVersionPicker(
             document.getElementById('build-nw-version-exact'),
             document.getElementById('build-nw-version-list'));
@@ -349,6 +391,90 @@ class BuildManager {
         audio.addEventListener('change', save);
     }
 
+    /** Don't bundle unused files: every platform of the build, remembered between deployments. */
+    setupUnusedFileOptions() {
+        const box = document.getElementById('build-unused-files');
+        box.checked = DeploymentAssetPreferences.loadUnusedFiles();
+        box.addEventListener('change', () => DeploymentAssetPreferences.saveUnusedFiles(box.checked));
+        document.getElementById('build-unused-review').addEventListener('click', () => {
+            const panel = document.getElementById('build-unused-panel');
+            const opening = panel.style.display === 'none';
+            panel.style.display = opening ? 'block' : 'none';
+            if (opening) this.reviewUnusedFiles();
+        });
+        document.getElementById('build-unused-keep-save').addEventListener('click', () => {
+            const project = window.reactor?.projectController?.getCurrentProject();
+            if (!project || !project.path) return;
+            this.unusedAssets().writeSettings(project.path, { keep: document.getElementById('build-unused-keep').value.split('\n') });
+            this.reviewUnusedFiles();
+        });
+    }
+
+    unusedAssets() {
+        const path = require('path'), fs = require('fs');
+        // Found as the build worker is: beside the page, one folder up, or in the working folder.
+        const file = [__dirname, path.resolve(__dirname, '..'), process.cwd()]
+            .map(root => path.join(root, 'build-scripts', 'unused-assets.cjs')).find(candidate => fs.existsSync(candidate));
+        return require(file || path.join(__dirname, 'build-scripts', 'unused-assets.cjs'));
+    }
+
+    /** The files a deploy would leave out, by folder, each with a Keep button that adds it to Always include. */
+    reviewUnusedFiles() {
+        const tt = text => (typeof window !== 'undefined' && window.I18n) ? window.I18n.tText(text) : text;
+        const summary = document.getElementById('build-unused-summary');
+        const list = document.getElementById('build-unused-list');
+        const keep = document.getElementById('build-unused-keep');
+        list.replaceChildren();
+        const project = window.reactor?.projectController?.getCurrentProject();
+        if (!project || !project.path) { summary.textContent = tt('Open a project to see its unused files.'); return; }
+        let analysis;
+        try {
+            const unused = this.unusedAssets();
+            keep.value = unused.readSettings(project.path).keep.join('\n');
+            analysis = unused.analyze(project.path);
+        } catch (error) {
+            summary.textContent = `${tt('The project could not be checked:')} ${error.message}`;
+            return;
+        }
+        const mb = bytes => `${(bytes / 1048576).toFixed(1)} MB`;
+        summary.textContent = tt('{count} files ({size}) would be left out; {kept} asset files ship.')
+            .replace('{count}', analysis.unused.length).replace('{size}', mb(analysis.unusedBytes)).replace('{kept}', analysis.keptCount)
+            + (analysis.playtestRecord ? '' : ` ${tt('No playtest record yet: play the game once from the editor and what it loads is kept too.')}`);
+        const folders = new Map();
+        for (const file of analysis.unused) {
+            const folder = file.path.split('/').slice(0, -1).join('/');
+            if (!folders.has(folder)) folders.set(folder, []);
+            folders.get(folder).push(file);
+        }
+        for (const [folder, files] of [...folders].sort((a, b) => a[0].localeCompare(b[0]))) {
+            const heading = document.createElement('div');
+            heading.textContent = `${folder}/ · ${files.length} · ${mb(files.reduce((sum, f) => sum + f.size, 0))}`;
+            heading.style.cssText = 'margin-top: 6px; color: var(--color-text); font-weight: 600;';
+            list.appendChild(heading);
+            for (const file of files) {
+                const row = document.createElement('div');
+                row.style.cssText = 'display: flex; align-items: center; gap: 6px; padding: 1px 0 1px 10px; color: var(--color-text-muted);';
+                const name = document.createElement('span');
+                name.textContent = file.path.slice(folder.length + 1);
+                name.title = `${tt(file.reason)} · ${mb(file.size)}`;
+                name.style.cssText = 'flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
+                const button = document.createElement('button');
+                button.className = 'graphic-selector-button';
+                button.style.cssText = 'padding: 1px 8px; font-size: 10px;';
+                button.textContent = tt('Keep');
+                button.title = tt('Always include this file');
+                button.addEventListener('click', () => {
+                    const lines = keep.value.split('\n').map(line => line.trim()).filter(Boolean);
+                    lines.push(file.path.replace(/\.[^./]*$/, ''));
+                    this.unusedAssets().writeSettings(project.path, { keep: lines });
+                    this.reviewUnusedFiles();
+                });
+                row.append(name, button);
+                list.appendChild(row);
+            }
+        }
+    }
+
     encryptionSettings() {
         return DeploymentAssetPreferences.normalizeEncryption({
             images: document.getElementById('build-encrypt-images').checked,
@@ -385,6 +511,8 @@ class BuildManager {
         document.getElementById('build-platform-linux').addEventListener('change', () => this.updateAppImageAvailability());
         document.getElementById('build-platform-web').addEventListener('change', () => this.updatePackAvailability());
         document.getElementById('build-pack-files').addEventListener('change', event => WebPackPreference.save(event.target.checked));
+        document.getElementById('build-platform-online').addEventListener('change', () => this.updateOnlineAvailability());
+        document.getElementById('build-online-folder-btn').addEventListener('click', () => this.selectOnlineFolder());
 
         // Close on background click
         this.modal.addEventListener('click', (e) => {
@@ -412,6 +540,36 @@ class BuildManager {
         const web = document.getElementById('build-platform-web').checked;
         document.getElementById('build-pack-option').style.display = web ? 'flex' : 'none';
         document.getElementById('build-pack-files').checked = web && WebPackPreference.load();
+    }
+
+    /** The server's folder and address show with Online Server, as they were left last time. */
+    updateOnlineAvailability() {
+        const online = document.getElementById('build-platform-online').checked;
+        document.getElementById('build-online-option').style.display = online ? 'block' : 'none';
+        document.getElementById('build-online-folder').value = DeploymentPathPreferences.load('onlineFolder', '');
+        const tt = text => (typeof window !== 'undefined' && window.I18n) ? window.I18n.tText(text) : text;
+        const settings = this.onlineSettings();
+        document.getElementById('build-online-summary').textContent = !settings?.enabled
+            ? tt('This project is single player. Choose Online in Database > Online first.')
+            : `${tt('Public address')}: ${settings.address || tt('Not set')}`;
+    }
+
+    /** The project's Database › Online settings. */
+    onlineSettings() {
+        return window.reactor?.databaseManager?.getOnlineSettings?.() || null;
+    }
+
+    selectOnlineFolder() {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.nwdirectory = true;
+        input.addEventListener('change', () => {
+            if (input.files.length > 0) {
+                document.getElementById('build-online-folder').value = input.files[0].path;
+                DeploymentPathPreferences.save('onlineFolder', input.files[0].path);
+            }
+        });
+        input.click();
     }
 
     updateAppImageAvailability() {
@@ -463,6 +621,7 @@ class BuildManager {
         this.updateCodecAvailability();
         this.updateAppImageAvailability();
         this.updatePackAvailability();
+        this.updateOnlineAvailability();
         this.log(tt('Ready to build. Select platforms and click "Start Build".'), 'var(--color-text-muted)');
         this.versionPicker.load().catch(() => {});
     }
@@ -602,6 +761,7 @@ class BuildManager {
         if (document.getElementById('build-platform-mac').checked) platforms.push('mac');
         if (document.getElementById('build-platform-linux').checked) platforms.push('linux');
         if (document.getElementById('build-platform-web').checked) platforms.push('web');
+        if (document.getElementById('build-platform-online').checked) platforms.push('online');
         return platforms;
     }
 
@@ -618,6 +778,24 @@ class BuildManager {
 
         if (platforms.length === 0) {
             await RRDialog.alert(tt('Please select at least one platform to build.'), { title: tt('Deploy Game') });
+            return;
+        }
+
+        const onlineFolder = document.getElementById('build-online-folder').value.trim();
+        const onlineProject = this.onlineSettings();
+        const onlineAddress = String(onlineProject?.address || '').trim();
+        if (platforms.includes('online')) {
+            if (!onlineProject?.enabled) {
+                await RRDialog.alert(tt('This project is single player. Choose Online in Database > Online first.'), { title: tt('Deploy Game') });
+                return;
+            }
+            if (!onlineFolder) {
+                await RRDialog.alert(tt('Choose a server folder for the Online Server.'), { title: tt('Deploy Game') });
+                return;
+            }
+        }
+        if (onlineProject?.enabled && !onlineAddress && platforms.some(platform => platform !== 'online')) {
+            await RRDialog.alert(tt('Enter the public address in Database > Online so other builds can reach the server.'), { title: tt('Deploy Game') });
             return;
         }
 
@@ -681,6 +859,7 @@ class BuildManager {
         const assetEncryption = this.encryptionSettings();
         const createLinuxAppImage = document.getElementById('build-create-linux-appimage').checked;
         const packWebFiles = platforms.includes('web') && document.getElementById('build-pack-files').checked;
+        const unusedFiles = document.getElementById('build-unused-files')?.checked ? 'all' : 'off';
 
         this.isBuilding = true;
         document.getElementById('build-start-btn').style.display = 'none';
@@ -713,6 +892,11 @@ class BuildManager {
                     assetEncryption,
                     createLinuxAppImage,
                     packWebFiles,
+                    unusedFiles,
+                    online: platforms.includes('online') ? {
+                        folder: onlineFolder, address: onlineAddress, maxPlayers: onlineProject.maxPlayers,
+                        pack: document.getElementById('build-online-pack').checked,
+                    } : null,
                     appRoot: appRoot,
                     editorExecPath: process.execPath,
                 }

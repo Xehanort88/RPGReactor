@@ -110,8 +110,8 @@ function rollVersionSurfaces(version, testCount, skipCount) {
 
     // The README names the newest tag and the verified test count.
     edit('README.md',
-        /The (?:current development version is [\d.]+ and is not published yet; the )?latest tagged source release is \[[\d.]+\]\(https:\/\/github\.com\/[^)]+\)\./,
-        `The latest tagged source release is [${version}]`
+        /The (?:current development version is [\d.]+ and is not published yet; the )?latest (?:tagged|stable) source release (?:is|remains) \[[\d.]+\]\(https:\/\/github\.com\/[^)]+\)\./,
+        `The latest stable source release is [${version}]`
         + `(https://github.com/${REPO}/releases/tag/v${version}).`);
     // The date and skip count are rolled with the count, so the sentence cannot claim a stale run.
     edit('README.md', /On \d{4}-\d{2}-\d{2}, [^*]*?validation completed with \*\*\d+ passing tests\*\*[^.]*\./,
@@ -203,14 +203,20 @@ function main() {
     // The suite's report passed 1 MB (execFileSync's default buffer) at 0.99.1.
     let testOutput;
     try {
-        testOutput = execFileSync('node', ['--test', '--test-concurrency=8'], {
+        // Local release checks share the workstation with the editor. Keep
+        // suites serial; CI owns its separately bounded shard concurrency.
+        testOutput = execFileSync('node', ['--require=./tests/helpers/small-pictures.cjs', '--test', '--test-concurrency=1'], {
             cwd: path.join(repoRoot, 'editor'), encoding: 'utf8', maxBuffer: 256 * 1024 * 1024
         });
     } catch (error) {
         // A failing run exits non-zero: name the failures before refusing.
+        const report = process.env.RR_RELEASE_TEST_REPORT
+            || path.join(require('node:os').tmpdir(), `rpg-reactor-${version}-tests.log`);
+        fs.writeFileSync(report, String(error.stdout || '') + String(error.stderr || ''));
         const failing = String(error.stdout || '').split('\n').filter(line => /^\s*(✖|not ok)\s/.test(line));
-        throw new Error(`the test suite failed; not releasing\n${[...new Set(failing)].slice(0, 40).join('\n')}`);
+        throw new Error(`the test suite failed; not releasing\n${[...new Set(failing)].slice(0, 40).join('\n')}\nFull report: ${report}`);
     }
+    if (process.env.RR_RELEASE_TEST_REPORT) fs.writeFileSync(process.env.RR_RELEASE_TEST_REPORT, testOutput);
     const passed = Number((testOutput.match(/^# pass (\d+)$/m)
         || testOutput.match(/pass (\d+)/) || [])[1] || 0);
     const failed = Number((testOutput.match(/^# fail (\d+)$/m)

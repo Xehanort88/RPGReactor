@@ -58,6 +58,18 @@
         return true;
     };
 
+    // The old engine changes these independently. A combined MZ Change Images command would
+    // restore the other image from the database, discarding an earlier event's costume/portrait.
+    Game_Interpreter.prototype.rrChangeActorCharacter = function(actorId, name, index) {
+        const actor = $gameActors.actor(actorId);
+        if (actor) { actor.setCharacterImage(name, index); $gamePlayer.refresh(); }
+    };
+
+    Game_Interpreter.prototype.rrChangeActorFace = function(actorId, name, index) {
+        const actor = $gameActors.actor(actorId);
+        if (actor) actor.setFaceImage(name, index);
+    };
+
     // RPG Maker 2000/2003 variable arithmetic (System.json rrLegacyVariableLimit, 999999 or 9999999, which the
     // importer sets): whole numbers, division truncated toward zero, a division by zero leaves the variable as it
     // was and a remainder by zero is 0, every result clamped to the limit. A game that divides by a stat still 0
@@ -648,11 +660,11 @@ Game_Interpreter.prototype.clear = function() {
 //-----------------------------------------------------------------------------
 // [NF] character sheets (see reactor_sprites.js): N frames, looping, resting on 0.
 // Named "Name[6F]" as Reactor exports them, or "Name[F6]" as Victor Engine Multi
-// Frames did; either case. Off unless System.json sets rrMultiFrames.
+// Frames did; either case. On unless System.json explicitly disables it.
 //-----------------------------------------------------------------------------
 
 Game_CharacterBase.rrFramesOf = function(name) {
-    if (!$dataSystem || !$dataSystem.rrMultiFrames) return 0;
+    if ($dataSystem && $dataSystem.rrMultiFrames != null && !$dataSystem.rrMultiFrames) return 0;
     const m = /\[(?:(\d+)F|F(\d+))\]/i.exec(String(name || ""));
     return m ? Math.max(1, Number(m[1] || m[2])) : 0;
 };

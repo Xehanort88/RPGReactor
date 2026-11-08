@@ -5,7 +5,7 @@ following credits and license details cover bundled third-party components.
 
 ## PixiJS
 
-- Component: PixiJS 8.20.0
+- Component: PixiJS 8.22.0
 - Bundled file: `runtime/libs/pixi.js`
 - Header: "PixiJS is licensed under the MIT License."
 - Upstream license URL in header: <http://www.opensource.org/licenses/mit-license>
@@ -15,15 +15,16 @@ under BSD-3-Clause.
 
 ## Three.js
 
-- Component: Three.js 0.185.1 (r185.1)
+- Component: Three.js 0.187.0 (r187)
 - Bundled file: `runtime/libs/three.js`
 - Copyright: 2010-2026 Three.js Authors
 - License: MIT
 - Upstream: <https://github.com/mrdoob/three.js>
+- Browser bundle generated with esbuild 0.28.2 (MIT), a build-time tool: <https://github.com/evanw/esbuild>
 
 ## Basis Universal
 
-- Component: Basis Universal transcoder, as shipped with Three.js 0.185.1 (`examples/jsm/libs/basis`)
+- Component: Basis Universal transcoder, as shipped with Three.js 0.187.0 (`examples/jsm/libs/basis`)
 - Bundled files: `runtime/libs/basis/basis_transcoder.js` and `runtime/libs/basis/basis_transcoder.wasm`
 - Copyright: 2016-2026 Binomial LLC
 - License: Apache License 2.0
@@ -245,3 +246,13 @@ grant patent rights.
 
 Package-manager dependencies retain the licenses recorded by their packages
 and lockfile.
+
+## Character face base heads
+
+The shared human face sculpt in `editor/src/forge/Character3D/HeadMeshData.js` is derived and reworked from **Woman head** by zhuoyi0904 (https://sketchfab.com/zhuoyi0904), from https://sketchfab.com/3d-models/woman-head-34af2e5bf1464a5fa87ef37db5389f23, licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/). Adaptations include a shared feminine/masculine sculpt, skin bindings, Reactor skin coordinates and shading normals. No source textures, hair or rig are included. The generated data records source, driver and generator hashes.
+
+The earlier face-warp data retained in `editor/src/forge/Character3D/FaceFieldData.js` derives from these models, adapted to the engine's own mesh with averaged proportions. The shared sculpt does not apply that warp.
+
+- Male head base by alkalor (https://sketchfab.com/alkalor), from https://sketchfab.com/3d-models/male-head-base-3bcf954d4f6846d6b665b057c7c8d795, licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/). Adapted.
+
+- Female Elf Head by Scol3D (https://sketchfab.com/seancollett88), from https://sketchfab.com/3d-models/female-elf-head-ff52160ba5184ea5968715c01c64d0f8, licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/). Adapted.

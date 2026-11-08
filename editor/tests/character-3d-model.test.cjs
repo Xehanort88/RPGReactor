@@ -37,7 +37,7 @@ test('static thumbnail settings do not leak into the main character or its reusa
     const main = Model.build(bodyPack, recipe, cache, { quality: 'preview', skinSize: 32, atlasSize: 64, eyeSource: eyes(16) });
     assert.ok(main.clips.length > 0);
     assert.equal(main.textures['eyes.png'].width, 16);
-    assert.equal(main.textures['shoes.png'].width, 1024);
+    assert.equal(main.textures['shoes.png'].width, globalThis.RR_DEFAULT_PICTURES?.picture || 1024, 'the main view keeps its own picture size, not the thumbnail\'s');
     assert.ok(sameBytes(main.parts[0].positions, small.parts[0].positions), 'thumbnail detail budgets do not reshape the body');
     assert.equal(JSON.stringify(recipe), before);
 });
@@ -47,26 +47,7 @@ test.before(async () => {
     eyeSource = { width: png.width, height: png.height, data: new Uint8Array(png.data) };
 });
 
-/** Every part well formed: finite numbers, skin indices in range, weights summing to one. */
-function assertSound(result, label) {
-    assert.ok(result.parts.length > 0, label + ' has parts');
-    for (const p of result.parts) {
-        const n = p.positions.length / 3;
-        assert.ok(n > 0 && p.index.length > 0, `${label}: ${p.name} has geometry`);
-        for (let i = 0; i < p.positions.length; i++) assert.ok(Number.isFinite(p.positions[i]), `${label}: ${p.name} position ${i}`);
-        for (let i = 0; i < p.index.length; i++) assert.ok(p.index[i] < n, `${label}: ${p.name} index ${i}`);
-        assert.equal(p.joints.length, n * 4, `${label}: ${p.name} joints`);
-        for (let v = 0; v < n; v++) {
-            let sum = 0;
-            for (let k = 0; k < 4; k++) { assert.ok(p.joints[v * 4 + k] < result.bones.length, `${label}: ${p.name} joint`); sum += p.weights[v * 4 + k]; }
-            assert.ok(Math.abs(sum - 1) < 0.02, `${label}: ${p.name} weights at ${v} sum to ${sum}`);
-        }
-        // Tiled finish maps (repeat) take physical coordinates past 0..1; a part with a picture of its own stays inside it.
-        const maps = [p.texture, p.normalTexture, p.metallicRoughnessTexture, p.emissiveTexture, p.iridescenceThicknessTexture].filter(Boolean);
-        const tiled = maps.length > 0 && maps.every(name => result.textures && result.textures[name] && result.textures[name].repeat);
-        if (p.uvs && !tiled) for (let i = 0; i < p.uvs.length; i++) assert.ok(p.uvs[i] >= -1e-6 && p.uvs[i] <= 1 + 1e-6, `${label}: ${p.name} uv in the picture`);
-    }
-}
+const { assertSound } = require('./helpers/character-preset-sweep.cjs');
 
 /** Independent visibility probe: a ray from skin must cross fabric before reaching the viewer. */
 function garmentHit(parts, origin, direction, reach = 0.5) {
@@ -170,14 +151,8 @@ test('beastfolk wear a real animal head: the creature\'s head on the neck, the h
     assert.ok(bird.parts.some(p => p.name === 'Head Body') && !bird.parts.some(p => p.name === 'Beak'), 'a bird\'s own head and beak, not a beak on a face');
 });
 
-test('every outfit preset and every accessory builds on an average and an extreme body', () => {
-    const bodies = [{}, { gender: 1, weight: 3, muscle: 2.2, headSize: 1.6 }, { gender: 0, weight: -0.3, height: -0.5, cup: 4 }];
-    for (const body of bodies) {
-        const cache = {};
-        for (const preset of Wardrobe.PRESETS) assertSound(Model.build(pack, Object.assign({}, body, { outfit: preset.items }), cache, { quality: 'preview' }), preset.id + ' on ' + JSON.stringify(body));
-        assertSound(Model.build(pack, Object.assign({}, body, { props: Props.PROPS.map(p => ({ id: p.id })) }), cache, { quality: 'preview' }), 'accessories on ' + JSON.stringify(body));
-    }
-});
+// Every outfit preset and every accessory on an average and two extreme bodies: dealt across
+// character-3d-model-presets-*.test.cjs, which run side by side (helpers/character-preset-sweep.cjs).
 
 test('garments stay outside the skin, however far the sliders go', () => {
     for (const body of [{}, { gender: 1, weight: 2.5, muscle: 1.5 }]) {
@@ -208,7 +183,15 @@ test('a kept cache lays the outfit on the body built now, not on the one before'
     for (const body of [{ age: 11 }, { cup: 4, gender: 0 }, { weight: 3, gender: 1 }]) {
         const reused = Model.build(pack, Object.assign({ outfit }, body), kept, { quality: 'preview' });
         const fresh = Model.build(pack, Object.assign({ outfit }, body), {}, { quality: 'preview' });
-        for (let k = 0; k < fresh.parts.length; k++) assert.ok(sameBytes(reused.parts[k].positions, fresh.parts[k].positions), fresh.parts[k].name + ' on ' + JSON.stringify(body));
+        // The kept picture keeps its planar charts, drawn on the first body (Preview 61, 2026-10-30), and charts split
+        // vertices differently per body: so compare the points and triangles the cloth is laid on, not their numbering.
+        const places = p => new Set(Array.from({ length: p.positions.length / 3 }, (_, v) => Array.from(p.positions.subarray(v * 3, v * 3 + 3)).join()));
+        assert.equal(reused.parts.length, fresh.parts.length);
+        for (let k = 0; k < fresh.parts.length; k++) {
+            const a = places(reused.parts[k]), b = places(fresh.parts[k]), label = fresh.parts[k].name + ' on ' + JSON.stringify(body);
+            assert.equal(reused.parts[k].index.length, fresh.parts[k].index.length, label);
+            assert.ok(a.size === b.size && [...a].every(q => b.has(q)), label);
+        }
     }
 });
 
@@ -304,6 +287,12 @@ test('every module a builder file needs is on the page before it (in the editor,
             const client = fs.readFileSync(path.join(dir, 'CharacterPreviewBrowser.js'), 'utf8');
             assert.ok(client.includes(file), 'the preview client loads its dedicated worker entry');
             assert.equal(page.includes(rel + file), false, 'the worker entry never executes on the page');
+            continue;
+        }
+        if (file === 'CharacterGameWorker.js' || file === 'CharacterControls.js') {
+            const game = fs.readFileSync(path.join(dir, 'CharacterGameWorker.js'), 'utf8');
+            assert.ok(game.includes('CharacterControls.js'), 'the in-game builder loads its controls');
+            assert.equal(page.includes(rel + file), false, 'the in-game builder runs in a game, never on the editor page');
             continue;
         }
         if (file === 'CharacterPreviewTextures.js') {
@@ -581,11 +570,13 @@ test('a modeled garment shows its own picture until a color is chosen; a color k
     const red = Model.build(pack, { outfit: [{ id: 'mh_tee_jeans', color: '#b02020', color2: '#6a6a6a' }] }, {}, { quality: 'preview' }).textures['cloth-mh_tee_jeans.png'];
     assert.ok(red.data !== own.data, 'recolor without changing the source picture');
     // Sample the texels the shirt and the trousers use.
-    const part = plain.parts.find(p => p.name === 'T-shirt and jeans'), size = red.width;
+    // The denim's weave chart splits the part's vertices (2026-10-30): a vertex finds its region by its painted coordinates.
+    const part = plain.parts.find(p => p.name === 'T-shirt and jeans'), size = red.width, regionAt = new Map();
+    for (let i = 0; i < g.region.length; i++) regionAt.set(g.uvRaw[i * 2] + ':' + g.uvRaw[i * 2 + 1], g.region[i]);
     const stats = [[0, 0, 0, 0, 0], [0, 0, 0, 0, 0]];
     for (let i = 0; i < part.uvs.length / 2; i++) {
         const o = (Math.min(size - 1, Math.floor(part.uvs[i * 2 + 1] * size)) * size + Math.min(size - 1, Math.floor(part.uvs[i * 2] * size))) * 4;
-        const r = g.region[i], s = stats[r];
+        const r = regionAt.get(Math.round(part.uvs[i * 2] * 65535) + ':' + Math.round(part.uvs[i * 2 + 1] * 65535)), s = stats[r];
         const l = red.data[o] * 0.3 + red.data[o + 1] * 0.59 + red.data[o + 2] * 0.11;
         s[0] += red.data[o]; s[1] += red.data[o + 1]; s[2] += red.data[o + 2]; s[3] += l * l; s[4]++;
     }

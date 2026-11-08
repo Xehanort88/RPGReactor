@@ -6,44 +6,33 @@ RPG Reactor is an open-source, cross-platform RPG game editor and runtime for RP
 
 Use RPG Reactor to create, edit, playtest, and package 2D RPGs with familiar RPG Maker-style maps, events, database records, plugins, and deployment workflows, without depending on the original RPG Maker runtime or editor.
 
+The latest tagged source release is [0.99.4](https://github.com/Psychronic-Games/RPGReactor/releases/tag/v0.99.4). Read the [release notes](docs/posts/release-notes-0.99.4.md) for the changes and known issues. Pre-built downloads are published separately at <https://psychronic.itch.io/rpg-reactor>.
+
 <table>
 <tr>
-<td width="50%" align="center"><img src="docs/media/releases/0.99.1/08-north-haven-night.jpg" alt="A lamplit 3D village at night"><br><sub>Walk a lamplit 3D village at night, in worlds whose maps join with no loading.</sub></td>
-<td width="50%" align="center"><img src="docs/media/releases/0.99.2/07-terrain.jpg" alt="Painting a road through a 3D village"><br><sub>Drag the Path tool to lay dirt roads, cobblestone or paving that follow the hills through your village.</sub></td>
+<td width="50%" align="center"><img src="docs/media/releases/0.99.4/01-online-town.jpg" alt="Players meeting in North Haven"><br><sub>Player characters, names and chat share the same online world.</sub></td>
+<td width="50%" align="center"><img src="docs/media/releases/0.99.4/02-character-creator.jpg" alt="Character creation inside a game"><br><sub>Players choose their appearance with the Forge-powered character creator.</sub></td>
 </tr>
 <tr>
-<td colspan="2" align="center"><img src="docs/media/releases/0.99.2/01-character-builder.jpg" alt="Sci-fi looks from the 3D Character Builder"><br><sub>Dress your hero in one click: a space marine with a sealed visor, an astronaut, starship crew, a neon Glow runner and a street samurai.</sub></td>
+<td width="50%" align="center"><img src="docs/media/releases/0.99.4/05-holographic-table.jpg" alt="An editable holographic table"><br><sub>Screen design, animated readouts and holographic displays remain editable in the Prop Builder.</sub></td>
+<td width="50%" align="center"><img src="docs/media/releases/0.99.4/06-passenger-minivan.jpg" alt="A minivan with an accessible cabin"><br><sub>Sliding doors reveal the seven-seat cabin in the Prop Builder.</sub></td>
 </tr>
 <tr>
-<td colspan="2" align="center"><img src="docs/media/releases/0.99.2/02-species.jpg" alt="New species: centaur, insectfolk, Hydrata, catfolk, werewolf"><br><sub>Meet the new centaur, plus insectfolk with compound eyes, the two-headed Hydrata, catfolk and werewolves, all wearing the same outfits as everyone else.</sub></td>
-</tr>
-<tr>
-<td width="50%" align="center"><img src="docs/media/releases/0.99.2/03-creatures.jpg" alt="A bald eagle, lion, tiger and bat"><br><sub>The rebuilt bald eagle glides on spread wings with a feathered head and hooked beak, joined by rebuilt bats, lions and tigers.</sub></td>
-<td width="50%" align="center"><img src="docs/media/releases/0.99.2/04-vehicles.jpg" alt="A motorcycle and a pickup truck"><br><sub>Motorcycles and trucks come with real wheels, doors and headlights, and body styles you can tune with a few sliders.</sub></td>
-</tr>
-<tr>
-<td width="50%" align="center"><img src="docs/media/releases/0.99.2/05-nature.jpg" alt="An oak, a cherry blossom and a willow"><br><sub>Plant oaks, cherry blossoms and weeping willows that change with the seasons and sway in the wind.</sub></td>
-<td width="50%" align="center"><img src="docs/media/releases/0.99.2/06-sprite-sheets.jpg" alt="Sprite sheets exported from 3D"><br><sub>Export a walking character with six frames per step, or a tree that sways in eight frames, ready for your 2D maps.</sub></td>
-</tr>
-<tr>
-<td width="50%" align="center"><img src="docs/media/releases/0.99.2/08-editor.jpg" alt="Search results in the editor"><br><sub>Type a word in the new toolbar Search to find structures, maps, switches and event text, grouped and one click away.</sub></td>
-<td width="50%" align="center"><img src="docs/media/releases/0.99.1/06-tactical-climb.jpg" alt="A Tactical battle on the rooftops"><br><sub>Tactical battles on the map itself: climb, grapple and see the fall damage before you jump.</sub></td>
+<td width="50%" align="center"><img src="docs/media/releases/0.99.4/03-online-deploy.jpg" alt="Deploying an online game"><br><sub>Online Server writes the game and its PHP server to a web folder.</sub></td>
+<td width="50%" align="center"><img src="docs/media/releases/0.99.4/04-voice-settings.jpg" alt="Avatar voice settings"><br><sub>Set the speaking key, hearing range and who may use voice in Database → Online.</sub></td>
 </tr>
 </table>
 
-Pre-built download binaries are available at <https://psychronic.itch.io/rpg-reactor>. The latest tagged source release is [0.99.2](https://github.com/Psychronic-Games/RPGReactor/releases/tag/v0.99.2).
+## What's new in 0.99.4
 
-## What's new in 0.99.2
+- **Online worlds:** deploy a game and PHP server together, with player characters, accounts, chat, shared world state and an owner page.
+- **In-game character creation:** let players choose an actor or edit their appearance with the Forge-powered creator, in single-player and online games.
+- **Avatar voice:** optional nearby voice and animated mouths, with project-specific controls. Hosts that support the Node engine can use pushed updates and movement checks.
+- **Characters in motion:** exercise and resting poses, independent bust/butt/fat bounce, smoother live sliders, editable skin finishes and revised body/face controls.
+- **Props and clothing:** improved fabric, seams, wearable symbols and fitted construction; medical and Wasteland props; a minivan with an accessible seven-seat cabin.
+- **Correct sprite presentation:** complete multi-frame walks, correctly cropped event previews and stationary events that stay attached to map tiles while the camera moves.
 
-- **Reactor Features:** Reactor's own additions to MZ in one list (Database › System), each with a switch, so a plugin that does the same job can take over and the game behaves as MZ.
-- **Search:** the new toolbar Search (Ctrl+Shift+F) finds maps, events, event commands, common events, every Database record and Reactor's own pages, one click away.
-- **Sprite sheets from 3D:** the Character and Prop Builders export walking characters, props and swaying trees with 1 to 12 frames and 1, 4 or 8 directions.
-- **New looks:** a centaur, insectfolk, the two-headed Hydrata, catfolk and werewolves; sci-fi suits, cyberware, wasteland gear, body art and clothing that hangs and folds; rebuilt birds, bats, big cats and sea creatures.
-- **More to build:** rebuilt vehicles with body styles and moving doors and wheels, bows, staffs, axes and painted shields, instruments, and a Nature family of trees, plants and rocks that change with the seasons.
-- **3D maps:** paint dirt roads, cobblestone and paving along the hills with Path, 64 ground types a map, foliage you can recolor and pick, and fences, windows and doors that fit into walls.
-- **Database and events:** items that can't be sold, enemy stat variance and random drops, random ranges for Change Gold and Items, Slot Layouts, Resource Pools, HDR effects, and Set Movement Route's Rotate, Mirror, Flip and Frequency.
-
-Read the [0.99.2 release notes](docs/posts/release-notes-0.99.2.md) for details. Everything here is opt-in; a 2D project stays a 2D project until a map is switched to 3D. Earlier updates remain in the [changelog](CHANGELOG.md) and [devlog archive](docs/README.md).
+Known CI failures remain; online features have been tested on one server, and real microphones, separate networks and production load still need review. See the [0.99.4 notes](docs/posts/release-notes-0.99.4.md), [online guide](docs/DESIGN-ONLINE.md) and [open items](docs/OPEN-ITEMS.md).
 
 ## Repository Layout
 
@@ -62,14 +51,19 @@ RPGReactor/
 ## Documentation
 
 - [Editor README](editor/README.md): detailed feature list, source launch steps, project structure, shortcuts, and technical notes.
-- [Latest release notes](docs/posts/release-notes-0.99.2.md): features, fixes, and compatibility limits for 0.99.2.
+- [Latest release notes](docs/posts/release-notes-0.99.4.md): features, screenshots and known issues for 0.99.4.
+- [Previous release notes](docs/posts/release-notes-0.99.3.md): features and fixes in 0.99.3.
 - [Changelog](CHANGELOG.md): upcoming development and previous releases.
 - [Current status](docs/STATUS.md): the verified state of the tree, runtime defaults, test results, and open work.
+- [Online worlds](docs/DESIGN-ONLINE.md): using Online Server today, measured capacity and the plan.
+- [Open items](docs/OPEN-ITEMS.md): the working list for the release in progress.
 - [Authoring a world](docs/AUTHORING.md): where every part of a 3D map lives, which tool edits it by hand, what a generator writes, and what checks it.
 - [Vehicle authoring guide](docs/AUTHORING.md#authoring-vehicles): vehicle types, event setup, classes and equipment, map travel and sound.
 - [Battle authoring guide](docs/BATTLE-PRESENTATION.md): Battle Rooms, formations, action steps, and supported plugin behavior.
 - [Battle modes](docs/BATTLE-MODES.md): Tactical, Action and First Person battles on the map, Battle Setup, units, goals and the Tactical HUD.
 - [Rigging a 3D model](docs/RIGGING-MODELS.md): templates, hand markers, and what the runtime reads.
+- [3D Character Builder](docs/CHARACTER-BUILDER.md): shaping a character and saving it as a rigged model or sprite sheet.
+- [3D Prop Builder](docs/PROP-BUILDER.md): props, weapons, wearables, furniture and vehicles saved as models.
 - [Media surface guide](docs/MEDIA-SURFACES.md): image/video placement, transforms, proportions, and legacy command support.
 - [Custom user interfaces design](docs/DESIGN-USER-INTERFACES.md): the User Interfaces database section, its runtime, how it stays invisible to RPG Maker, twelve opt-in stock-scene replacements, the Battle HUD, and what stays stock.
 - [3D worlds design](docs/DESIGN-3D-WORLDS.md): the tileset-class and facing model behind HD-2D maps, with its phasing table marked to what shipped.
@@ -84,10 +78,11 @@ RPGReactor/
 - **Full RPG Maker-style editor**: map editing with four tile layers, autotiles, shadow pen, and region painting; a visual event editor with 100+ commands, multi-page events, every MZ Conditional Branch form in RPG Maker's own four-tab layout (plus a Reactor tab for keyboard, mouse, wheel and pointer conditions), collapsible block structures with persisted fold state, Show Text edited as a whole run of message boxes with RPG Maker's text-code menu and a windowskin-accurate preview, and optional advanced expressions, loops, input conditions, event calls, and picture controls beyond the stock MV/MZ editors; a database where any entry can list what references it, descriptions and battle messages carry the text codes their windows honour, enemies have their own Max TP and can require states the user or target lacks, Add State can set its own duration, and Grow reaches Max TP or a random range; complete database editors with dense Types and Terms workspaces; a multi-channel audio player; and multi-instance editing with a cross-window typed clipboard. Drawing, layer, Undo/Redo, Audio, Database, Plugin, Resource Manager, and Forge actions share a high-contrast blue/cyan/gold SVG toolbar language; the Fill action is a pouring paint bucket and the Shadow Pen visibly lays a dark stroke.
 - **Project-wide Resource Manager**: browse locale-sorted nested MZ/Reactor image, audio, effect, movie, font, icon, and 3D assets; preview media and orbit/zoom models through Reactor3D; batch-import safely on desktop; multi-select nested exports with Ctrl/Cmd or Shift; export decrypted bytes from encrypted projects; and delete only after path, project-lock, and symlink checks. The 3D category does not delete or merge existing models, but desktop users can import one validated GLB/OBJ/FBX/STL/USDZ/3MF/DXF into a new user-named `3d/<folder>/` containing `source/` and an empty `textures/`; `.blend` must first be exported. Publication is staged, destination-reserved, ownership-checked, and rolled back on failure. Web mutation is intentionally disabled.
 - **Native Media Surfaces**: place images and videos through the map toolbar or Show, Transform, and Stop Media Surface event commands. Attach them to the screen, map, player, events, or model parts; edit position, elevation, rotation, scale, corners, opacity, scanlines, and playback settings. Visual arrows, rings, sliders, and source-proportion controls support placement in 2D and 3D. Existing Video Surface commands remain supported. See the [media surface guide](docs/MEDIA-SURFACES.md) for rendering and preview behavior.
-- **Modern PIXI 8 + Three.js runtime**: the game runtime (`runtime/`) is a fully migrated PIXI v8 corescript. Tilemaps, UltraMode7, Effekseer particle effects, video, and shaders all run on current PixiJS instead of the legacy renderer RPG Maker ships, and 3D maps, models, rooms, cameras and in-scene effects are drawn by Three.js (r185) sharing the same canvas.
+- **Modern PixiJS 8.22.0 + Three.js runtime**: the game runtime (`runtime/`) is a fully migrated PIXI v8 corescript. Tilemaps, UltraMode7, Effekseer particle effects, video, and shaders all run on current PixiJS instead of the legacy renderer RPG Maker ships, and 3D maps, models, rooms, cameras and in-scene effects are drawn by Three.js (r187) sharing the same canvas.
 - **Authorable HD-2D maps and a 3D world builder**: maps can opt into a perspective 3D presentation while retaining RPG Maker's grid, passability, events, and data format. Map Properties carries the 3D switch, a room (parallax floor, walls, ceiling, sky) and the camera. A **Build** bar over the 3D view lays walls, floors, doors, windows, stairs, roofs, shapes and saved buildings with a snapping ghost, terrain brushes shape rolling ground, water is poured into hollows, and the party walks inside: roofs cut away, walls between the camera and the party go see-through, and stairs lead to a second floor. Buildings are plans in `3d/Structures`, readable JSON that an editor page, a validator and a shell command all understand.
 - **Battles on the map**: beside the Classic battle screen, a game, map or troop can fight in Tactical (turn-based on the grid, with range, flanking, cover, height, line of sight, overwatch and a forecast), Action (real time, in third person or from above) or First Person, on 2D and 3D maps. Events become units through Battle Setup, map events keep running during the fight, Action Sequences play on the map, a cinematic camera films Tactical battles, and each mode has its own HUD as an ordinary User Interfaces record. See the [battle modes guide](docs/BATTLE-MODES.md).
 - **Vehicles**: Database vehicles with a sprite or 3D model, starting positions, engine sound, an optional class for stats, skills and equipment, and a rider's seat marked on the model. The party rides its own vehicles behind the leader, vehicles travel between maps and are saved where they are parked, and in Tactical and Classic battles a mounted unit fights with the vehicle's range, weapon and skills while the vehicle takes its own damage.
+- **Online worlds (early)**: choose Online in Database › Online, then tick Online Server when deploying, and the game and a small PHP server go into a web folder, with no database or router setup. Players build their own 3D character in the game, which everyone else on the map then sees walking around, on the web or a desktop build. Accounts, chat, voice, sleeping and waking, and a shared world are included. See [New in development](#new-in-development-online-worlds).
 - **Seamless neighboring maps**: each side of a map can name the map that lies past it. Neighbors stand on the horizon two maps out and are entered with no fade or loading, on foot or riding, on 3D and 2D maps; only the maps around the party are in memory.
 - **Model optimization**: GLB import can cap textures at 2K, pack skin weights, reduce geometry, and reorder triangles for the GPU vertex cache. The 3D database also offers Optimize for existing models and reports geometry, materials, textures, and rig costs. Both presets can change geometry; aggressive reduction targets fewer triangles. Separate distance-level file generation is disabled in both presets, while the runtime still supports existing authored LOD files. The 3D world is drawn at three quarters of game resolution and enlarged with a sharpening filter, without MSAA; lighting and light haze are worked out at a quarter size and filtered up by surface, and dense models are drawn at simplified distance levels in shadows, and in the view on weak GPUs. Adaptive resolution is opt-in.
 - **Quests and BGM sequences**: author quests in the database, import VisuStella/Yanfly/GS definitions, and manage objectives through events. Quest progress saves with the game, rewards can give gold, items, EXP or a common event, and the tracked quest shows on the map. Music sequences, kept in a database library or on a map and playable in battle, repeat ordered track, silence, and palette entries; palette layers choose tracks from random pools with timing and fade controls. Native track loop points are ignored inside a sequence.
@@ -98,8 +93,11 @@ RPGReactor/
   - **Animation Generator**: 76 procedural 2D animations across eight categories, including Portal, with layered composition, per-layer keyframe timelines, a 3D shape pipeline, custom textures, and export to bake-ready sprite sheets or animated GIFs.
   - **Effekseer Animation Generator**: create native Effekseer particle effects (`.efkefc`) from 106 recipes across nine categories without the external Effekseer editor: 21 sci-fi interface instruments with user-typed text, physical battle hits, 15 energy recipes, elements, a custom-effect Composer, and more; wireframe or solid-textured rendering with custom texture upload; layers, keyframes with texture cross-fades, live in-editor preview through the game's own Effekseer runtime, and one-click export. The tracked suite validates generated format/model round trips, every recipe at default/extreme/swept values, composition, and real-WASM playback.
   - **Character Generator**: bundled Psychronic and Looseleaf styles plus procedural Outfit Forge and Hair Forge tools that generate RPG Maker-style walking-sheet parts, with live 4-direction walk previews, multiple hair styles, palette systems, and save-to-library output. Psychronic remains the default style.
+  - **3D Character Builder**: shape humans, humanoid species and creatures with sliders and pickers, dress them from a catalog of 152 garments, 74 outfit presets and 84 accessories, and save them as rigged GLB models with 51 poses and motions, expressions and speech. Characters also export as 2D sprite sheets, battlers and face portraits. Default human faces and body appearance are still under review. See the [guide](docs/CHARACTER-BUILDER.md).
+  - **Character Creation**: let players choose an actor or build their own 3D character inside the game, single player or online, with the same tools and catalog. See the [guide](docs/DESIGN-ONLINE.md#using-it-today).
+  - **3D Prop Builder**: build flags, props made from pictures, weapons, wearables, containers, furniture and vehicles, and save them as 3D models. See the [guide](docs/PROP-BUILDER.md).
   - **Sound Effect Generator**: procedural sfxr-style sound design on Web Audio, baked to WAV, OGG or MP3 in the project's `audio/se/`. 29 archetypes across RPG SFX and tuned instruments, six waveforms including a physically modelled Karplus-Strong pluck, 27 parameters, live waveform/envelope/pitch visualizers, and a 16-step sequencer for jingles and stingers.
-- **Build & deploy**: one-click isolated playtests; cross-platform game packaging for Windows, macOS, Linux, and Web, where a Web build can pack its files into a few zip archives read on demand, for hosts that limit file count and size; optional Linux AppImages for games and the editor; configurable NW.js releases and runtime locales; optional staged PNG/audio optimization; and an editor distribution builder with SHA-256 checksums. Eligible full desktop packages default to an exact-NW.js-version H.264/AAC codec overlay verified by a trusted archive hash plus extracted-binary validation; users can disable it, and Web/Minimal packages never include it. Every overlay carries machine-readable provenance, recorded archive/binary hashes, the complete LGPL text, corresponding-source/build references, and a patent notice.
+- **Build & deploy**: one-click isolated playtests; cross-platform game packaging for Windows, macOS, Linux, and Web, where a Web build can pack its files into a few zip archives read on demand, for hosts that limit file count and size; optional Linux AppImages for games and the editor; configurable NW.js releases and runtime locales; optional staged PNG/audio optimization; a Don't bundle unused files option that leaves out the files a game never uses, plugins and playtests included; and an editor distribution builder with SHA-256 checksums. Eligible full desktop packages default to an exact-NW.js-version H.264/AAC codec overlay verified by a trusted archive hash plus extracted-binary validation; users can disable it, and Web/Minimal packages never include it. Every overlay carries machine-readable provenance, recorded archive/binary hashes, the complete LGPL text, corresponding-source/build references, and a patent notice.
 - **Source-audited 18-language localization** across editor-generated interface text, with locale-key and placeholder validation, Arabic right-to-left direction, and project-authored game content deliberately left untouched; plus a theme system with multiple color palettes in light and dark modes.
 
 ## Development Launchers
@@ -174,10 +172,15 @@ cd editor
 
 ```bash
 cd editor
-npm test
+npm run test:changed   # what your edits reach; skips everything already proven on exactly this code
+npm run test:whole     # the same, plus tests whose inputs a fingerprint can't see (folders, project data)
+npm run test:all       # every test, about 7 minutes on ten workers
+npm test               # every test, as CI runs it
 ```
 
-GitHub Actions runs syntax checks, the full Node suite, dependency audit, patch hygiene, and clean-checkout checks. The suite covers editor data round trips, runtime compatibility, rendering contracts, save safety, localization, generators, deployment, and release infrastructure. On 2026-10-23, before the 0.99.1 cut, local validation completed with **8336 passing tests**, 9 skipped and no failures. A separate CI GUI job runs the Web persistence smoke and five NW.js smokes (save, interaction order, keyboard, menus, event double-click); the other smokes in `editor/tests/smoke` are local gates. See [current status](docs/STATUS.md) for verification limits and [the release checklist](docs/RELEASE-CHECKLIST.md) for the release steps.
+Every run keeps each pass as it happens, so an interrupted `test:changed` or `test:whole` resumes where it stopped. The same tests run on a working machine and on CI. Tests use small default pictures (`tests/helpers/small-pictures.cjs`); a test that judges pixels asks for its size explicitly. Sweeps use `tests/helpers/coverage.cjs`: every value, paired rather than multiplied; `RR_TEST_EXHAUSTIVE=1` walks every combination.
+
+GitHub Actions runs syntax checks, the full Node suite, dependency audit, patch hygiene, and clean-checkout checks. The suite covers editor data round trips, runtime compatibility, rendering contracts, save safety, localization, generators, deployment, and release infrastructure. On 2026-10-29, before the 0.99.3 cut, local validation completed with **8905 passing tests**, 33 skipped and no failures. A separate CI GUI job runs the Web persistence smoke and five NW.js smokes (save, interaction order, keyboard, menus, event double-click); the other smokes in `editor/tests/smoke` are local gates. See [current status](docs/STATUS.md) for verification limits and [the release checklist](docs/RELEASE-CHECKLIST.md) for the release steps.
 
 ## Trusted Projects
 
@@ -201,17 +204,17 @@ for third-party files or user/project content.
 ## Cutting a Source Release
 
 `cut-release.cjs` is the canonical source-release path. Run it from a clean
-`main` worktree after all 0.99.2 changes have been committed:
+`main` worktree after all 0.99.4 changes have been committed:
 
 ```bash
-node editor/build-scripts/cut-release.cjs 0.99.2 --dry-run
-node editor/build-scripts/cut-release.cjs 0.99.2
+node editor/build-scripts/cut-release.cjs 0.99.4 --dry-run
+node editor/build-scripts/cut-release.cjs 0.99.4
 ```
 
 The command runs the complete editor test suite, finalizes both changelog
 headings with the release date, updates `editor/package.json`, the root README
 release link and its recognized validation-count sentence, creates a release
-commit when those surfaces changed, creates an annotated `v0.99.2` tag, and pushes the branch and tag. The tag push starts
+commit when those surfaces changed, creates an annotated `v0.99.4` tag, and pushes the branch and tag. The tag push starts
 `publish-release.yml`, which creates or updates the GitHub source release using
 that version's root changelog section. `--no-push` stops after creating the tag.
 Other version prose, validation dates, the editor README, and the status summary

@@ -35,7 +35,7 @@
      */
     function ambientOcclusion(parts, options) {
         // Gentle: creases deepen, never go dirty (under a bust, the collarbones, the elbows).
-        const o = Object.assign({ radius: 0.08, strength: 1.05, floor: 0.55, step: 4 }, options);
+        const o = Object.assign({ radius: 0.08, strength: 0.72, floor: 0.8, step: 4 }, options);
         // Every vertex of every part as one cloud: position, normal, area.
         // Parts that shade nothing and are shaded by nothing (fine body hair) are left out.
         parts = parts.map(p => (p.noShade ? Object.assign({}, p, { positions: new Float32Array(0), normals: new Float32Array(0), index: new Uint32Array(0) }) : p));
@@ -143,7 +143,64 @@
         return shaded;
     }
 
-    const api = { ambientOcclusion, applyOcclusion, vertexAreas };
+    /**
+     * Smooth and deepen the body's underside shade, whether or not it has a
+     * fine chest patch. The patch inherits that same field: shading its
+     * denser mesh independently left dark lumps and a hard outside edge.
+     */
+    function chestFromBody(parts, ao, pack) {
+        const bodyAt = parts.findIndex(p => p.name === 'Body'), chestAt = parts.findIndex(p => p.chestDetail && !p.decal);
+        if (!pack || bodyAt < 0 || !ao[bodyAt]) return;
+        const at = new Map(), under = ao[bodyAt];
+        pack.body.source.forEach((v, i) => { if (!at.has(v)) at.set(v, i); });
+        // Filter the coarse underside's occlusion before transferring it to
+        // the detail patch. Otherwise its alternating dark rows survive the
+        // normal smoothing as a segmented band under a fuller bust.
+        const Body = root.RRHumanBody;
+        if (Body?.bustShadingMask) {
+            const field = new Float32Array(pack.vertexCount * 3), mask = Body.bustShadingMask(pack);
+            for (let v = 0; v < pack.vertexCount; v++) field[v * 3] = 1;
+            for (const [v, i] of at) field[v * 3] = under[i];
+            const soft = Body.bustGradient(pack, Body.relax(pack, field, 6));
+            pack.body.source.forEach((v, i) => {
+                // Deepen the same continuous field, with extra occlusion on
+                // downward-facing skin. Its normals already follow the
+                // regional gradient, so this adds no coarse triangle bands.
+                const t = Math.max(0, Math.min(1, (-parts[bodyAt].normals[i * 3 + 1] - .10) / .70));
+                const down = t * t * (3 - 2 * t), lit = Math.max(.8, Math.min(1, soft[v * 3]));
+                const shade = Math.max(.70, 1 - (1 - lit) * 1.6 - .075 * down);
+                under[i] += (shade - under[i]) * mask[v];
+            });
+        }
+        if (chestAt < 0 || !ao[chestAt] || !parts[chestAt].interpolation) return;
+        const { offsets, vertices, weights } = parts[chestAt].interpolation;
+        for (let i = 0; i + 1 < offsets.length; i++) {
+            let sum = 0, weight = 0;
+            for (let j = offsets[i]; j < offsets[i + 1]; j++) { const k = at.get(vertices[j]); if (k !== undefined && k < under.length) { sum += under[k] * weights[j]; weight += weights[j]; } }
+            if (weight > 0) ao[chestAt][i] = sum / weight;
+        }
+    }
+
+    /** The head's mask: toward its edge, the occlusion of the skin it lies on, so the baked shade carries across where the two meet. */
+    function headFromBody(parts, ao, pack) {
+        const bodyAt = parts.findIndex(p => p.name === 'Body'), headAt = parts.findIndex(p => p.name === 'Head skin');
+        if (!pack || bodyAt < 0 || headAt < 0 || !ao[bodyAt] || !ao[headAt] || !parts[headAt].edge) return;
+        const at = new Map(), { offsets, vertices, weights } = parts[headAt].interpolation, under = ao[bodyAt], edge = parts[headAt].edge;
+        pack.body.source.forEach((v, i) => { if (!at.has(v)) at.set(v, i); });
+        for (let i = 0; i + 1 < offsets.length; i++) {
+            let sum = 0, weight = 0;
+            for (let j = offsets[i]; j < offsets[i + 1]; j++) { const k = at.get(vertices[j]); if (k !== undefined && k < under.length) { sum += under[k] * weights[j]; weight += weights[j]; } }
+            // Soften only the sculpt's own shade. Softening the inherited
+            // body shade after blending left a lighter, jagged patch edge.
+            const own = 1 - (1 - ao[headAt][i]) * 0.45;
+            ao[headAt][i] = weight > 0 ? own * edge[i] + (sum / weight) * (1 - edge[i]) : own;
+            if (parts[headAt].tone) ao[headAt][i] *= parts[headAt].tone[i];
+            const inner = parts[headAt].lidWall ? parts[headAt].lidWall[i] : 0;
+            if (inner) ao[headAt][i] *= inner === 2 ? 0.45 : 0.42;     // the lid's wall, and a nostril's dark
+        }
+    }
+
+    const api = { ambientOcclusion, applyOcclusion, vertexAreas, chestFromBody, headFromBody };
     root.RRCharacterShading = api;
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

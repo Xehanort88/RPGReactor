@@ -698,8 +698,9 @@ class DatabaseTroopEditor {
         }
         document.body.appendChild(menu);
         const rect = menu.getBoundingClientRect();
-        menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - rect.width - 4))}px`;
-        menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - rect.height - 4))}px`;
+        const view = menu.ownerDocument?.defaultView || window;
+        menu.style.left = `${Math.max(4, Math.min(x, view.innerWidth - rect.width - 4))}px`;
+        menu.style.top = `${Math.max(4, Math.min(y, view.innerHeight - rect.height - 4))}px`;
         const closeMenu = event => {
             if (menu.contains(event.target)) return;
             menu.remove();
@@ -2279,14 +2280,14 @@ class DatabaseTroopEditor {
         const btnRow = document.createElement('div');
         btnRow.className = 'rr-modal-footer';
 
-        const cancelBtn = this.createButton('Cancel', () => document.body.removeChild(modal));
+        const cancelBtn = this.createButton('Cancel', () => modal.remove());
         const okBtn = this.createButton('OK', () => {
             try {
                 cmd.parameters = JSON.parse(textarea.value);
                 this.persistTroop();
                 const container = document.getElementById('battle-command-list');
                 if (container) this.renderCommandList(container, page);
-                document.body.removeChild(modal);
+                modal.remove();
             } catch (e) {
                 RRDialog.alert(`${tt('Invalid JSON:')} ` + e.message, { title: this._dialogTitle(), kind: 'error' });
             }
@@ -2295,7 +2296,7 @@ class DatabaseTroopEditor {
         btnRow.appendChild(cancelBtn);
         btnRow.appendChild(okBtn);
         dialog.appendChild(btnRow);
-        dialog.querySelector('.raw-cmd-close').addEventListener('click', () => document.body.removeChild(modal));
+        dialog.querySelector('.raw-cmd-close').addEventListener('click', () => modal.remove());
         modal.appendChild(dialog);
         // A click on the backdrop no longer closes the dialog: close deliberately.
         document.body.appendChild(modal);

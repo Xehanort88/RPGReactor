@@ -32,6 +32,9 @@
         { id: 'buzz', label: 'Buzz cut', group: 'Short hair' },
         { id: 'crew', label: 'Crew cut', group: 'Short hair' },
         { id: 'sidePart', label: 'Side part', group: 'Short hair' },
+        { id: 'centerPartShort', label: 'Center part — short', group: 'Short hair' },
+        { id: 'combedBack', label: 'Combed back', group: 'Short hair' },
+        { id: 'balding', label: 'Balding', group: 'Short hair' },
         { id: 'undercut', label: 'Undercut', group: 'Short hair' },
         { id: 'quiff', label: 'Quiff', group: 'Short hair' },
         { id: 'pompadour', label: 'Pompadour', group: 'Short hair' },
@@ -44,13 +47,16 @@
         { id: 'mohawkFlat', label: 'Flat mohawk', group: 'Short hair' },
         { id: 'mullet', label: 'Mullet', group: 'Medium hair' },
         { id: 'bob', label: 'Bob cut', group: 'Medium hair' },
+        { id: 'wavyBob', label: 'Layered wavy bob', group: 'Medium hair' },
         { id: 'shag', label: 'Shaggy', group: 'Medium hair' },
         { id: 'shoulder', label: 'Shoulder length', group: 'Medium hair' },
         { id: 'sweptBangs', label: 'Side-swept bangs', group: 'Medium hair' },
+        { id: 'faceSweep', label: 'Face-covering side fringe', group: 'Medium hair' },
         { id: 'afro', label: 'Afro', group: 'Medium hair' },
         { id: 'curly', label: 'Curly', group: 'Medium hair' },
         { id: 'animeSpikes', label: 'Anime spikes', group: 'Medium hair' },
         { id: 'long', label: 'Long straight', group: 'Long hair' },
+        { id: 'centerPartLong', label: 'Center part — long', group: 'Long hair' },
         { id: 'longWavy', label: 'Long wavy', group: 'Long hair' },
         { id: 'veryLong', label: 'Very long', group: 'Long hair' },
         { id: 'hime', label: 'Hime cut', group: 'Long hair' },
@@ -60,6 +66,7 @@
         { id: 'pigtails', label: 'Pigtails', group: 'Tied hair' },
         { id: 'bun', label: 'Top bun', group: 'Tied hair' },
         { id: 'bunLow', label: 'Low bun', group: 'Tied hair' },
+        { id: 'beehive', label: 'Beehive', group: 'Tied hair' },
         { id: 'topKnot', label: 'Top knot', group: 'Tied hair' },
         { id: 'braid', label: 'Braid', group: 'Tied hair' },
         { id: 'twinBraids', label: 'Twin braids', group: 'Tied hair' },
@@ -120,11 +127,13 @@
     const STYLE_FRINGE = {
         messy: [0.45, 'wispy'], shag: [0.6, 'wispy'], bob: [0.55, 'blunt'], shoulder: [0.4, 'curtain'], curly: [0.35, 'wispy'],
         longWavy: [0.35, 'curtain'], pigtails: [0.6, 'blunt'], twinBraids: [0.5, 'blunt'], bun: [0.3, 'curtain'],
-        asymmetricBob: [0.4, 'wispy'], ringlets: [0.25, 'curtain'], doubleBun: [0.35, 'curtain'], halfUp: [0.3, 'curtain']
+        asymmetricBob: [0.4, 'wispy'], ringlets: [0.25, 'curtain'], doubleBun: [0.35, 'curtain'], halfUp: [0.3, 'curtain'],
+        centerPartShort:[0.65,'curtain'],centerPartLong:[0.6,'curtain'],faceSweep:[0.8,'sweep'],wavyBob:[.3,'curtain']
     };
     /** A hair recipe with a new style and that style's own bangs. */
     function withStyle(hair, id) {
-        return Object.assign({}, hair, { style: id, fringe: (STYLE_FRINGE[id] || [0])[0] });
+        return Object.assign({}, hair, { style: id, fringe: (STYLE_FRINGE[id] || [0])[0],
+            ...(/^centerPart/.test(id)?{part:'center'}:{}) });
     }
 
     const DEFAULT_HAIR = Object.freeze({
@@ -165,7 +174,7 @@
             density: clamp(h.density ?? 1, 0.3, 1.5),
             frizz: clamp(h.frizz ?? 0, 0, 1),
             strandWidth: clamp(h.strandWidth ?? 1, 0.5, 1.8),
-            part: PARTS.includes(h.part) ? h.part : DEFAULT_HAIR.part,
+            part: PARTS.includes(h.part) ? h.part : /^centerPart/.test(h.style)?'center':DEFAULT_HAIR.part,
             fringe: clamp(h.fringe ?? (STYLE_FRINGE[pickId(STYLES, h.style, DEFAULT_HAIR.style)] || [0])[0], 0, 1),
             hairline: clamp(h.hairline ?? 0, 0, 1),
             facial: {
@@ -238,7 +247,8 @@
         const meanOf = (a, z) => { let s = [0, 0, 0]; for (let v = a; v <= z; v++) s = add(s, P(v)); return mul(s, 1 / (z - a + 1)); };
         const spreadOf = (a, z, c) => { let m = 0; for (let v = a; v <= z; v++) m = Math.max(m, len(sub(P(v), c))); return m; };
         const eyeL = meanOf(14598, 14669), eyeR = meanOf(14670, 14741);
-        const eyeRadius = spreadOf(14598, 14669, eyeL);
+        // (From the rest pose: the head's own seating of the eyeballs and the eye sliders resize them, and this only sizes the skull's zones.)
+        const eyeRadius = (() => { const R = pack.positions, c = [0, 0, 0]; for (let v = 14598; v <= 14669; v++) for (let k = 0; k < 3; k++) c[k] += R[v * 3 + k] / 72; let m = 0; for (let v = 14598; v <= 14669; v++) m = Math.max(m, Math.hypot(R[v * 3] - c[0], R[v * 3 + 1] - c[1], R[v * 3 + 2] - c[2])); return m; })();
         const mouth = lerp(meanOf(15060, 15127), meanOf(14992, 15059), 0.5);
         const eyeY = (eyeL[1] + eyeR[1]) / 2;
 
@@ -258,10 +268,12 @@
         const ry0 = top - eyeY;
         for (const v of headVerts) {
             const p = P(v);
-            if (weightOn(v, head) > 0.6 && p[1] > eyeY + ry0 * 0.35) rx = Math.max(rx, Math.abs(p[0]));
+            // (Above the brow and behind the face: eye and face sliders stretch the skin round the eyes, and the hair must not take that for a wider skull.)
+            if (weightOn(v, head) > 0.6 && p[1] > eyeY + ry0 * 0.5) rx = Math.max(rx, Math.abs(p[0]));
         }
         const center = [n ? sumX / n : 0, eyeY - ry0 * 0.05, (minZ + maxZ) / 2];
-        const radii = [rx, top - center[1], (maxZ - minZ) / 2];
+        // (A skull stretched flat can leave too few vertices in the measured band to give it any depth: never less than a head's.)
+        const radii = [rx, top - center[1], Math.max((maxZ - minZ) / 2, rx * 0.7)];
 
         // Features from MakeHuman's own targets.
         const ears = new Uint8Array(pack.vertexCount);
@@ -825,7 +837,7 @@
             if (H.earCore[v]) return -12;
             const c = headCoords(H, H.P(v));
             // A soft irregular edge: real hairlines are not ruled lines.
-            const j = jitter[Math.floor(((c.az + 180) / 360) * 63)] * 1.4;
+            const j = jitter[Math.floor(((c.az + 180) / 360) * 63) % jitter.length] * 1.4;
             let f = c.el - hairlineAt(c.az, hair.hairline) + j;
             if (zone) f = Math.min(f, zone(c, v));
             return f;
@@ -901,17 +913,27 @@
         const strands = o => Object.assign({ type: 'strands' }, base, o);
         const kind = (STYLE_FRINGE[hair.style] || [0, 'blunt'])[1];
         const frontBangs = (len, sweep, how = 'blunt') => strands({
-            count: Math.round((how === 'wispy' ? 30 : 40) + 50 * fringe), zone: c => (fringeZone(c) ? 30 - Math.abs(c.az) * 0.5 : -1) + (c.el - 25),
+            count: Math.round(((how === 'wispy' ? 30 : 40) + 50 * fringe)*1.7),single:true,roll:.03,lengthJitter:.12, zone: c => (fringeZone(c) ? 30 - Math.abs(c.az) * 0.5 : -1) + (c.el - 25),
             // Curtain bangs part in the middle and sweep out to each side; wispy ones fall loosely, a little apart.
             comb: (p, n, c, r) => tangent(add(add(AXIS.front, mul(AXIS.down, 0.9)), mul(AXIS.left, how === 'curtain' ? Math.sign(c.x || 1) * 0.9 : (sweep || 0) + c.x * 0.4 + (how === 'wispy' ? (r() - 0.5) * 0.6 : 0))), n),
             length: (c, r) => len * (how === 'curtain' ? 1 + 1.4 * Math.min(1, Math.abs(c.x) * 3) : how === 'wispy' ? 0.7 + 0.5 * r() : 1),
             stopY: c => (how === 'curtain' ? browY - (0.004 + 0.03 * Math.min(1, Math.abs(c.x) * 3)) * S : browY - (sweep ? 0.012 * S : how === 'wispy' ? 0.006 * S : 0)),
-            fringe: true, width: (how === 'wispy' ? 0.011 : 0.014) * S, hug: 0.9, gravity: 0.6, stiff: 0.2
+            fringe: true, width: (how === 'wispy' ? 0.006 : 0.007) * S, hug: 0.9, gravity: 0.6, stiff: 0.2
         });
         const withFringe = layers => (fringe > 0.05 ? layers.concat([frontBangs(0.12 * S * (0.6 + fringe * 0.6), 0, kind)]) : layers);
         const partComb = (p, n, c) => combFromPart(H, hair, p, n, c);
+        const tidy=o=>strands({single:true,count:420,width:.009*S,roll:.06,lengthJitter:.10,toneVariation:.12,steps:12,...o});
+                const centerZone=c=>c.el>36&&Math.abs(c.az)<140?(Math.abs(c.x)-.022)*140:100;
+        // Leave room for the finished locks above their roots on broad skulls.
+        const baldZone=c=>Math.min((40-hair.hairline*15-c.el)*2,Math.abs(c.az)-58);
         const curl = hair.curl;
         switch (hair.style) {
+            case 'centerPartShort': return [cap(.005,centerZone),{type:'curtain',short:true,center:true}];
+            case 'centerPartLong': return [cap(.005,centerZone),{type:'curtain',center:true}];
+            case 'combedBack': return [cap(.004),tidy({comb:(p,n,c)=>combBack(n,c),length:c=>(c.el>25?.14:.065)*L,hug:.95,lift:.12+.12*V,gravity:.18,stiff:.6})];
+            case 'balding': return [cap(.0025,baldZone),tidy({zone:baldZone,count:260,comb:(p,n,c)=>combBack(n,c),length:()=>.045*L,width:.006*S,hug:1,lift:.02,gravity:.3})];
+            case 'faceSweep': return [cap(.005),{type:'curtain',short:true},{type:'sweep'}];
+            case 'beehive': return [cap(.004),{type:'beehive'}];
             case 'flatTop': return [cap(0.003), strands({ count: 240, zone: c => c.el - 30, comb: () => AXIS.up, length: c => Math.max(0.012, 0.075 - c.y * 0.04) * L, width: 0.012 * S, hug: 0, lift: 0.6, gravity: 0, steps: 4 })];
             case 'fauxHawk': return [cap(0.006), { type: 'spikes', count: 40, length: 0.07 * L, width: 0.022 * S, up: 0.8, zone: c => (0.55 - Math.abs(c.x)) * 30 }];
             case 'asymmetricBob': return withFringe([cap(0.007), strands({ sheet: true, count: 320, comb: partComb, length: c => (c.x > 0 ? 0.34 : 0.22) * L, width: 0.023 * S, hug: 0.85, gravity: 0.6, steps: 12, stopY: c => chinY + (c.x > 0 ? -0.06 : 0.035) * S, inCurl: 0.3 })]);
@@ -927,11 +949,11 @@
             // Short hair stands as a soft pile: a dense layer of strands with many short, fine ones standing
             // out of it, so its outline is soft and it never reads as rows of tiles.
             case 'crew': return [cap(0.006 + 0.004 * V), { type: 'coils', count: 900, length: c => (c.el > 30 ? 0.022 : 0.012) * S * hair.length, width: 0.005 * S, coil: 0.0012 * S, comb: (p, n, c) => (c.el > 30 ? tangent(add(AXIS.front, mul(AXIS.up, 0.6)), n) : combDown(n, c)), stand: 0.45 }];
-            case 'sidePart': return [cap(0.006), strands({ count: 260, comb: partComb, length: c => (c.el > 20 ? 0.075 : 0.04) * L, width: 0.016 * S, hug: 1, gravity: 0.2, steps: 6 })];
+            case 'sidePart': return [cap(0.004), tidy({comb:partComb,length:c=>(c.el>20?.095:.045)*L,hug:1,lift:.06,gravity:.2,steps:10})];
             case 'undercut': return [cap(0.0018), cap(0.008, c => (c.el - 40) * 2), strands({ count: 220, zone: c => (c.el - 42) * 2, comb: (p, n, c) => tangent(add(add(mul(AXIS.left, hair.part === 'right' ? -1 : 1), mul(AXIS.back, 0.5)), mul(AXIS.up, 0.2)), n), length: () => 0.13 * L, width: 0.02 * S, hug: 0.55, lift: 0.3 + 0.35 * V, gravity: 0.25, stiff: 0.5, steps: 8 })];
             case 'quiff': return [cap(0.006), strands({ count: 130, zone: c => c.el - 30, comb: (p, n, c) => tangent(add(mul(AXIS.back, 0.6), mul(AXIS.up, 0.9)), n), length: c => (c.z > 0.2 ? 0.09 : 0.06) * L, width: 0.018 * S, hug: 0.1, lift: 0.55 + 0.3 * V, gravity: 0.05, steps: 6 }), strands({ count: 120, zone: c => 30 - c.el, comb: (p, n, c) => combBack(n, c), length: () => 0.03 * S, width: 0.012 * S, hug: 1, gravity: 0.1, steps: 3, sides: 3 })];
             case 'pompadour': return [cap(0.008), strands({ count: 120, zone: c => Math.min(c.el - 28, 70 - Math.abs(c.az)), comb: (p, n, c) => norm(add(mul(AXIS.up, 1.3), mul(AXIS.back, 0.35))), length: c => (0.07 + 0.06 * Math.max(0, c.z)) * L, width: 0.022 * S, hug: 0, lift: 0.6, gravity: 0.5, stiff: 0.5, steps: 8, fringeAll: true, bias: AXIS.back }), strands({ count: 200, comb: (p, n, c) => combBack(n, c), length: c => (c.el > 25 ? 0.1 : 0.04) * L, width: 0.018 * S, hug: 0.95, gravity: 0.2, stiff: 0.5, steps: 7 })];
-            case 'slickBack': return [cap(0.004), strands({ count: 260, comb: (p, n, c) => combBack(n, c), length: () => 0.11 * L, width: 0.016 * S, hug: 1, lift: 0.02, gravity: 0.25, stiff: 0.6, steps: 8 })];
+            case 'slickBack': return [cap(0.003), tidy({comb:(p,n,c)=>combBack(n,c),length:()=>.11*L,hug:1,lift:.02,gravity:.25,stiff:.6})];
             case 'spiky': return [cap(0.006), { type: 'spikes', count: 70, length: 0.06 * L, width: 0.022 * S, up: 0.6 }];
             case 'messy': return withFringe([cap(0.007), strands({ count: 260, comb: (p, n, c, r) => tangent(norm([r() * 2 - 1, r() * 1.2 - 0.8, r() * 2 - 1]), n), length: () => (0.06 + 0.04 * V) * L, width: 0.016 * S, hug: 0.5, lift: 0.35 + 0.3 * V, gravity: 0.3, steps: 6, waves: 0.008 })]);
             case 'pixie': return [cap(0.005), strands({ count: 240, comb: (p, n, c) => (Math.abs(c.az) < 70 && c.el > 15 ? tangent(add(add(AXIS.front, AXIS.down), mul(AXIS.left, hair.part === 'right' ? -0.8 : 0.8)), n) : combDown(n, c)), length: c => (Math.abs(c.az) < 70 && c.el > 15 ? 0.1 : 0.05) * L, width: 0.016 * S, hug: 0.95, gravity: 0.4, steps: 7, fringeAll: true, stopY: () => browY - 0.004 * S })];
@@ -939,7 +961,8 @@
             case 'mohawk': return [cap(0.0015), cap(0.005, c => (0.26 - Math.abs(c.x)) * 120), { type: 'spikes', count: 16, length: 0.12 * L, width: 0.035 * S, up: 1, zone: c => (0.2 - Math.abs(c.x)) * 120, row: true }];
             case 'mohawkFlat': return [cap(0.0015), cap(0.006, c => (0.27 - Math.abs(c.x)) * 120), strands({ count: 120, zone: c => (0.22 - Math.abs(c.x)) * 120, comb: (p, n, c) => tangent(add(AXIS.back, mul(AXIS.up, 0.4)), n), length: () => 0.1 * L, width: 0.02 * S, hug: 0.6, lift: 0.4 + 0.3 * V, gravity: 0.15, steps: 7 })];
             case 'mullet': return [cap(0.006), strands({ count: 160, zone: c => 125 - Math.abs(c.az), comb: partComb, length: () => 0.06 * L, width: 0.016 * S, hug: 1, gravity: 0.3, steps: 6 }), strands({ count: 110, zone: c => Math.abs(c.az) - 115, comb: (p, n, c) => combDown(n, c), length: () => 0.24 * L, width: 0.018 * S, hug: 0.6, gravity: 0.6, steps: 11, stopY: () => H.shoulderY - 0.08 * S * hair.length })];
-            case 'bob': return withFringe([cap(0.007), strands({ sheet: true, count: 340, comb: partComb, length: () => 0.26 * L, width: 0.024 * S, hug: 0.85, lift: 0.1 + 0.2 * V, gravity: 0.5, steps: 11, stopY: () => chinY - 0.005 * S, inCurl: 0.35 })]);
+            case 'bob': return withFringe([cap(.005),{type:'curtain',short:true,end:'chin'}]);
+            case 'wavyBob': return withFringe([cap(.006),{type:'curtain',short:true,end:'chin',wavy:true}]);
             case 'shag': return withFringe([cap(0.008), strands({ count: 300, comb: (p, n, c, r) => tangent(add(partComb(p, n, c), mul(norm([r() - 0.5, 0, r() - 0.5]), 0.8)), n), length: (c, r) => (0.18 + 0.12 * r()) * L, width: 0.017 * S, hug: 0.55, lift: 0.25 + 0.3 * V, gravity: 0.55, steps: 11, waves: 0.012, stopY: () => H.shoulderY - 0.02 * S })]);
             case 'shoulder': return withFringe([cap(0.007), strands({ sheet: true, count: 340, comb: partComb, length: () => 0.32 * L, width: 0.024 * S, drape: 'split', hug: 0.85, gravity: 0.6, steps: 12, stopY: () => H.shoulderY - 0.03 * S * hair.length })]);
             case 'sweptBangs': return [cap(0.007), strands({ sheet: true, count: 280, comb: partComb, length: () => 0.3 * L, width: 0.022 * S, hug: 0.85, gravity: 0.6, steps: 12, stopY: () => H.shoulderY - 0.02 * S }), frontBangs(0.15 * S, hair.part === 'right' ? -1.1 : 1.1)];
@@ -951,7 +974,7 @@
             case 'animeSpikes': return [cap(0.01), { type: 'spikes', count: 34, length: 0.13 * L, width: 0.05 * S, up: 0.3, anime: true }, { type: 'spikes', count: 9, length: 0.11 * L, width: 0.04 * S, up: -0.8, front: true, zone: c => 50 - Math.abs(c.az) }];
             case 'long': return withFringe([cap(0.007), strands({ sheet: true, count: 320, comb: partComb, length: () => 0.5 * L, width: 0.028 * S, hug: 0.85, gravity: 0.65, steps: 12, drape: 'split' })]);
             // Waves in many narrow single locks: wide waving cards read as shingles.
-            case 'longWavy': return withFringe([cap(0.008), strands({ sheet: true, single: true, count: 460, comb: partComb, length: () => 0.52 * L, width: 0.018 * S, drape: 'split', hug: 0.8, lift: 0.15 + 0.25 * V, gravity: 0.6, steps: 19, waves: 0.012 + 0.012 * V })]);
+            case 'longWavy': return withFringe([cap(.006),{type:'curtain',wavy:true}]);
             case 'veryLong': return withFringe([cap(0.007), strands({ sheet: true, count: 330, comb: partComb, length: () => 0.85 * L, width: 0.028 * S, drape: 'split', hug: 0.85, gravity: 0.7, steps: 16 })]);
             case 'hime': return [cap(0.007), frontBangs(0.13 * S, 0), strands({ count: 70, zone: c => (Math.abs(c.az) > 45 && Math.abs(c.az) < 100 ? 1 : -1) * 20, comb: (p, n, c) => combDown(n, c), length: () => 0.3 * L, width: 0.02 * S, hug: 0.9, gravity: 0.8, steps: 10, stopY: () => chinY - 0.01 * S, frontDrape: true }), strands({ sheet: true, count: 320, comb: partComb, length: () => 0.6 * L, width: 0.026 * S, hug: 0.85, gravity: 0.7, steps: 14 })];
             case 'dreadlocks': return [cap(0.01), { type: 'locks', count: 64, length: 0.4 * L, radius: (0.009 + 0.004 * V) * S }];
@@ -1027,7 +1050,8 @@
             const c = headCoords(H, r.p);
             const dir = layer.comb(r.p, r.n, c, rand);
             // Locks of their own lengths: a cut is never ruled, and long hair is layered.
-            const length = layer.length(c, rand) * (0.78 + 0.4 * rand());
+            const jitter=layer.lengthJitter??.4;
+            const length = layer.length(c, rand) * (1-jitter*.55+jitter*rand());
             if (length < 0.004) continue;
             const lift = typeof layer.lift === 'function' ? layer.lift(c) : layer.lift;
             const fringe = layer.fringe || layer.fringeAll;
@@ -1051,19 +1075,19 @@
             if (curlAmt > 0) pts = curlStrand(H, pts, curlAmt, (layer.curl ? layer.curl.period : 0.04 * H.scale) * (0.85 + 0.3 * rand()), false, rand() * 6.28);
             if (hair.frizz > 0) pts = curlStrand(H, pts, hair.frizz * 0.006 * H.scale, 0.018 * H.scale, true, rand() * 6.28);
             // Lock-to-lock lightness: light hair shows every difference, so it varies less.
-            const variance = 1 + (rand() - 0.5) * (ramp.light > 0.3 ? 0.14 : 0.3);
+            const variance = 1 + (rand() - 0.5) * (layer.toneVariation??(ramp.light > 0.3 ? 0.14 : 0.3));
             const highlight = rand() < hair.highlights * 0.5, lock = ramp.lock(rand);
             // Near the hairline the locks are narrower and drawn from past the picture's full root, so the
             // edge breaks up into hairs instead of blocks.
             const edge = smooth(1.5, 9, r.f);
             // At the hairline a lock grows from a point, so the locks' roots there are a scatter, not stair steps.
             const rootW = 0.4 + 0.6 * edge;
-            const lockOpts = { H, single: layer.single, taper: t => (rootW + (1 - rootW) * smooth(0, 0.2, t)) * (1 - Math.pow(t, 1.6) * 0.7), width: layer.width * widen * hair.strandWidth * (0.75 + 0.5 * rand()) * (0.8 + 0.4 * hair.volume) * (0.5 + 0.5 * edge), flat: 0.35, sides: layer.sides || 3, center: H.center, vFrom: 0.01 + 0.2 * (1 - edge), color: t => ramp(t, variance, highlight, lock) };
+            const lockOpts = { H, single: layer.single, roll:layer.roll, taper: t => (rootW + (1 - rootW) * smooth(0, 0.2, t)) * (1 - Math.pow(t, 1.6) * 0.7), width: layer.width * widen * hair.strandWidth * (0.75 + 0.5 * rand()) * (0.8 + 0.4 * hair.volume) * (0.5 + 0.5 * edge), flat: 0.35, sides: layer.sides || 3, center: H.center, vFrom: 0.01 + 0.2 * (1 - edge), color: t => ramp(t, variance, highlight, lock) };
             owed += keep;
             if (owed >= 1) { owed -= 1; addClump(m, pts, lockOpts); }
             // Flyaways: here and there at the hairline, and now and then over the head, a few stray hairs
             // lift off the lock and wander, so the edge of the hair is never a clean line.
-            if (rand() < (edge < 0.7 ? 0.22 : 0.05) && pts.length > 2) {
+            if (layer.roll==null&&rand() < (edge < 0.7 ? 0.22 : 0.05) && pts.length > 2) {
                 const flyLength = Math.min(length, (0.025 + 0.04 * rand()) * H.scale);
                 const stray = grow(H, r.p, r.n, norm(add(dir, mul(norm([rand() - 0.5, rand() * 0.6, rand() - 0.5]), 0.9))), {
                     steps: 4, length: flyLength, layer: layer.layer * 1.6, lift: 0.45, gravity: 0.1, stiff: 0.5, hug: 0.2, release: H.earBottom, fringe: true, front: false
@@ -1258,7 +1282,7 @@
     function buildTail(H, hair, m, layer, ramp, rand) {
         const surf = cutSurface(H, scalpField(H, hair));
         const ties = layer.ties.map(([az, el]) => scalpPoint(H, az, el, 0.006 * H.scale));
-        const roots = scatter(surf, 260, rand);
+        const roots = scatter(surf, Math.round(380*H.budget*hair.density), rand);
         // Hair swept to each tie over the scalp.
         for (const r of roots) {
             if (r.f < 2) continue;
@@ -1267,7 +1291,8 @@
             if (ties.length > 1) tie = c.x >= 0 === (ties[0].p[0] >= H.center[0]) ? ties[0] : ties[1];
             const pts = gather(H, r.p, tie.p, (0.003 + 0.004 * rand()) * H.scale, 8);
             const variance = 0.85 + 0.3 * rand();
-            addClump(m, pts, { width: 0.02 * H.scale, flat: 0.3, sides: 3, center: H.center, taper: t => 1 - t * 0.6, color: t => ramp(0.2 * t, variance, false) });
+            const edge=smooth(2,12,r.f);
+            addClump(m, pts, { width: .010 * H.scale*hair.strandWidth, single:true,roll:.03,flat: 0.3, sides: 3, center: H.center, taper: t => (.15+.85*edge+(.85-.85*edge)*smooth(0,.2,t))*(1-t*.6), color: t => ramp(0.2 * t, variance, false) });
         }
         for (const tie of ties) {
             // The tail's own line: out from the head, then down.
@@ -1286,7 +1311,7 @@
                 d = norm(sub(p, spine[i - 1]));
             }
             const radius = t => layer.radius * (0.55 + 0.6 * Math.sin(Math.min(1, t * 2.2 + 0.2) * Math.PI * 0.8)) * (1 - 0.7 * t);
-            const count = 46;
+            const count = Math.round(80*H.budget*hair.density);
             for (let k = 0; k < count; k++) {
                 const ang = rand() * Math.PI * 2, f = Math.sqrt(rand());
                 const phase = rand() * 6.28;
@@ -1299,9 +1324,135 @@
                 });
                 const variance = 0.85 + 0.3 * rand();
                 const highlight = rand() < hair.highlights * 0.5;
-                addClump(m, pts, { width: 0.018 * H.scale, flat: 0.4, sides: 4, center: H.center, outAt: (p, i) => norm(sub(p, spine[i])), color: t => ramp(0.2 + 0.8 * t, variance, highlight) });
+                addClump(m, pts, { width: .010 * H.scale*hair.strandWidth,single:true,roll:.04,flat: 0.4, sides: 4, center: H.center, outAt: (p, i) => norm(sub(p, spine[i])), color: t => ramp(0.2 + 0.8 * t, variance, highlight) });
             }
             addTie(H, m, spine[0], norm(sub(spine[1], spine[0])), layer.radius * 0.75);
+        }
+    }
+
+    /** Ordered guides form a continuous haircut; fine locks soften its surface and hem. */
+    function buildCurtain(H,hair,m,layer,ramp,rand) {
+        const S=H.scale,waving=layer.wavy||hair.curl>.01,steps=waving?64:24;
+        const count=Math.round((waving?64:92)*(.65+.35*H.budget)*(.75+.25*hair.density)),guides=[];
+        const endY=layer.end==='chin'?H.chin[1]+(layer.wavy?-.035:.01)*S-.045*S*(hair.length-1):layer.short?H.earBottom-.045*S*hair.length:H.shoulderY-.18*S*hair.length;
+        const Query=root.RRCharacterOutfitTransfer||(typeof require==='function'?require('./CharacterOutfitTransfer.js'):null);
+        if(Query&&!H.hairSolid)H.hairSolid=Query.triangleGrid(H.S,H.pack.body.index.map(i=>H.pack.body.source[i]),.035*S);
+        const clear=p=>{
+            for(let i=0;i<2;i++){const s=H.surface(p);if(Number.isFinite(s.d)&&s.d<.007*S)p=add(p,mul(s.n,.007*S-s.d));}
+            // A very full bust can engulf a whole front guide, beyond the local nearest-vertex query.
+            // Project onto the actual front/back skin section before cards are made around the guide.
+            if(Query&&p[1]<H.shoulderY+.06*S&&Math.abs(p[0]-H.center[0])<H.shoulderHalf*.75) {
+                const reach=Math.max(H.built.height,.6*S),origin=[p[0],p[1],H.center[2]-reach];
+                const hits=Query.rayHits(H.hairSolid,origin,[0,0,1],.0001,reach*2);
+                if(hits.length) {
+                    const front=p[2]>H.center[2],s=front?Math.max(...hits.map(h=>h.s)):Math.min(...hits.map(h=>h.s));
+                    const z=origin[2]+s+(front?1:-1)*.012*S;
+                    p[2]=front?Math.max(p[2],z):Math.min(p[2],z);
+                }
+            }
+            return p;
+        };
+        for(let k=0;k<=count;k++) {
+            const signed=54+(360-108)*k/count,az=signed>180?signed-360:signed,angle=az*Math.PI/180;
+            const outer=Math.sign(az)*Math.max(62+(1-hair.fringe)*16,Math.abs(az)),low=hairlineAt(outer,hair.hairline)+3,pts=[];
+            const phi=(50+(Math.abs(az)-54)/126*80)*Math.PI/180;
+            const start=norm([hair.part==='left'?.16:hair.part==='right'?-.16:0,Math.sin(phi),Math.cos(phi)]);
+            const el=low*Math.PI/180,aa=outer*Math.PI/180;
+            const finish=[Math.sin(aa)*Math.cos(el),Math.sin(el),Math.cos(aa)*Math.cos(el)];
+            const edge=scalpPoint(H,outer,low,.012*S).p;
+            for(let j=0;j<=steps;j++) {
+                const t=j/steps;
+                let p;
+                if(t<.58) {
+                    const u=t/.58,d=norm(lerp(start,finish,u));
+                    p=scalpPoint(H,Math.atan2(d[0],d[2])*180/Math.PI,Math.asin(clamp(d[1],-1,1))*180/Math.PI,
+                        (.008+(.005+.008*hair.volume)*Math.sin(u*Math.PI))*S).p;
+                } else {
+                    const u=(t-.58)/.42,flare=(layer.short?.004:.012)*S*Math.sin(u*Math.PI);
+                    p=[edge[0]+Math.sin(angle)*flare,mix(edge[1],endY+.006*S*Math.sin(k*1.7),u),edge[2]+Math.cos(angle)*flare];
+                    if(!layer.short) {
+                        const drape=smooth(H.chin[1],H.shoulderY+.04*S,p[1]);
+                        const z=Math.cos(angle)>.1?Math.max(p[2],H.noseTip[2]+.022*S):Math.min(p[2],H.center[2]-.14*S);
+                        p[2]=mix(p[2],z,drape);
+                    }
+                    p=clear(p);
+                }
+                if((layer.wavy||hair.curl>.01)&&t>.52) {
+                    const wave=Math.sin((p[1]-H.chin[1])/((.16-.04*hair.curl)*S)*Math.PI*2+angle*.8)*((layer.wavy?.008+.012*hair.volume:0)+.014*hair.curl)*S*smooth(.52,.75,t);
+                    p=clear([p[0]+Math.sin(angle)*wave,p[1],p[2]+Math.cos(angle)*wave]);
+                }
+                pts.push(p);
+            }
+            guides.push(pts);
+        }
+        // The mass stops just above the soft ends. Surface fibers share its direction, rather than
+        // a collection of short, randomly tilted cards leaving gaps across the silhouette.
+        const rows=steps-1;
+        for(let k=0;k<guides.length-1;k++) {
+            const base=m.pos.length/3;
+            for(let j=0;j<rows;j++)for(let side=0;side<2;side++) {
+                const pts=guides[k+side];
+                const p=pts[j],t=j/steps,T=norm(sub(pts[Math.min(steps,j+1)],pts[Math.max(0,j-1)]));
+                pushVert(m,p,hairOut(H.center,p),ramp(.2+.6*t,.98,false),[(k%4)*.25+.035+side*.18,.02+.91*smooth(.55,1,t)],T);
+            }
+            for(let j=0;j<rows-1;j++){const a=base+j*2;m.idx.push(a,a+2,a+1,a+1,a+2,a+3);}
+        }
+        for(const guide of guides) {
+            const pts=hair.frizz>0?curlStrand(H,guide,hair.frizz*.002*S,.025*S,true,rand()*6.28):guide;
+            const tone=.96+.08*rand();
+            addClump(m,pts,{H,single:true,roll:0,width:.007*S*hair.strandWidth,center:H.center,taper:t=>1-.55*t*t,color:t=>ramp(.1+.8*t,tone,false)});
+        }
+    }
+
+    /** A diagonal curtain; unlike ordinary bangs, its chosen side may cover an eye. */
+    function buildSweep(H,hair,m,layer,ramp,rand) {
+        if(hair.fringe<.025)return;
+        const S=H.scale,side=hair.part==='right'?-1:1,count=Math.round(70*H.budget*hair.density);
+        const brow=H.eyeY+H.eyeRadius*1.9;
+        for(let k=0;k<count;k++) {
+            const u=(k+.5)/count,root=scalpPoint(H,-side*28,50+u*35,.008*S).p;
+            const tip=[H.center[0]+side*(.008+.088*u)*S,brow-(.005+.12*hair.fringe)*S*u,H.noseTip[2]+.006*S];
+            const a=[H.center[0]+side*(-.015+.025*u)*S,root[1]+.008*S,Math.max(root[2],H.noseTip[2])+.014*S];
+            const b=[tip[0]-side*.018*S,tip[1]+.065*S,tip[2]+.007*S],pts=[];
+            for(let j=0;j<=16;j++) {
+                const t=j/16,q=1-t;
+                let p=[0,1,2].map(d=>q*q*q*root[d]+3*q*q*t*a[d]+3*q*t*t*b[d]+t*t*t*tip[d]);
+                const sf=H.surface(p);
+                if(Number.isFinite(sf.d)&&sf.d<.006*S)p=add(p,mul(sf.n,.006*S-sf.d));
+                pts.push(p);
+            }
+            const tone=.94+.12*rand();
+            addClump(m,pts,{H,single:true,roll:0,width:.008*S*hair.strandWidth,center:H.center,taper:t=>.7*(1-.65*Math.pow(t,2)),color:t=>ramp(t,tone,false)});
+        }
+    }
+
+    /** Swept sides feed a tall, wrapped crown with an unbroken supporting volume. */
+    function buildBeehive(H,hair,m,layer,ramp,rand) {
+        const S=H.scale,rise=(.085+.09*hair.volume)*S*hair.length;
+        const count=Math.round(120*(.7+.3*H.budget)*(.75+.25*hair.density)),steps=26,guides=[];
+        const center=[H.center[0],H.center[1]+rise*.5,H.center[2]];
+        for(let k=0;k<=count;k++) {
+            const az=-180+k/count*360,low=hairlineAt(az,hair.hairline)+2,pts=[];
+            for(let j=0;j<=steps;j++) {
+                const t=j/steps,el=mix(low,90,t),turn=az+(28+hair.curl*35)*Math.sin(t*Math.PI/2);
+                const p=scalpPoint(H,turn,el,(.005+(.008+.01*hair.volume)*Math.sin(Math.PI*t))*S).p;
+                p[1]+=rise*Math.pow(Math.sin(t*Math.PI/2),1.8);
+                pts.push(p);
+            }
+            guides.push(pts);
+        }
+        for(let k=0;k<count;k++) {
+            const base=m.pos.length/3;
+            for(let j=0;j<=steps;j++)for(let side=0;side<2;side++) {
+                const pts=guides[k+side],p=pts[j],t=j/steps,T=norm(sub(pts[Math.min(steps,j+1)],pts[Math.max(0,j-1)]));
+                pushVert(m,p,hairOut(center,p),ramp(.15+.55*t,.98,false),[(k%4)*.25+.035+side*.18,.02+.4*t],T);
+            }
+            for(let j=0;j<steps;j++){const a=base+j*2;m.idx.push(a,a+2,a+1,a+1,a+2,a+3);}
+        }
+        for(const guide of guides) {
+            const pts=hair.frizz>0?curlStrand(H,guide,hair.frizz*.0015*S,.02*S,true,rand()*6.28):guide;
+            const tone=.97+.06*rand();
+            addClump(m,pts,{H,single:true,roll:0,width:.007*S*hair.strandWidth,center,taper:t=>.55+.45*Math.sin(t*Math.PI),color:t=>ramp(.1+.65*t,tone,false)});
         }
     }
 
@@ -1678,7 +1829,7 @@
         // above the eye's center: the brow lies along the orbit's upper rim, its head a little lower than
         // its arch, not up on the forehead.
         return {
-            natural: [1.27, 1.55, 1.3, 0.6, 1, 34],
+            natural: [1.38, 1.58, 1.2, 0.64, 1, 34],
             thin: [1.32, 1.58, 1.32, 0.62, 0.45, 26],
             thick: [1.22, 1.5, 1.25, 0.58, 1.6, 46],
             arched: [1.2, 1.75, 1.27, 0.55, 0.9, 34],
@@ -1734,8 +1885,12 @@
      * inner ones short and rising, the rest lying outward, over a faint fill
      * of the brow's color so it reads full; alpha everywhere else.
      */
-    function browTexture(brows, color) {
-        const W = 512, Ht = 256, b = brows, shape = browShape(b.style);
+    function browTexture(brows, color, gender) {
+        const W = 512, Ht = 256, b = brows;
+        let shape = browShape(b.style);
+        // The everyday brow by build: a man's lies flat and heavy along the brow bone, a woman's is finer, arches to a peak between the iris's
+        // outer edge and the eye's corner, and tapers; either way the tail ends about level with the head, never above it.
+        if (b.style === 'natural') { const g = Math.max(0, Math.min(1, gender ?? 0.5)); shape = [mix(1.24, 1.26, g), mix(1.54, 1.38, g), mix(1.16, 1.18, g), mix(0.66, 0.62, g), mix(0.82, 1.2, g), shape[5]]; }
         const data = new Uint8Array(W * Ht * 4);
         if (!shape) return { width: W, height: Ht, data, name: 'brows.png' };
         const rgb = linear(color || '#3a2a1a'), rand = rng(hash(b.style) ^ Math.round(b.thickness * 1000));
@@ -1760,29 +1915,28 @@
             const ex = x / W * BROW_BOX[1] - BROW_BOX[0], ey = BROW_BOX[2] + (1 - y / Ht) * BROW_BOX[3];
             const u = (ex + 1.15) / 2.9;
             if (u < -0.05 || u > 1.05) continue;
-            const half = 0.19 * thickness * (1 - 0.6 * Math.min(1, Math.max(0, u))) + 0.04;
+            const half = 0.19 * thickness * (1 - 0.72 * smooth(0.42, 1, Math.max(0, u))) + 0.03;
             const d = Math.abs(ey - lineAt(Math.min(1, Math.max(0, u)))) / half;
             const ends = smooth(-0.05, 0.12, u) * (1 - smooth(0.85, 1.05, u));
-            alpha[y * W + x] = Math.max(0, 1 - d * d) * ends * (b.style === 'bushy' ? 0.42 : 0.22);
+            alpha[y * W + x] = Math.max(0, 1 - d * d) * ends * (b.style === 'bushy' ? 0.46 : 0.46);
         }
-        // The hairs.
-        const count = Math.round(shape[5] * (0.7 + 0.6 * b.thickness) * 9);
+        // The hairs, as they grow: upright at the brow's head, then lying along it, those above leaning down and those below leaning up
+        // so they meet along a ridge down its middle; the tail thins to a few fine hairs lying with the line.
+        const count = Math.round(shape[5] * (0.7 + 0.6 * b.thickness) * 14);
         for (let k = 0; k < count; k++) {
-            const u = rand();
-            const band = (rand() - 0.5) * 0.38 * thickness * (1 - 0.6 * u);
+            const u = rand(), tail = smooth(0.72, 1, u), head = 1 - smooth(0, 0.12, u);
+            if (rand() < tail * 0.6) continue;
+            const across = (rand() + rand() - 1) * (1 - 0.72 * smooth(0.42, 1, u)), band = across * 0.36 * thickness;
+            const slope = (lineAt(Math.min(1, u + 0.02)) - lineAt(Math.max(0, u - 0.02))) / (0.04 * 2.75);
+            const lying = Math.atan(slope) - across * 0.62, ang0 = mix(lying, 0.85 - across * 0.3, head) + (rand() - 0.5) * 0.1;
             let x = mix(-1.15, 1.6, u), y = lineAt(u) + band;
-            const dir = norm([1, mix(1.4, -0.15, Math.min(1, u * 1.4)), 0]);
-            // The tail thins to a few fine, short hairs; the head near the nose is soft.
-            const tail = smooth(0.7, 1, u);
-            if (rand() < tail * 0.55) continue;
-            const lenH = (0.32 + 0.3 * rand()) * (u < 0.15 ? 0.7 : 1) * (1 - 0.5 * tail), bend = (rand() - 0.3) * 0.5;
-            const a0 = (0.55 + 0.4 * rand()) * (0.55 + 0.45 * smooth(0, 0.18, u)) * (1 - 0.4 * tail), t0 = 0.55 + 0.35 * rand();
+            const lenH = (0.17 + 0.1 * rand()) * (1 - 0.35 * tail) * (1 - 0.4 * head), bend = -0.25 * (0.5 + rand()) * (1 - head);
+            const a0 = (0.72 + 0.28 * rand()) * (0.45 + 0.55 * smooth(0, 0.12, u)) * (1 - 0.4 * tail), t0 = 0.4 + 0.35 * rand();
             const steps = Math.ceil(lenH / BROW_BOX[1] * W * 1.5);
             for (let i = 0; i <= steps; i++) {
-                const t = i / steps, ang = bend * t;
-                const dx = dir[0] * Math.cos(ang) - dir[1] * Math.sin(ang), dy = dir[0] * Math.sin(ang) + dir[1] * Math.cos(ang);
-                plot(px(x), py(y), a0 * (1 - t * 0.55), t0);
-                x += dx * lenH / steps; y += dy * lenH / steps;
+                const t = i / steps, ang = ang0 + bend * t;
+                plot(px(x), py(y), a0 * (1 - t * 0.6), t0);
+                x += Math.cos(ang) * lenH / steps; y += Math.sin(ang) * lenH / steps;
             }
         }
         // Nothing reaches the picture's edges, so the patch's own outline never shows.
@@ -1821,8 +1975,7 @@
     function buildLashes(H, m) {
         const h = H.pack.helpers && H.pack.helpers.lashes;
         if (!h) return;
-        const base = m.pos.length / 3;
-        const col = [0.03, 0.022, 0.02];
+        const col = [0.03, 0.022, 0.02], soft = [0.2, 0.14, 0.11];
         const pts = Array.from(h.source, v => H.P(v));
         // Each eye's center: the mean of its side's lash vertices.
         const center = side => {
@@ -1844,14 +1997,70 @@
             sp.r[0] = Math.min(sp.r[0], q.r); sp.r[1] = Math.max(sp.r[1], q.r);
             sp.a[0] = Math.min(sp.a[0], q.a); sp.a[1] = Math.max(sp.a[1], q.a);
         });
-        polar.forEach((q, i) => {
-            const sp = span[Math.sign(pts[i][0]) + ':' + q.up];
-            // The upper lid takes the picture's left half (long, dense lashes), the lower its right half (short, sparse).
-            const along = (q.a - sp.a[0]) / Math.max(1e-5, sp.a[1] - sp.a[0]);
-            // A man's lashes are shorter: the strands reach their tips sooner along the card.
-            pushVert(m, pts[i], [0, 0, 1], col, [q.up ? along * 0.5 : 0.5 + along * 0.5, Math.min(1, (q.r - sp.r[0]) / Math.max(1e-5, sp.r[1] - sp.r[0]) * (1 + 0.45 * (H.gender || 0)))]);
-        });
-        for (let t = 0; t < h.index.length; t++) m.idx.push(base + h.index[t]);
+        // Real strands: a picture of hairs on a card blurs into a black band at any normal distance. Each lash grows from the lid's edge,
+        // out from the eye and curling away from it, thinning to nothing; neighbors lean together at their tips in little groups, as lashes
+        // do. Longest over the outer third; a man's a little shorter.  ties each to the lid's skin so it blinks with it.
+        const rnd = rng(7), skin = H.pack.body.source, source = m.source = [];
+        for (const side of [1, -1]) for (const up of [true, false]) {
+            const sp = span[side + ':' + up];
+            if (!sp) continue;
+            const BINS = 12, rim = new Array(BINS).fill(null);
+            polar.forEach((q, i) => {
+                if (Math.sign(pts[i][0]) !== side || q.up !== up) return;
+                const b = Math.min(BINS - 1, Math.floor((q.a - sp.a[0]) / Math.max(1e-5, sp.a[1] - sp.a[0]) * BINS));
+                if (!rim[b] || q.r < rim[b].r) rim[b] = { r: q.r, p: pts[i] };
+            });
+            const own = H.lashRim && (up ? H.lashRim[side] : H.lashRim.low[side]);
+            if (own) C[side] = [own.reduce((a, p) => a + p[0], 0) / own.length, own.reduce((a, p) => a + p[1], 0) / own.length + (up ? -0.007 : 0.007), own.reduce((a, p) => a + p[2], 0) / own.length];
+            // (A hair proud of the edge, along the way out of the eye: exactly on it they run inside the lid before they show.)
+            const line = own ? own.map(p => add(p, mul(p.out, up ? 0.0007 : 0.0005))) : rim.filter(Boolean).map(b => b.p);
+            const outAt = t => { const at = Math.max(0, Math.min(0.9999, t)) * (own.length - 1), i = Math.floor(at), f = at - i; return [0, 1, 2].map(k => own[i].out[k] + (own[i + 1].out[k] - own[i].out[k]) * f); };
+            const seat = (p, lift) => own ? { p, n: [0, 0, 1] } : onSkin(H, p, lift);
+            if (line.length < 3) continue;
+            // (Eased: taken vertex by vertex the lid's edge zigzags, and the lashes' roots with it.)
+            for (let pass = 0; pass < 5; pass++) { const was = line.map(p => p.slice()); for (let i = 1; i + 1 < line.length; i++) for (let k = 0; k < 3; k++) line[i][k] = (was[i - 1][k] + 2 * was[i][k] + was[i + 1][k]) / 4; }
+            const rootAt = t => { const at = Math.max(0, Math.min(0.9999, t)) * (line.length - 1), i = Math.floor(at), f = at - i; return [0, 1, 2].map(k => line[i][k] + (line[i + 1][k] - line[i][k]) * f); };
+            const near = skin.filter(v => Math.hypot(H.S[v * 3] - C[side][0], H.S[v * 3 + 1] - C[side][1]) < sp.r[1] * 1.6 && H.S[v * 3 + 2] > C[side][2] - 0.02);
+            const nearestSkin = p => { let best = skin[0], d = Infinity; for (const v of near) { const e = (H.S[v * 3] - p[0]) ** 2 + (H.S[v * 3 + 1] - p[1]) ** 2 + (H.S[v * 3 + 2] - p[2]) ** 2; if (e < d) { d = e; best = v; } } return best; };
+            // Three segments resolve these short quadratic human lashes to
+            // well below a close-up pixel, reducing duplicated blink deltas.
+            const g = H.gender || 0, count = up ? Math.round(own ? 96 - 40 * g : 130) : own ? Math.round(84 - 34 * g) : 22, length = (up ? 0.0048 : own ? 0.0026 : 0.0016) * (1 - 0.22 * g) * (own ? 0.86 - 0.14 * g : 1), width = (up ? 0.00014 : own ? 0.00007 : 0.00008) * (own ? 1 - 0.25 * g : 1), curl = up ? (own ? 0.45 : 0.62) : 0, SEGMENTS = own ? 3 : 4;
+            // The lash line: where they root they crowd into one soft dark edge along the lid, which is most of what reads at a distance.
+            if (up) {
+                const SEG = 22, start = m.pos.length / 3;
+                for (let j = 0; j <= SEG; j++) {
+                    const t = j / SEG, p = rootAt(own ? t * 0.93 : t), rl = Math.hypot(p[0] - C[side][0], p[1] - C[side][1]) || 1e-6, o = [(p[0] - C[side][0]) / rl, (p[1] - C[side][1]) / rl, 0], w = 0.00075 * (own ? 1.15 - 0.45 * g : 1) * Math.sin(t * Math.PI) ** 0.5 + 0.00005;
+                    const a = seat([p[0] + o[0] * 0.0002, p[1] + o[1] * 0.0002, p[2]], 0.00018), b = seat([p[0] + o[0] * (0.0002 + w), p[1] + o[1] * (0.0002 + w), p[2]], 0.00018), v0 = nearestSkin(a.p);
+                    pushVert(m, a.p, a.n, col, [0, 0]); pushVert(m, b.p, b.n, col, [1, 1]); source.push(v0, v0);
+                    if (j) { const q = start + (j - 1) * 2; m.idx.push(q, q + 1, q + 3, q, q + 3, q + 2); }
+                }
+            }
+            // (Lower lashes hardly show on a real face at any distance a character is seen from; as strands they only read as stray marks.)
+            if (!up && !own) continue;
+            for (let k = 0; k < count; k++) {
+                const along = (k + 0.5 + (rnd() - 0.5) * 0.7) / count;
+                // Only the last few at each corner go missing.
+                if (rnd() > 0.5 + 1.6 * Math.sin(along * Math.PI)) continue;
+                if (own && along > 0.94) continue;     // none at the very inner corner, where the lid turns in
+                const lift = rootAt(along), lrl = Math.hypot(lift[0] - C[side][0], lift[1] - C[side][1]) || 1e-6, out_ = own ? 0 : (up ? 0.0007 : 0.0003), lid = seat([lift[0] + (lift[0] - C[side][0]) / lrl * out_, lift[1] + (lift[1] - C[side][1]) / lrl * out_, lift[2]], 0.0002), R = lid.p, T = norm(sub(rootAt(along + 0.03), rootAt(along - 0.03)));
+                const rl = Math.hypot(R[0] - C[side][0], R[1] - C[side][1]) || 1e-6, fan = [(R[0] - C[side][0]) / rl, (R[1] - C[side][1]) / rl, 0];
+                // (On a head's own lid they fan less at the corners: straight out from the eye's middle there, they lie across the eyeball.)
+                const radial = own ? (up ? norm([fan[0] * 0.5, Math.max(0.65, Math.abs(fan[1])), 0]) : norm([fan[0] * 1.1 + side * 0.25, -Math.max(0.5, Math.abs(fan[1])), 0])) : fan;
+                const D = own ? norm(add(outAt(along), mul(radial, 0.32))) : up ? norm([radial[0] * 0.28, radial[1] * 0.28, 0.96]) : norm([radial[0] * 0.9, radial[1] * 0.9, 0.42]), L = length * (0.62 + 0.38 * Math.exp(-(((along - 0.36) / 0.3) ** 2))) * (own && !up ? 0.45 + 0.75 * rnd() : 0.9 + 0.18 * rnd());
+                const group = rootAt((Math.floor(k / 3) + 0.5) * 3 / count), root = nearestSkin(R), base2 = m.pos.length / 3;
+                for (let j = 0; j <= SEGMENTS; j++) {
+                    const t = j / SEGMENTS, w = width * (own ? 1.6 : 1) * (1 - t) ** (own ? 1.1 : 0.7) + 0.00002;
+                    let c = [0, 1, 2].map(i => R[i] + D[i] * L * t + radial[i] * L * curl * t * t + (group[i] - R[i]) * (own ? (up ? 0.5 : 0.1) : 0.22) * t * t);
+                    // (Never down into the skin: a lash that dips under it reads as a stray dot.)
+                    const under = H.surface(c);
+                    if (!own && Number.isFinite(under.d) && under.d < 0.0002 && under.d > -0.01) c = add(c, mul(under.n, 0.0002 - under.d));
+                    pushVert(m, [c[0] - T[0] * w, c[1] - T[1] * w, c[2] - T[2] * w], D, up ? col : soft, [0, t]);
+                    pushVert(m, [c[0] + T[0] * w, c[1] + T[1] * w, c[2] + T[2] * w], D, up ? col : soft, [1, t]);
+                    source.push(root, root);
+                    if (j) { const a = base2 + (j - 1) * 2; m.idx.push(a, a + 1, a + 3, a, a + 3, a + 2); }
+                }
+            }
+        }
     }
 
     /**
@@ -1867,9 +2076,10 @@
         const draw = (u0, count, len, width, opacity) => {
             for (let k = 0; k < count; k++) {
                 const along = (k + rnd()) / count, mid = Math.sin(along * Math.PI);
-                // Sparse at the corners: a lash there is often missing, and shorter.
-                if (rnd() > 0.25 + 0.75 * mid) continue;
-                const c0 = u0 + along * 0.5, L = len * (0.55 + 0.45 * mid) * (0.75 + 0.4 * rnd()), curl = (rnd() - 0.5) * 0.006 + (along - 0.5) * 0.012;
+                // The whole lid has them, thinning only right at the corners; longest over the outer third, fanning out from the eye's middle.
+                if (rnd() > 0.55 + 0.75 * mid) continue;
+                const reach = 0.62 + 0.38 * Math.exp(-(((along - 0.36) / 0.3) ** 2));
+                const c0 = u0 + along * 0.5, L = len * reach * (0.8 + 0.3 * rnd()), curl = (rnd() - 0.5) * 0.006 + (along - 0.5) * 0.03;
                 const w0 = width * (0.8 + 0.4 * rnd()) * size, a0 = opacity * (0.75 + 0.25 * rnd());
                 for (let y = 0; y < size; y++) {
                     const v = (y + 0.5) / size;
@@ -1885,8 +2095,8 @@
                 }
             }
         };
-        draw(0, 80, 0.95, 0.0028, 1);
-        draw(0.5, 16, 0.4, 0.0018, 0.5);
+        draw(0, 170, 1, 0.0022, 1);
+        draw(0.5, 44, 0.45, 0.0016, 0.55);
         for (let o = 0; o < size * size; o++) {
             const v = Math.floor(o / size) / size, u = (o % size) / size;
             // The upper lid's lash line: the roots close together, a soft dark line along the lid.
@@ -1972,14 +2182,14 @@
 
     function toPart(H, m, name, opts) {
         const count = m.pos.length / 3;
-        const joints = new Uint8Array(count * 4), weights = new Float32Array(count * 4);
+        const joints = new Uint8Array(count * 4), weights = new Float32Array(count * 4),positions=Float32Array.from(m.pos);
         for (let i = 0; i < count; i++) {
-            const [j, w] = skinOf(H, m.pos[i * 3 + 1], opts.rigid);
+            const [j, w] = skinOf(H, positions[i * 3 + 1], opts.rigid);
             joints.set(j, i * 4); weights.set(w, i * 4);
         }
         return Object.assign({
             name,
-            positions: Float32Array.from(m.pos),
+            positions,
             normals: Float32Array.from(m.nrm),
             index: Uint32Array.from(m.idx),
             joints, weights,
@@ -2005,6 +2215,7 @@
         H.budget = clamp(o.budget ?? 1, 0.25, 1);
         // `options.gender` (0 female .. 1 male): a man's lashes are shorter.
         H.gender = clamp(o.gender ?? 0, 0, 1);
+        H.lashRim = o.lashRim || null;
         const seed = (o.seed >>> 0) || hash(hair.style);
         const parts = [];
         const ramp = colorRamp(hair);
@@ -2020,6 +2231,9 @@
             else if (layer.type === 'afro') { afroFrom = head.pos.length / 3; buildAfro(H, hair, head, layer, rand); }
             else if (layer.type === 'coils') buildCoils(H, hair, head, layer, ramp, rand);
             else if (layer.type === 'tail') buildTail(H, hair, head, layer, ramp, rand);
+            else if (layer.type === 'sweep') buildSweep(H,hair,head,layer,ramp,rand);
+            else if (layer.type === 'curtain') buildCurtain(H,hair,head,layer,ramp,rand);
+            else if (layer.type === 'beehive') buildBeehive(H,hair,head,layer,ramp,rand);
             else if (layer.type === 'bun') buildBun(H, hair, head, layer, ramp, rand);
             else if (layer.type === 'braid') buildBraid(H, hair, head, layer, ramp, rand);
             else if (layer.type === 'locks') buildLocks(H, hair, head, layer, ramp, rand);
@@ -2056,7 +2270,7 @@
         if (hair.lashes) {
             const lashes = meshBuilder();
             buildLashes(H, lashes);
-            if (lashes.idx.length) parts.push(toPart(H, lashes, 'Lashes', { rigid: true, extra: { roughness: 0.8, uvs: Float32Array.from(lashes.uv), texture: 'lashes.png', cutout: true, alphaCutoff: 0.3, kind: 'hair' } }));
+            if (lashes.idx.length) parts.push(toPart(H, lashes, 'Lashes', { rigid: true, extra: { roughness: 0.7, uvs: Float32Array.from(lashes.uv), kind: 'hair', doubleSided: true, source: Int32Array.from(lashes.source) } }));
         }
         return parts;
     }
@@ -2067,7 +2281,7 @@
     function clearBody(H, mesh) {
         const queries = root.RRCharacterOutfitTransfer || (typeof require === 'function' ? require('./CharacterOutfitTransfer.js') : null);
         const faces = H.pack.body.index.map(i => H.pack.body.source[i]);
-        const solid = queries ? queries.triangleGrid(H.S, faces, 0.035 * H.scale) : null;
+        const solid = H.hairSolid || (queries ? queries.triangleGrid(H.S, faces, 0.035 * H.scale) : null);
         const gap = 0.003 * H.scale;
         for (let pass = 0; pass < 2; pass++) for (let i = 0; i < mesh.pos.length; i += 3) {
             const p = mesh.pos.slice(i, i + 3);
@@ -2226,8 +2440,8 @@
         // `gender`: 'male' / 'female' or the Gender slider's value.
         const g = opts && opts.gender, male = g === 'male' ? true : g === 'female' ? false : (g != null ? g : rand()) >= 0.5;
         const pick = list => list[Math.floor(rand() * list.length)];
-        const short = ['buzz', 'crew', 'sidePart', 'undercut', 'quiff', 'slickBack', 'messy', 'curlyShort', 'spiky', 'mullet', 'pompadour'];
-        const long = ['bob', 'shoulder', 'long', 'longWavy', 'ponytail', 'bun', 'braid', 'pigtails', 'hime', 'curly', 'sweptBangs', 'pixie', 'twinBraids', 'bunLow', 'ponytailLow'];
+        const short = ['buzz', 'crew', 'sidePart', 'undercut', 'quiff', 'slickBack', 'messy', 'curlyShort', 'spiky', 'mullet', 'pompadour', 'centerPartShort', 'combedBack', 'balding'];
+        const long = ['bob', 'shoulder', 'long', 'longWavy', 'ponytail', 'bun', 'braid', 'pigtails', 'hime', 'curly', 'sweptBangs', 'pixie', 'twinBraids', 'bunLow', 'ponytailLow', 'centerPartLong', 'faceSweep', 'wavyBob', 'beehive'];
         const any = ['afro', 'dreadlocks', 'shag', 'mohawk', 'topKnot', 'bald'];
         const style = rand() < 0.12 ? pick(any) : pick(male ? (rand() < 0.8 ? short : long) : (rand() < 0.8 ? long : short));
         // Natural colors as they occur among the people (`opts.people`, RRHumanBody's): blond and red mostly
@@ -2242,7 +2456,7 @@
         const color = dyed ? pick(['#6a2fa0', '#2f6ad0', '#d02f6a', '#2fa06a', '#e0e0f0']) : grey || pick(natural);
         return normalizeHair({
             style, color, length: 0.8 + rand() * 0.5, volume: rand(), curl: rand() < 0.2 ? rand() : 0,
-            part: pick(PARTS), fringe: (STYLE_FRINGE[style] || [0])[0] * (0.6 + 0.8 * rand()), hairline: male && rand() < 0.25 ? rand() * 0.8 : 0,
+            part: /^centerPart/.test(style)?'center':pick(PARTS), fringe: (STYLE_FRINGE[style] || [0])[0] * (0.6 + 0.8 * rand()), hairline: male && rand() < 0.25 ? rand() * 0.8 : 0,
             highlights: rand() < 0.2 ? rand() : 0,
             facial: { style: male && rand() < 0.45 ? pick(FACIAL.slice(1)).id : 'none', length: 0.7 + rand() * 0.6, volume: rand(), color: dyed ? pick(natural) : '' },
             // Dyed hair leaves the brows and beard their own natural color; brows grey later than the hair.
@@ -2251,6 +2465,7 @@
     }
 
     const api = {
+        BROW_BOX,
         lashTexture, hairTexture, browTexture,
         STYLES, FACIAL, BROWS, PARTS, STYLE_FRINGE, withStyle, DEFAULT_HAIR, normalizeHair, randomHair, build,
         _internal: { measure, headCoords, cutSurface, facialField, scalpField, styleLayers, meshBuilder, addShell, addClump, addTube, addBlob, grow, curlStrand, scatter, tangent, rng, hash, linear }

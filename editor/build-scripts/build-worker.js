@@ -18,8 +18,20 @@ const appImage = require('./appimage-utils');
 const nativeDownload = require('./native-download');
 const gameIdentity = require('./game-identity');
 const assetEncryption = require('./asset-encryption');
+const unusedAssets = require('./unused-assets.cjs');
 
 // ── Logging ──────────────────────────────────────────────────────────
+const onlineDeploy = require('./online-deploy.cjs');
+
+/** The runtime revision of a staged game, for the server's own record. */
+function runtimeRevision(root) {
+    try {
+        return /RPG_REACTOR_RUNTIME_REVISION = "([^"]+)"/.exec(fs.readFileSync(path.join(root, 'js', 'reactor_main.js'), 'utf8'))?.[1] || '';
+    } catch {
+        return '';
+    }
+}
+
 function log(msg, color)  { parentPort.postMessage({ type: 'log', message: msg, color: color || '#cccccc' }); }
 function logInfo(msg)     { log(msg, '#cccccc'); }
 function logGood(msg)     { log(msg, '#00ff00'); }
@@ -63,6 +75,8 @@ const {
     assetEncryption: encryption = { images: false, audio: false, keyText: '' },
     createLinuxAppImage = false,
     packWebFiles = false,   // a Web build's files go into a few archives (web-pack.cjs)
+    online = null,          // Build › Online Server: { folder, address }
+    unusedFiles = 'off',    // leave out files nothing uses: 'off', 'web' (Web builds only) or 'all' (unused-assets.cjs)
     appImageToolPath,
     appImageRuntimePath,
     releaseBuild = false,
@@ -125,6 +139,9 @@ const EXCLUDED = new Set([
     path.join('legacy', 'Scripts'),
     // The Forge tools' own project data (generator settings, character part sources): the game never reads it.
     'forge',
+    // Unused files: the project's Always include list and what its playtests loaded (unused-assets.cjs).
+    'deploy.rpgreactor.json',
+    'asset-usage.rpgreactor.json',
 ]);
 
 // Battle Test writes a full Test_-prefixed copy of every database file into
@@ -138,6 +155,21 @@ function isStagingExcluded(relPath) {
     if (relPath.startsWith('img' + path.sep) && /\.character\.json$/i.test(relPath)) return true;
     return relPath === path.join('data', path.basename(relPath))
         && /^Test_.*\.json$/.test(path.basename(relPath));
+}
+
+/** The files left out, each with its size and why, beside the builds (never inside one). */
+function writeUnusedReport(analysis, folderName) {
+    const lines = [`Unused files left out of ${folderName}: ${analysis.unused.length} (${(analysis.unusedBytes / 1048576).toFixed(1)} MB).`,
+        'Add a line to Deployment > Unused Files > Always include to ship one anyway.', ''];
+    for (const file of analysis.unused) lines.push(`${file.path}\t${(file.size / 1024).toFixed(0)} KB\t${file.reason}`);
+    try {
+        fs.mkdirSync(outputDir, { recursive: true });
+        const report = path.join(outputDir, `${folderName}-unused-files.txt`);
+        fs.writeFileSync(report, lines.join('\n') + '\n');
+        logInfo(`The list of files left out: ${report}`);
+    } catch (error) {
+        logWarn(`Could not write the list of unused files: ${error.message}`);
+    }
 }
 
 function copyDirFiltered(src, dest, relBase) {
@@ -209,7 +241,7 @@ function validateProjectRuntime(root) {
         'reactor_objects.js', 'reactor_objects_actions.js', 'reactor_objects_battlers.js', 'reactor_objects_map.js', 'reactor_objects_interpreter.js', 'reactor_objects_followers.js', 'reactor_objects_legacy.js',
         'reactor_hdr_overlay.js', 'reactor_scenes.js', 'reactor_sprites.js', 'reactor_picture_extensions.js', 'reactor_screen_fx.js',
         'reactor_media_surfaces.js', 'reactor_quests.js', 'reactor_image_layers.js', 'reactor_controls.js', 'reactor_physics.js', 'reactor_rig_motions.js',
-            'reactor_battle_data.js', 'reactor_battle_room.js', 'reactor_battle_presentation.js', 'reactor_battle_events.js', 'reactor_fight_look.js', 'reactor_fight.js', 'reactor_fight_flow.js', 'reactor_fight_tactical.js', 'reactor_fight_stage.js', 'reactor_fight_camera.js', 'reactor_fight_action.js', 'reactor_fight_menu.js', 'reactor_fight_classic.js', 'reactor_speaker_face.js', 'reactor_vehicles.js', 'reactor_vehicles_drive.js', 'reactor_vehicles_feel.js', 'reactor_vehicles_hints.js', 'reactor_vehicles_mount.js',
+            'reactor_battle_data.js', 'reactor_battle_room.js', 'reactor_battle_presentation.js', 'reactor_battle_events.js', 'reactor_fight_look.js', 'reactor_fight.js', 'reactor_fight_flow.js', 'reactor_fight_tactical.js', 'reactor_fight_stage.js', 'reactor_fight_camera.js', 'reactor_fight_action.js', 'reactor_fight_menu.js', 'reactor_fight_classic.js', 'reactor_speaker_face.js', 'reactor_character_creator.js', 'reactor_online.js', 'reactor_online_ui.js', 'reactor_online_voice.js', 'reactor_vehicles.js', 'reactor_vehicles_drive.js', 'reactor_vehicles_feel.js', 'reactor_vehicles_hints.js', 'reactor_vehicles_mount.js',
         'reactor_windows.js', 'reactor_ui_victory.js', 'reactor_ui_fight.js', 'reactor_ui_action.js', 'reactor_ui.js', 'reactor_mv_compat.js', 'reactor_plugins.js',
         path.join('libs', 'pixi.js'), path.join('libs', 'pixi_compat.js'),
         path.join('libs', 'pako.min.js'), path.join('libs', 'lz-string.js'), path.join('libs', 'localforage.min.js'),
@@ -505,6 +537,7 @@ async function installProprietaryCodec(platform, runtimeRoot, runtimeVersion, pr
     logInfo(`Asset optimization: PNG ${assetOptimization.png ? 'enabled' : 'disabled'}, audio ${assetOptimization.audio ? `quality ${assetOptimization.audioQuality}` : 'disabled'}`);
     logInfo(`Linux AppImage: ${createLinuxAppImage ? 'enabled' : 'disabled'}`);
     logInfo(`Encryption: images ${encryption.images ? 'on' : 'off'}, audio ${encryption.audio ? 'on' : 'off'}`);
+    logInfo(`Unused files: ${unusedFiles === 'all' ? 'left out of every build' : unusedFiles === 'web' ? 'left out of the Web build' : 'shipped'}`);
     logInfo('');
 
     if (createLinuxAppImage && (!platforms.includes('linux') || !appImage.supportsHost())) {
@@ -523,6 +556,17 @@ async function installProprietaryCodec(platform, runtimeRoot, runtimeVersion, pr
     progress(2, 'Staging game files...');
     validateProjectRuntime(projectPath);
     copyDirFiltered(projectPath, stagingDir, '');
+    // Worked out once from the project itself; each build that leaves them out removes the same files.
+    const unusedAnalysis = unusedFiles === 'all' || (unusedFiles === 'web' && platforms.includes('web'))
+        ? unusedAssets.analyze(projectPath) : null;
+    if (unusedAnalysis) {
+        logInfo(unusedAssets.describe(unusedAnalysis));
+        writeUnusedReport(unusedAnalysis, safeFolderName);
+    }
+    if (unusedAnalysis && unusedFiles === 'all') {
+        // Before optimization and encryption, which then only work on what ships.
+        logGood(`Left out ${unusedAssets.prune(stagingDir, unusedAnalysis)} unused files.`);
+    }
     await ensureNwVersion();
     normalizeStagedPackage(stagingDir, gameTitle, nwVersion);
     if (assetOptimization.png || assetOptimization.audio) {
@@ -548,6 +592,7 @@ async function installProprietaryCodec(platform, runtimeRoot, runtimeVersion, pr
         const convertedNote = summary.converted ? ` (${summary.converted} converted to OGG)` : '';
         logGood(`Asset optimization complete: ${summary.png} PNG, ${summary.audio} audio updated${convertedNote}; ${(saved / 1024 / 1024).toFixed(2)} MiB saved.`);
     }
+    if (online) logInfo(`Online: this game connects to ${onlineDeploy.stampOnlineClient(stagingDir, online.address, online.settings, online.characters).url}`);
     // After optimization, which reads the plain files.
     if (encryption.images || encryption.audio) {
         logInfo('Encrypting assets...');
@@ -559,6 +604,7 @@ async function installProprietaryCodec(platform, runtimeRoot, runtimeVersion, pr
         });
         logGood(`Encrypted ${encrypted.images} image and ${encrypted.audio} audio files (key in data/System.json).`);
     }
+    if (onlineDeploy.stageCharacterBuilder(stagingDir, appRoot)) logInfo('Character Creation: the Forge ships with this game.');
     logGood('Staging complete.');
     progress(10, 'Staging complete');
     logInfo('');
@@ -569,7 +615,8 @@ async function installProprietaryCodec(platform, runtimeRoot, runtimeVersion, pr
         for (let i = 0; i < platforms.length; i++) {
             const platform = platforms[i];
             const nwPlatform = platform === 'mac' ? 'osx' : platform;
-            const label = platform === 'mac' ? 'macOS' : platform === 'win' ? 'Windows' : platform === 'web' ? 'Web (HTML5)' : 'Linux';
+            const browserGame = platform === 'web' || platform === 'online';
+            const label = platform === 'online' ? 'Online Server' : platform === 'mac' ? 'macOS' : platform === 'win' ? 'Windows' : platform === 'web' ? 'Web (HTML5)' : 'Linux';
 
             // Progress offsets for this platform
             const pBase = 10 + i * platformShare;
@@ -582,35 +629,64 @@ async function installProprietaryCodec(platform, runtimeRoot, runtimeVersion, pr
             progress(Math.round(pBase), `Building for ${label}...`);
 
             // Web builds use a different output folder name
-            const platformOutDir = platform === 'web'
+            const platformOutDir = platform === 'online'
+                ? online.folder
+                : platform === 'web'
                 ? path.join(outputDir, `${safeFolderName}-web`)
                 : path.join(outputDir, `${safeFolderName}-${nwPlatform}-x64`);
 
-            // Clean previous output
-            if (fs.existsSync(platformOutDir)) {
+            // Clean previous output. Never the Online Server's folder: it can be a live
+            // web root, with other files beside the game and players' data.
+            if (platform !== 'online' && fs.existsSync(platformOutDir)) {
                 fs.rmSync(platformOutDir, { recursive: true, force: true });
             }
 
-            if (platform === 'web') {
+            if (browserGame) {
                 // ── Web deployment — no NW.js runtime needed ─────────
                 logInfo('Web deployment — no NW.js runtime needed');
                 logInfo('Copying game files...');
                 progress(Math.round(pCopy), 'Copying game files...');
-                copyDirRecursive(stagingDir, platformOutDir);
+                if (platform === 'online') fs.mkdirSync(platformOutDir, { recursive: true });
+                // Packing swaps a folder's files for archives, so an Online Server packs its own
+                // copy of the game and never the web folder, which can hold other things.
+                const packOnline = platform === 'online' && online.pack;
+                const browserDir = packOnline ? path.join(stagingDir, '..', `${path.basename(stagingDir)}-online`) : platformOutDir;
+                copyDirRecursive(stagingDir, browserDir);
                 logGood('Game files copied.');
-                for (const name of applyBrowserFallbacks(platformOutDir)) logInfo(`Browser fallback applied to ${name} (it reads files with Node at load).`);
+                if (unusedAnalysis && unusedFiles === 'web' && platform === 'web') {
+                    // Before the file index and the packing, which then only hold what ships.
+                    logGood(`Left out ${unusedAssets.prune(platformOutDir, unusedAnalysis)} unused files from the Web build.`);
+                }
+                for (const name of applyBrowserFallbacks(browserDir)) logInfo(`Browser fallback applied to ${name} (it reads files with Node at load).`);
                 // A browser cannot list its files; the runtime corrects filename casing from this index.
-                const indexed = webFileIndex.writeWebFileIndex(platformOutDir);
+                const indexed = webFileIndex.writeWebFileIndex(browserDir);
                 logInfo(`File index written: ${indexed} files (filename casing is corrected from it in the browser).`);
-                if (packWebFiles) {
+                if ((packWebFiles && platform === 'web') || packOnline) {
                     logInfo('Packing files into archives...');
-                    const packed = webPack.packGame(platformOutDir);
+                    const packed = webPack.packGame(browserDir);
                     if (packed) {
                         logGood(webPack.describe(packed));
-                        logInfo(`The build is now ${webFileIndex.listFiles(platformOutDir).length} files. It needs a browser that allows service workers (any current one, outside private windows).`);
+                        logInfo(`The build is now ${webFileIndex.listFiles(browserDir).length} files. It needs a browser that allows service workers (any current one, outside private windows).`);
                     }
                 }
-                for (const warning of webFileIndex.storefrontWarnings(platformOutDir)) logWarn(warning);
+                if (platform !== 'online') for (const warning of webFileIndex.storefrontWarnings(platformOutDir)) logWarn(warning);
+                if (packOnline) {
+                    copyDirRecursive(browserDir, platformOutDir);
+                    fs.rmSync(browserDir, { recursive: true, force: true });
+                }
+                if (platform === 'online') {
+                    const written = onlineDeploy.writeOnlineServer(platformOutDir, {
+                        appRoot, project: safeFolderName, title: gameTitle, runtime: runtimeRevision(stagingDir), maxPlayers: online.maxPlayers,
+                        rules: onlineDeploy.readData(stagingDir, 'ReactorCharacters.json').rules,
+                        settings: onlineDeploy.readData(stagingDir, 'ReactorOnline.json'),
+                        dataFolder: path.join(stagingDir, 'data'),
+                    });
+                    logGood(written.newSecret ? 'Online server written, with a new secret.' : 'Online server updated; players stay signed in.');
+                    if (written.grids) logGood(`Walls of ${written.grids} maps given to the server.`);
+                    if (online.address) logGood(`Players can open ${online.address}`);
+                    if (written.adminKey) logBlue(`Server admin page: ${online.address || ''}/reactor-online/admin.php  Password: ${written.adminKey}  (saved only on the server, in reactor-online/config.php)`);
+                    if (/^http:\/\//i.test(online.address || '')) logWarn('This address is not https, so passwords would travel unprotected. Use https before opening accounts.');
+                }
                 progress(Math.round(pRename), 'Finalizing...');
             } else {
                 // ── Get NW.js runtime ───────────────────────────────

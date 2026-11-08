@@ -1,4 +1,5 @@
 'use strict';
+const { cover, sample, exhaustive } = require('./helpers/coverage.cjs');
 const test = require('node:test'), assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 const Body = require('../src/forge/Character3D/HumanBody.js'), Model = require('../src/forge/Character3D/CharacterModel.js');
 const Detail = require('../src/forge/Character3D/CharacterDetail.js'), Creature = require('../src/forge/Character3D/CreatureBody.js');
@@ -12,6 +13,40 @@ function builder(extra = {}) {
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/forge/Character3D/Character3DBuilder.js'), 'utf8'), scope);
     return Object.create(window.Character3DBuilder.prototype);
 }
+
+test('lower bust shading smooths coarse normal changes without moving skin or softening the head', () => {
+    const P = Body.shape(pack, recipe(0)), saved = P.slice(), raw = Body.vertexNormals(pack, P), soft = Body.skinNormals(pack, P);
+    const { offsets, flat } = Body.neighbors(pack);
+    let changed = 0, roughBefore = 0, roughAfter = 0;
+    for (const v of new Set(pack.body.source)) {
+        const difference = Math.hypot(...[0, 1, 2].map(k => soft[v * 3 + k] - raw[v * 3 + k]));
+        assert.ok(Math.abs(Math.hypot(...soft.subarray(v * 3, v * 3 + 3)) - 1) < 0.00001);
+        if (difference < 0.00001) continue;
+        changed++;
+        for (let i = offsets[v]; i < offsets[v + 1]; i++) for (let k = 0; k < 3; k++) {
+            roughBefore += (raw[v * 3 + k] - raw[flat[i] * 3 + k]) ** 2;
+            roughAfter += (soft[v * 3 + k] - soft[flat[i] * 3 + k]) ** 2;
+        }
+    }
+    assert.ok(changed > 30 && changed < 1000, 'local underside vertices: ' + changed);
+    assert.ok(roughAfter < roughBefore * 0.85, 'normal variation ratio: ' + roughAfter / roughBefore);
+    assert.ok(sameBytes(P, saved), 'shading preserves geometry and wardrobe fit');
+    for (const v of Body.headFields(pack).eyeIds) for (let k = 0; k < 3; k++) assert.equal(soft[v * 3 + k], raw[v * 3 + k]);
+});
+
+test('smooth underside occlusion deepens without requiring anatomical chest detail', () => {
+    const Shading = require('../src/forge/Character3D/CharacterShading.js');
+    const built = Body.build(pack, recipe(0)), body = built.parts[0];
+    const ao = { 0: new Float32Array(body.positions.length / 3).fill(.94) }, mask = Body.bustShadingMask(pack);
+    Shading.chestFromBody([body], ao, pack);
+    let darkened = 0;
+    pack.body.source.forEach((v, i) => {
+        assert.ok(Number.isFinite(ao[0][i]) && ao[0][i] >= .70 && ao[0][i] <= 1);
+        if (mask[v] > .5 && ao[0][i] < .93) darkened++;
+        if (!mask[v]) assert.ok(Math.abs(ao[0][i] - .94) < 1e-6, 'occlusion outside the underside stays unchanged');
+    });
+    assert.ok(darkened > 30, 'continuous underside shading applies with no detail patch');
+});
 
 test('nipple projection is independent of diameter, permits a flat tip, and migrates old size-only recipes', () => {
     assert.equal(Body.normalizeRecipe({ anatomy: { nipple: 2 } }).anatomy.nippleProjection, 2);
@@ -122,7 +157,7 @@ test('foreskin styles and female fold controls change local geometry and pigment
 });
 
 test('actual creature meshes attach anatomy and tails across kinds, sexes and contrasting proportions', () => {
-    for (const kind of Creature.KINDS.filter(k => !k.form)) for (const sex of ['male', 'female']) {
+    for (const [kind, sex] of cover(Creature.KINDS.filter(k => !k.form), ['male', 'female'])) {
         const r = Creature.normalizeRecipe({ ...Creature.kindRecipe(kind.kind), anatomy: { detail: true, sex } });
         const built = Creature.build(r, { quality: 'preview', hairBudget: 0, static: true, diagnostics: true });
         assert.deepEqual(inspectAttachments(built), [], kind.kind + '/' + sex);

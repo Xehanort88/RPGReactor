@@ -64,6 +64,13 @@ class DistEditorManager {
                                         </span>
                                     </label>
                                 </div>
+                                <label style="margin-top: 10px; display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; background: var(--color-bg-panel); border: 1px solid var(--color-border); border-radius: 4px; cursor: pointer;">
+                                    <input id="dist-unused-files" type="checkbox" class="system-checkbox" style="width: 16px; height: 16px; min-width: 16px; min-height: 16px; max-width: 16px; max-height: 16px; flex: 0 0 16px; margin: 1px 0 0;">
+                                    <span>
+                                        <span style="display: block; color: var(--color-text); font-weight: 600; font-size: 12px;">${tt("Don't bundle unused files")}</span>
+                                        <span style="display: block; color: var(--color-text-muted); font-size: 10px; line-height: 1.35; margin-top: 2px;">${tt("Leaves out the bundled project's pictures, sounds, models and effects its game never uses. Its Always include list is set when deploying a game.")}</span>
+                                    </span>
+                                </label>
                             </div>
 
                             <!-- Platform Selection (for platform type) -->
@@ -219,6 +226,11 @@ class DistEditorManager {
         typeRadios.forEach(radio => {
             radio.addEventListener('change', () => this.updatePlatformVisibility());
         });
+        // Don't bundle unused files: kept for the kind of package it was set for.
+        document.getElementById('dist-unused-files').addEventListener('change', event => {
+            const prefs = window.DeploymentAssetPreferences, type = this.modal.querySelector('input[name="dist-package-type"]:checked').value;
+            prefs?.saveUnusedFiles(event.target.checked, localStorage, prefs.distUnusedFilesKey(type));
+        });
 
         // Option label hover effects (gold theme)
         const labels = this.modal.querySelectorAll('.dist-option-label');
@@ -244,6 +256,9 @@ class DistEditorManager {
         document.getElementById('dist-nw-section').style.display = web ? 'none' : 'block';
         document.getElementById('dist-pack-option').style.display = web ? 'flex' : 'none';
         document.getElementById('dist-pack-files').checked = web && !!window.WebPackPreference?.load();
+        // Remembered for each kind of package: on for Web, off for desktop until changed.
+        const prefs = window.DeploymentAssetPreferences;
+        if (prefs) document.getElementById('dist-unused-files').checked = prefs.loadUnusedFiles(localStorage, prefs.distUnusedFilesKey(type), web);
         const codec = document.getElementById('dist-include-proprietary-codecs');
         const codecOption = document.getElementById('dist-codec-option');
         const disabled = type === 'minimal' || web;
@@ -416,6 +431,10 @@ class DistEditorManager {
         const createLinuxAppImage = document.getElementById('dist-create-linux-appimage').checked;
         const packWebFiles = packageType === 'web' && document.getElementById('dist-pack-files').checked;
         if (packageType === 'web') window.WebPackPreference?.save(packWebFiles);
+        const prefs = window.DeploymentAssetPreferences;
+        const leaveOut = document.getElementById('dist-unused-files').checked;
+        const unusedFiles = leaveOut ? 'all' : 'off';
+        prefs?.saveUnusedFiles(leaveOut, localStorage, prefs.distUnusedFilesKey(packageType));
 
         // Determine platforms
         let platforms;
@@ -497,6 +516,7 @@ class DistEditorManager {
                     includeProprietaryCodecs,
                     createLinuxAppImage,
                     packWebFiles,
+                    unusedFiles,
                     releaseBuild: false,
                     releaseHashManifestPath: process.env.RPG_REACTOR_RELEASE_HASH_MANIFEST ||
                         pathModule.join(appRoot, 'build-scripts', 'release-hashes.json'),

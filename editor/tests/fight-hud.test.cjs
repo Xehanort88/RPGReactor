@@ -266,7 +266,7 @@ test('Overwatch, Wait and End Turn are written the way the project writes Attack
     assert.deepEqual(Hud.commandStyle(['\\i[1] Attack', 'SKILL', 'Item']), { upper: false, icons: false }, 'only when all three agree');
     const node = Hud.normalizeProps({ fightWindow: 'command' }, 'fightWindow');
     assert.equal(node.commandIcons, true);
-    assert.deepEqual(Hud.WINDOW_LABELS, ['mount', 'dismount', 'overwatch', 'wait', 'endTurn', 'auto']);
+    assert.deepEqual(Hud.WINDOW_LABELS, ['mount', 'dismount', 'grapple', 'overwatch', 'wait', 'endTurn', 'auto']);
     assert.equal(Hud.commandText(node, 'auto', '', demo, () => true), '\\i[237] AUTO');
     assert.equal(Hud.commandLabel(node, 'wait', '', demo), 'WAIT');
     assert.equal(Hud.commandLabel(node, 'overwatch', '', demo), 'OVERWATCH');
@@ -310,7 +310,10 @@ test('Mount and Dismount are the battle\'s own commands: the project\'s case, an
     assert.equal(bare, 'MOUNT');
     assert.equal(Hud.commandGlyph(node, 'mount', bare, demo), true);
     const ctx = fakeContext();
-    for (const key of ['mount', 'dismount']) Hud.drawGlyph(ctx, key, 0, 0, 32, '#ffffff');
+    for (const key of ['mount', 'dismount', 'grapple']) Hud.drawGlyph(ctx, key, 0, 0, 32, '#ffffff');
+    // Grapple: its own icon (the Demo's Grappler), and a hook drawn where the sheet has none.
+    assert.equal(Hud.commandText(node, 'grapple', '', demo, every), '\\i[' + Hud.COMMAND_ICONS.grapple + '] GRAPPLE');
+    assert.equal(Hud.commandGlyph(node, 'grapple', Hud.commandText(node, 'grapple', '', demo, none), demo), true);
 });
 
 test('a unit that rides a vehicle with a life of its own shows that life under its own HP', () => {
@@ -1042,6 +1045,24 @@ test('the highlighted menu row is read from the Tactical windows alone, and Wait
     // Attack and Wait go through the window's own drawing (the project's icon codes); End Turn gets the HUD's icon on the same left edge.
     assert.deepEqual(drawn, [['stock', 0], ['stock', 1], ['text', ' END TURN', 36, 'left']]);
     assert.deepEqual([0, 1, 2].map(index => win2._fightTextWidth(index)), [36 + 70, 36 + 50, 36 + 90], 'every row measures as an icon and a word');
+});
+
+test('unit status stays readable when a map unit or cursor lies behind it before and after movement', () => {
+    const sandbox = loadRuntime(), UI = sandbox.ReactorUI, scene = sandbox.__scene;
+    const fight = sandbox.$gameFight = fakeFight();
+    sandbox.SceneManager._scene = scene;
+    sandbox.ReactorFight = { UnitMarks: { covers: () => true } };
+    UI.updateFightScene(scene);
+    const active = scene._reactorFightHud._nodeWindows.find(window => window.node().name === 'Active Unit');
+    for (const phase of ['move', 'moving', 'command', 'aim', 'command']) {
+        fight.state.state = phase;
+        fight.bump();
+        for (let frame = 0; frame < 30; frame++) UI.updateFightScene(scene);
+        assert.equal(active.visible, true, phase);
+        assert.equal(active.alpha, 1, `status remains fully visible during ${phase}`);
+        assert.equal(active.contentsOpacity, 255, `status text remains readable during ${phase}`);
+        assert.equal(UI.fightPanelAt(active.x + 10, active.y + 10), true, 'visible status intercepts clicks over the map');
+    }
 });
 
 test('in the game: the command window is fitted when it opens, HP runs down over a few frames, and a director\'s shot fades the panels', () => {

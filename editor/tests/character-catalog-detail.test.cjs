@@ -31,9 +31,11 @@ test('joined dresses include a fitted pelvis lining independent of the free skir
  for(const id of ['robe','gown','dress','ballGown','qipao']){
   const body=Q.Body.build(pack,{gender:0,age:30}),out=W.build(pack,body,[{id}],{atlasSize:128});
   const lining=out.parts.find(p=>p.name.includes('lining'));assert.ok(lining,id+' has an inner yoke');
-  assert.ok(!lining.hang,'the yoke stays with the hips while the skirt simulates');
+  // Since the closed-waist rework (2026-10-30) yoke, bodice and skirt share one cut part: the skirt's vertices carry a
+  // reach down the cloth (hang >= 0), the yoke's stay off the rig (hang -1) and ride the hips.
+  assert.ok(lining.hang?.some(h=>h>0),id+' has a free skirt in the joined part');
   const hip=body.bones.find(b=>b.name==='Hips').head,seat=[];
-  for(let i=0;i<lining.positions.length;i+=3)if(lining.positions[i+1]<hip[1]+.06&&lining.positions[i+1]>hip[1]-.08&&lining.positions[i+2]<hip[2])seat.push(i);
+  for(let i=0;i<lining.positions.length;i+=3)if(lining.hang[i/3]<0&&lining.positions[i+1]<hip[1]+.06&&lining.positions[i+1]>hip[1]-.08&&lining.positions[i+2]<hip[2])seat.push(i);
   assert.ok(seat.length>12,id+' has actual rear fabric over the pelvis');sound([lining],body.bones);
  }
  const body=Q.Body.build(pack,{gender:1}),open=W.build(pack,body,[{id:'tabard'}],{atlasSize:128});
@@ -62,14 +64,14 @@ test('tufts sample their own coat texels and interpolate attachment weights acro
 });
 
 test('short fur uses a stable alpha cut in the actual preview material',()=>{
- const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),THREE=require('three'),context=vm.createContext({THREE,window:{}});
+ const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),THREE=require('./helpers/three.cjs'),context=vm.createContext({THREE,window:{},RRCharacterGlb:require('../src/forge/Character3D/CharacterGlb.js')});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/forge/Character3D/Character3DBuilder.js'),'utf8')+'\nglobalThis.Builder=Character3DBuilder;',context);
  const b=Object.create(context.Builder.prototype),material=b._material({kind:'hair',cutout:true,onSkin:true,roughness:.8},{textures:{}},null,null);
  assert.equal(material.alphaToCoverage,false,'short tufts must not expand into bright card rectangles');assert.equal(material.alphaTest,.3);material.dispose();
 });
 
 test('the Face view aims at Slimefolk eyes instead of zooming inside the goo',()=>{
- const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),THREE=require('three'),context=vm.createContext({THREE,window:{}});
+ const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),THREE=require('./helpers/three.cjs'),context=vm.createContext({THREE,window:{},RRCharacterGlb:require('../src/forge/Character3D/CharacterGlb.js')});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/forge/Character3D/Character3DBuilder.js'),'utf8')+'\nglobalThis.Builder=Character3DBuilder;',context);
  const b=Object.create(context.Builder.prototype);b._view={camera:{fov:35,aspect:1}};
  for(const form of [0,.5,1]){const r=Q.Model.build(null,{plan:'slime',species:'slimefolk',form},{},{quality:'preview',static:true});b._faceFrame(r);

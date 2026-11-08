@@ -37,7 +37,7 @@ function normalizeI18nLanguage(language) {
     return RR_LANGUAGES.find(candidate => candidate.id.toLowerCase() === normalized)?.id || 'en';
 }
 
-const RR_APP_VERSION = '0.99.2';
+const RR_APP_VERSION = '0.99.4';
 
 const RR_DB_TYPE_KEYS = {
     actors: 'menu.actors', classes: 'menu.classes', skills: 'menu.skills', items: 'menu.items',
@@ -46,7 +46,7 @@ const RR_DB_TYPE_KEYS = {
     userInterfaces: 'menu.userInterfaces', vehicles: 'vehicle.database',
     actionSequences: 'menu.actionSequences', quests: 'menu.quests', musicSequences: 'menu.musicSequences', reactor3d: 'menu.models3d', structures: 'menu.structures',
     system: 'menu.system', system1: 'db.system1', system2: 'db.system2', types: 'menu.types', terms: 'menu.terms', controls: 'menu.controls',
-    reactorFeatures: 'db.reactorFeatures'
+    reactorFeatures: 'db.reactorFeatures', online: 'db.online', characterCreation: 'db.characterCreation'
 };
 
 const RR_EVENT_COMMAND_NAMES = {
@@ -21979,6 +21979,24 @@ Object.assign(RR_I18N_STRINGS["id"], {"db.battles.screen":"Layar","db.battles.tu
 Object.assign(RR_I18N_STRINGS["vi"], {"db.battles.screen":"Màn hình","db.battles.turns":"Lượt","db.battles.classic":"Trận cổ điển","db.battles.tactical":"Trận chiến thuật","db.battles.tacticalElsewhere":"Một bản đồ hoặc lệnh của game này chiến đấu theo Chiến thuật.","db.battles.onMap":"Trận chiến trên bản đồ","db.battles.pace":"Tốc độ lượt của địch","db.battles.paceFast":"Nhanh","db.battles.paceSkip":"Bỏ qua đến lượt tôi","db.battles.paceHint":"Thiết lập ban đầu của người chơi mới.","db.battles.revive":"Người gục ngã đứng dậy sau khi thắng","db.battles.setup":"Lưu và mở Dàn trận","db.battles.setupNoMap":"Hãy mở một bản đồ trước.","db.battleWords.stock":"Từ mặc định","db.battleWords.own":"Từ của game này","db.battleWords.hint":"Game sẽ điền %1 và %2. \\n bắt đầu một dòng mới.","db.battleWords.commands":"Lệnh","db.battleWords.goal":"Mục tiêu","db.battleWords.reasons":"Lựa chọn không dùng được","db.battleWords.notices":"Thông báo","db.battleWords.menu":"Menu chiến đấu","db.battleWords.tips":"Gợi ý điều khiển","db.battleWords.controls":"Trang điều khiển","db.battleWords.action":"Hành động và Góc nhìn thứ nhất","db.battleWords.victory":"Chiến thắng","db.battleWords.other":"Từ khác"});
 Object.assign(RR_I18N_STRINGS["th"], {"db.battles.screen":"หน้าจอ","db.battles.turns":"เทิร์น","db.battles.classic":"การต่อสู้แบบคลาสสิก","db.battles.tactical":"การต่อสู้แบบแทคติก","db.battles.tacticalElsewhere":"มีแผนที่หรือคำสั่งของเกมนี้ที่ต่อสู้แบบแทคติก","db.battles.onMap":"การต่อสู้บนแผนที่","db.battles.pace":"ความเร็วเทิร์นศัตรู","db.battles.paceFast":"เร็ว","db.battles.paceSkip":"ข้ามไปเทิร์นของฉัน","db.battles.paceHint":"ค่าเริ่มต้นของผู้เล่นใหม่","db.battles.revive":"ผู้ที่ล้มจะลุกขึ้นหลังชนะ","db.battles.setup":"บันทึกแล้วเปิดจัดการต่อสู้","db.battles.setupNoMap":"เปิดแผนที่ก่อน","db.battleWords.stock":"คำเริ่มต้น","db.battleWords.own":"คำของเกมนี้","db.battleWords.hint":"เกมจะเติม %1 และ %2 ให้ \\n คือขึ้นบรรทัดใหม่","db.battleWords.commands":"คำสั่ง","db.battleWords.goal":"เป้าหมาย","db.battleWords.reasons":"ตัวเลือกที่ใช้ไม่ได้","db.battleWords.notices":"การแจ้งเตือน","db.battleWords.menu":"เมนูการต่อสู้","db.battleWords.tips":"คำใบ้การควบคุม","db.battleWords.controls":"หน้าการควบคุม","db.battleWords.action":"แอ็กชันและมุมมองบุคคลที่หนึ่ง","db.battleWords.victory":"ชัยชนะ","db.battleWords.other":"คำอื่นๆ"});
 Object.assign(RR_I18N_STRINGS["tr"], {"db.battles.screen":"Ekran","db.battles.turns":"Turlar","db.battles.classic":"Klasik savaşlar","db.battles.tactical":"Taktik savaşlar","db.battles.tacticalElsewhere":"Bu oyunun bir haritası veya komutu Taktik modda savaşıyor.","db.battles.onMap":"Haritada savaşlar","db.battles.pace":"Düşman turu hızı","db.battles.paceFast":"Hızlı","db.battles.paceSkip":"Sıram gelene kadar atla","db.battles.paceHint":"Yeni bir oyuncunun başladığı ayar.","db.battles.revive":"Düşenler zaferden sonra ayağa kalkar","db.battles.setup":"Kaydet ve Savaş Kurulumu'nu aç","db.battles.setupNoMap":"Önce bir harita açın.","db.battleWords.stock":"Varsayılan sözcük","db.battleWords.own":"Bu oyunun sözcüğü","db.battleWords.hint":"%1 ve %2 yerlerini oyun doldurur. \\n yeni bir satır başlatır.","db.battleWords.commands":"Komutlar","db.battleWords.goal":"Hedef","db.battleWords.reasons":"Kullanılamayan seçenekler","db.battleWords.notices":"Bildirimler","db.battleWords.menu":"Savaş menüsü","db.battleWords.tips":"Kontrol ipuçları","db.battleWords.controls":"Kontroller sayfası","db.battleWords.action":"Eylem ve Birinci şahıs","db.battleWords.victory":"Zafer","db.battleWords.other":"Diğer sözcükler"});
+Object.assign(RR_I18N_STRINGS["en"], {"db.battles.heightReach": "Height reach", "db.battles.heightLevels": "levels up per extra tile", "db.battles.heightMost": "Most extra reach", "db.battles.heightTiles": "tiles", "db.battles.heightHint": "A shot from higher ground reaches further. A weapon or skill can set its own in its Combat card."});
+Object.assign(RR_I18N_STRINGS["ja"], {"db.battles.heightReach": "高所の射程", "db.battles.heightLevels": "段ごとに射程+1", "db.battles.heightMost": "射程の最大増加", "db.battles.heightTiles": "マス", "db.battles.heightHint": "高所からの射撃は遠くまで届きます。武器やスキルは戦闘カードで個別に設定できます。"});
+Object.assign(RR_I18N_STRINGS["es"], {"db.battles.heightReach": "Alcance por altura", "db.battles.heightLevels": "niveles más arriba por casilla extra", "db.battles.heightMost": "Alcance extra máximo", "db.battles.heightTiles": "casillas", "db.battles.heightHint": "Un disparo desde terreno más alto llega más lejos. Un arma o habilidad puede fijar el suyo en su tarjeta de Combate."});
+Object.assign(RR_I18N_STRINGS["zh-Hant"], {"db.battles.heightReach": "高處射程", "db.battles.heightLevels": "每高幾層多1格", "db.battles.heightMost": "最多增加射程", "db.battles.heightTiles": "格", "db.battles.heightHint": "從高處射擊能射得更遠。武器或技能可在其戰鬥卡片中自行設定。"});
+Object.assign(RR_I18N_STRINGS["zh-Hans"], {"db.battles.heightReach": "高处射程", "db.battles.heightLevels": "每高几层多1格", "db.battles.heightMost": "最多增加射程", "db.battles.heightTiles": "格", "db.battles.heightHint": "从高处射击能射得更远。武器或技能可在其战斗卡片中自行设置。"});
+Object.assign(RR_I18N_STRINGS["ru"], {"db.battles.heightReach": "Дальность с высоты", "db.battles.heightLevels": "уровней выше за клетку", "db.battles.heightMost": "Наибольшая прибавка", "db.battles.heightTiles": "клеток", "db.battles.heightHint": "Выстрел с возвышенности бьёт дальше. Оружие или навык может задать своё в карточке «Бой»."});
+Object.assign(RR_I18N_STRINGS["pt"], {"db.battles.heightReach": "Alcance pela altura", "db.battles.heightLevels": "níveis acima por casa extra", "db.battles.heightMost": "Alcance extra máximo", "db.battles.heightTiles": "casas", "db.battles.heightHint": "Um disparo de terreno mais alto alcança mais longe. Uma arma ou habilidade pode definir o seu no cartão de Combate."});
+Object.assign(RR_I18N_STRINGS["de"], {"db.battles.heightReach": "Reichweite durch Höhe", "db.battles.heightLevels": "Ebenen höher je zusätzlichem Feld", "db.battles.heightMost": "Höchste Zusatzreichweite", "db.battles.heightTiles": "Felder", "db.battles.heightHint": "Ein Schuss von höherem Gelände reicht weiter. Eine Waffe oder Fertigkeit kann in ihrer Kampf-Karte eine eigene Regel setzen."});
+Object.assign(RR_I18N_STRINGS["fr"], {"db.battles.heightReach": "Portée en hauteur", "db.battles.heightLevels": "niveaux plus haut par case en plus", "db.battles.heightMost": "Portée en plus maximale", "db.battles.heightTiles": "cases", "db.battles.heightHint": "Un tir depuis une position plus haute porte plus loin. Une arme ou une compétence peut fixer la sienne dans sa carte Combat."});
+Object.assign(RR_I18N_STRINGS["el"], {"db.battles.heightReach": "Βεληνεκές από ύψος", "db.battles.heightLevels": "επίπεδα ψηλότερα ανά επιπλέον τετράγωνο", "db.battles.heightMost": "Μέγιστο επιπλέον βεληνεκές", "db.battles.heightTiles": "τετράγωνα", "db.battles.heightHint": "Μια βολή από ψηλότερο έδαφος φτάνει πιο μακριά. Ένα όπλο ή μια ικανότητα μπορεί να ορίσει τον δικό του κανόνα στην κάρτα Μάχης."});
+Object.assign(RR_I18N_STRINGS["ko"], {"db.battles.heightReach": "고지 사거리", "db.battles.heightLevels": "추가 1칸당 높이 단계", "db.battles.heightMost": "최대 추가 사거리", "db.battles.heightTiles": "칸", "db.battles.heightHint": "높은 곳에서 쏘면 더 멀리 닿습니다. 무기나 스킬은 전투 카드에서 따로 정할 수 있습니다."});
+Object.assign(RR_I18N_STRINGS["ar"], {"db.battles.heightReach": "المدى من الارتفاع", "db.battles.heightLevels": "مستويات أعلى لكل مربع إضافي", "db.battles.heightMost": "أقصى مدى إضافي", "db.battles.heightTiles": "مربعات", "db.battles.heightHint": "الإطلاق من أرض أعلى يصل أبعد. يمكن للسلاح أو المهارة ضبط قاعدته في بطاقة القتال."});
+Object.assign(RR_I18N_STRINGS["it"], {"db.battles.heightReach": "Gittata dall’alto", "db.battles.heightLevels": "livelli più in alto per casella in più", "db.battles.heightMost": "Gittata extra massima", "db.battles.heightTiles": "caselle", "db.battles.heightHint": "Un colpo da un terreno più alto arriva più lontano. Un’arma o un’abilità può impostare la propria nella scheda Combattimento."});
+Object.assign(RR_I18N_STRINGS["pl"], {"db.battles.heightReach": "Zasięg z wysokości", "db.battles.heightLevels": "poziomów wyżej na dodatkowe pole", "db.battles.heightMost": "Największy dodatkowy zasięg", "db.battles.heightTiles": "pól", "db.battles.heightHint": "Strzał z wyższego terenu sięga dalej. Broń lub umiejętność może ustawić własną regułę w karcie Walka."});
+Object.assign(RR_I18N_STRINGS["id"], {"db.battles.heightReach": "Jangkauan dari ketinggian", "db.battles.heightLevels": "tingkat lebih tinggi per petak tambahan", "db.battles.heightMost": "Jangkauan tambahan terbanyak", "db.battles.heightTiles": "petak", "db.battles.heightHint": "Tembakan dari tempat lebih tinggi menjangkau lebih jauh. Senjata atau skill bisa mengatur sendiri di kartu Pertarungan."});
+Object.assign(RR_I18N_STRINGS["vi"], {"db.battles.heightReach": "Tầm bắn nhờ độ cao", "db.battles.heightLevels": "tầng cao hơn cho mỗi ô thêm", "db.battles.heightMost": "Tầm thêm tối đa", "db.battles.heightTiles": "ô", "db.battles.heightHint": "Bắn từ chỗ cao sẽ xa hơn. Vũ khí hoặc kỹ năng có thể tự đặt trong thẻ Chiến đấu."});
+Object.assign(RR_I18N_STRINGS["th"], {"db.battles.heightReach": "ระยะจากที่สูง", "db.battles.heightLevels": "ระดับที่สูงกว่าต่อช่องที่เพิ่ม", "db.battles.heightMost": "ระยะเพิ่มสูงสุด", "db.battles.heightTiles": "ช่อง", "db.battles.heightHint": "ยิงจากที่สูงจะไปได้ไกลขึ้น อาวุธหรือสกิลตั้งค่าเองได้ในการ์ดการต่อสู้"});
+Object.assign(RR_I18N_STRINGS["tr"], {"db.battles.heightReach": "Yükseklik menzili", "db.battles.heightLevels": "ek kare başına yukarıdaki seviye", "db.battles.heightMost": "En fazla ek menzil", "db.battles.heightTiles": "kare", "db.battles.heightHint": "Yüksek yerden atış daha uzağa ulaşır. Bir silah ya da beceri kendi kuralını Savaş kartında belirleyebilir."});
 Object.assign(RR_TEXT_TRANSLATIONS["ja"], {"Battles":"戦闘設定","Front view":"フロントビュー","Side view":"サイドビュー","Time progress (active)":"タイムプログレス（アクティブ）","Time progress (wait)":"タイムプログレス（ウェイト）"});
 Object.assign(RR_TEXT_TRANSLATIONS["es"], {"Battles":"Batallas","Front view":"Vista frontal","Side view":"Vista lateral","Time progress (active)":"Progreso de tiempo (activo)","Time progress (wait)":"Progreso de tiempo (espera)"});
 Object.assign(RR_TEXT_TRANSLATIONS["zh-Hant"], {"Battles":"戰鬥設定","Front view":"正面視角","Side view":"側面視角","Time progress (active)":"時間推進（主動）","Time progress (wait)":"時間推進（等待）"});
@@ -24241,6 +24259,42 @@ Object.assign(RR_I18N_STRINGS["id"], {"db.reactorFeatures":"Fitur Reactor"});
 Object.assign(RR_I18N_STRINGS["vi"], {"db.reactorFeatures":"Tính năng Reactor"});
 Object.assign(RR_I18N_STRINGS["th"], {"db.reactorFeatures":"ฟีเจอร์ของ Reactor"});
 Object.assign(RR_I18N_STRINGS["tr"], {"db.reactorFeatures":"Reactor Özellikleri"});
+Object.assign(RR_I18N_STRINGS["en"], {"db.online":"Online"});
+Object.assign(RR_I18N_STRINGS["ja"], {"db.online":"オンライン"});
+Object.assign(RR_I18N_STRINGS["es"], {"db.online":"En línea"});
+Object.assign(RR_I18N_STRINGS["zh-Hant"], {"db.online":"線上"});
+Object.assign(RR_I18N_STRINGS["zh-Hans"], {"db.online":"在线"});
+Object.assign(RR_I18N_STRINGS["ru"], {"db.online":"Онлайн"});
+Object.assign(RR_I18N_STRINGS["pt"], {"db.online":"Online"});
+Object.assign(RR_I18N_STRINGS["de"], {"db.online":"Online"});
+Object.assign(RR_I18N_STRINGS["fr"], {"db.online":"En ligne"});
+Object.assign(RR_I18N_STRINGS["el"], {"db.online":"Διαδικτυακά"});
+Object.assign(RR_I18N_STRINGS["ko"], {"db.online":"온라인"});
+Object.assign(RR_I18N_STRINGS["ar"], {"db.online":"عبر الإنترنت"});
+Object.assign(RR_I18N_STRINGS["it"], {"db.online":"Online"});
+Object.assign(RR_I18N_STRINGS["pl"], {"db.online":"Online"});
+Object.assign(RR_I18N_STRINGS["id"], {"db.online":"Online"});
+Object.assign(RR_I18N_STRINGS["vi"], {"db.online":"Trực tuyến"});
+Object.assign(RR_I18N_STRINGS["th"], {"db.online":"ออนไลน์"});
+Object.assign(RR_I18N_STRINGS["tr"], {"db.online":"Çevrimiçi"});
+Object.assign(RR_I18N_STRINGS["en"], {"db.characterCreation":"Character Creation"});
+Object.assign(RR_I18N_STRINGS["ja"], {"db.characterCreation":"キャラクター作成"});
+Object.assign(RR_I18N_STRINGS["es"], {"db.characterCreation":"Creación de personajes"});
+Object.assign(RR_I18N_STRINGS["zh-Hant"], {"db.characterCreation":"角色創建"});
+Object.assign(RR_I18N_STRINGS["zh-Hans"], {"db.characterCreation":"角色创建"});
+Object.assign(RR_I18N_STRINGS["ru"], {"db.characterCreation":"Создание персонажа"});
+Object.assign(RR_I18N_STRINGS["pt"], {"db.characterCreation":"Criação de personagem"});
+Object.assign(RR_I18N_STRINGS["de"], {"db.characterCreation":"Charaktererstellung"});
+Object.assign(RR_I18N_STRINGS["fr"], {"db.characterCreation":"Création de personnage"});
+Object.assign(RR_I18N_STRINGS["el"], {"db.characterCreation":"Δημιουργία χαρακτήρα"});
+Object.assign(RR_I18N_STRINGS["ko"], {"db.characterCreation":"캐릭터 생성"});
+Object.assign(RR_I18N_STRINGS["ar"], {"db.characterCreation":"إنشاء الشخصية"});
+Object.assign(RR_I18N_STRINGS["it"], {"db.characterCreation":"Creazione del personaggio"});
+Object.assign(RR_I18N_STRINGS["pl"], {"db.characterCreation":"Tworzenie postaci"});
+Object.assign(RR_I18N_STRINGS["id"], {"db.characterCreation":"Pembuatan Karakter"});
+Object.assign(RR_I18N_STRINGS["vi"], {"db.characterCreation":"Tạo nhân vật"});
+Object.assign(RR_I18N_STRINGS["th"], {"db.characterCreation":"การสร้างตัวละคร"});
+Object.assign(RR_I18N_STRINGS["tr"], {"db.characterCreation":"Karakter Oluşturma"});
 // Database › System 1 › Resource Pools and Trait List (2026-10-25): turn MP or TP off, and choose the traits the trait picker offers.
 Object.assign(RR_TEXT_TRANSLATIONS["ja"], {"Use MP": "MPを使う", "Use TP": "TPを使う", "Resource Pools": "リソース", "A pool that is off is hidden in menus and battles, and skills priced in it cost nothing. HP is always on; rename any pool in Terms.": "オフのリソースはメニューと戦闘に表示されず、それを消費するスキルはコストなしになります。HPは常にオンです。名前は用語で変更できます。", "Trait List": "特徴リスト", "Untick the traits this game doesn't use: the trait picker leaves them out. Traits already on a record are kept.": "このゲームで使わない特徴のチェックを外すと、特徴の選択から外れます。データに付いている特徴はそのまま残ります。", "This pool is turned off in System 1: the value is ignored.": "このリソースはシステム1でオフになっています：この値は無視されます。", "off": "オフ"});
 Object.assign(RR_TEXT_TRANSLATIONS["es"], {"Use MP": "Usar MP", "Use TP": "Usar TP", "Resource Pools": "Reservas de recursos", "A pool that is off is hidden in menus and battles, and skills priced in it cost nothing. HP is always on; rename any pool in Terms.": "Una reserva desactivada no aparece en menús ni batallas, y las habilidades que la gastan no cuestan nada. Los HP siempre están activos; cambia el nombre de cualquiera en Términos.", "Trait List": "Lista de rasgos", "Untick the traits this game doesn't use: the trait picker leaves them out. Traits already on a record are kept.": "Desmarca los rasgos que este juego no usa: el selector de rasgos los omite. Los rasgos que ya tiene un registro se conservan.", "This pool is turned off in System 1: the value is ignored.": "Esta reserva está desactivada en Sistema 1: el valor se ignora.", "off": "desactivado"});
