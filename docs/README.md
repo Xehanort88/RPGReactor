@@ -19,6 +19,7 @@ Guides for authoring with the engine, the current verified state, and maintainer
 - [Character quality coverage](CHARACTER-QUALITY.md) and [Claude continuation tracker](CLAUDE-QUALITY-TRACKER.md): catalog/slider sweeps, inherited agent issues, reproduced fixes, validation evidence and remaining appearance limits.
 - [3D Prop Builder](PROP-BUILDER.md): flags and hanging banners in the wind, props made from a picture, frames, swords, firearms and wearables, saved as models.
 - [Model face points and speech](3D-FACE-AND-SPEECH.md): eye placement, mouth and lip authoring, spoken dialogue, per-prop animation speed.
+- [Inventory capacity](INVENTORY-CAPACITY.md): the Can Receive condition, Treasure chests that wait for room, and protecting existing chests and conversation rewards.
 - [Media surfaces](MEDIA-SURFACES.md): image and video placement on maps, models and the screen; transforms and proportions.
 - [Custom user interfaces](DESIGN-USER-INTERFACES.md): the User Interfaces database section, its node set, actor bindings, opt-in stock-scene replacement and explicit boundaries.
 - [Building 3D worlds from 2D tilesets](DESIGN-3D-WORLDS.md): the tileset-class, facing and per-face model behind HD-2D maps, with the phasing table marked to what shipped.

@@ -1,5 +1,7 @@
 # Editor changelog
 
+- Treasure chests wait for room. Conditional Branch › Reactor has **Can Receive** [Item/Weapon/Armor] [entry] × [amount], true when the whole amount fits under the cap the game reports when the event runs (`$gameParty.maxItems`, so VisuStella's `<Max: x>` and Reactor's limits apply); a missing entry is false. It saves as a tagged Script condition, reopens in the dialog, reads as "Can Receive Item: #1 Potion × 5" in the list, and stays a plain Script once edited by hand. Quick Event › Treasure adds **Check Inventory Space** (on by default) and a **Failure Message**: an item, weapon or armor chest opens, gives and sets Self Switch A only inside that branch, and a full party gets the message with the chest left closed for another try. Gold chests, and existing events, are unchanged. The Treasure dialog's Message field now reaches the event in the editor's language even when left untouched (it fell back to English). Guide: [docs/INVENTORY-CAPACITY.md](../docs/INVENTORY-CAPACITY.md).
+
 The full technical list, one file per release or labeled development checkpoint, newest first. The short version of each release is in the [root changelog](../CHANGELOG.md).
 
 - [0.99.2](changelog/0.99.2.md) - 2026-10-25
