@@ -216,12 +216,14 @@ complete `ReactorHdrOverlay.overrides[effectName]` entry, including fallback.
   invalidates them, restoration creates them on the next HDR animation. The
   native module ends active HDR effects at context loss; it does not preserve
   their clock. New animations wait until the context is restored.
-- This supports the PixiJS 8 WebGL1 effect overlay. Scene-owned 3D effects and
-  older inline Pixi render paths do not use it. Refraction/distortion nodes must
-  be excluded from HDR assets. A sidecar can now start one synchronized ordinary companion beside its HDR
-  effect. It draws before the light, with optional depth occlusion. This does
-  not interleave the two effects per node; Effekseer cannot filter individual
-  nodes during a draw.
+- This supports the PixiJS 8 WebGL1 effect overlay. Older inline Pixi render
+  paths do not use it. An effect anchored on a 3D model is drawn by the 3D scene,
+  which has no HDR path: it plays the sidecar's normally graded twin, and a
+  `-hdr` effect without a valid sidecar is refused there as everywhere else.
+  Refraction/distortion nodes must be excluded from HDR assets. A sidecar can now
+  start one synchronized ordinary companion beside its HDR effect. It draws before
+  the light, with optional depth occlusion. This does not interleave the two
+  effects per node; Effekseer cannot filter individual nodes during a draw.
 
 ## Editor previews
 

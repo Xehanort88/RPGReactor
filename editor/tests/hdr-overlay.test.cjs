@@ -67,9 +67,10 @@ test('invalid metadata fails closed',async()=>{
     const e=environment({...side,bloom:{...side.bloom,radiusScale:-1}}),s=e.sprite();await e.ready(s);
     assert.equal(e.api.canStart(s),false);assert.equal(s._playing,false);
 });
-test('3D scene effects do not enter the overlay',()=>{
-    const e=environment(),s={_effectContext:{}};e.api.setup(s,{effectName:'Scene'});
-    assert.equal(s._hdrEntry,undefined);assert.equal(e.fetches.length,0);
+test('3D scene effects do not enter the overlay',async()=>{
+    const e=environment(null),s={_effectContext:{},_animation:{effectName:'Scene'},_playing:true};
+    e.api.setup(s,s._animation);await e.ready(s);
+    assert.equal(e.api.canStart(s),true);assert.equal(s._hdrActive,false);assert.equal(e.calls.length,0,'no HDR targets for it');
 });
 test('two same-grade HDR animations share one accumulation and grade pass',async()=>{
     const e=environment(),a=e.sprite(),b=e.sprite();await e.ready(a);
@@ -349,4 +350,24 @@ test('the effect clock steps with each Effekseer update, at the animation\'s spe
  const c={Graphics:{effekseer:{update(){}}},SceneManager:{isGameActive:()=>true}};
  vm.runInNewContext(body,c);c.SceneManager.updateEffekseer();assert.equal(c.SceneManager._effekseerStep,1);
  c.SceneManager.isGameActive=()=>false;c.SceneManager.updateEffekseer();assert.equal(c.SceneManager._effekseerStep,0,'a paused game does not step effects');
+});
+test('an effect the 3D scene draws reads its sidecar and plays its twin, from the context it plays in',async()=>{
+    const entry={context:{}},gpu=[];
+    const anchored=e=>{const s=e.sprite();delete s._hdrEntry;s._effectContext=entry;e.api.setup(s,s._animation);return s;};
+    const stub=e=>{e.c.Reactor3D={GpuEffects:{load:(x,n)=>{gpu.push([x===entry,n]);return 'gpu:'+n;}}};};
+    // A GPU effect on a model.
+    const e=environment();stub(e);const s=anchored(e);await e.ready(s);
+    assert.equal(e.api.canStart(s),true);assert.equal(s._hdrActive,false);assert.equal(s._effect,'gpu:Nested/Twin');
+    assert.deepEqual(gpu,[[true,'Nested/Twin']]);assert.deepEqual(e.loads,[],'not the overlay\'s context');assert.equal(e.calls.length,0,'no HDR targets for it');
+    // Drawn by the 3D scene through the overlay's context: float targets would otherwise select HDR for a handle nothing grades.
+    const o=environment(),t=o.sprite();t._reactorInScene=true;await o.ready(t);
+    assert.equal(o.api.canStart(t),true);assert.equal(t._hdrActive,false);assert.equal(t._effect,'Nested/Twin');assert.deepEqual(o.loads,['Nested/Twin']);
+});
+test('a -hdr effect on a model without a sidecar is refused and says so; an ordinary one is untouched',async()=>{
+    const entry={context:{}},e=environment(null);
+    e.c.Reactor3D={GpuEffects:{load:()=>{throw Error('no load');}}};
+    const s=e.sprite();delete s._hdrEntry;s._effectContext=entry;e.api.setup(s,s._animation);await e.ready(s);
+    assert.equal(e.api.canStart(s),false);assert.equal(s._playing,false);assert.equal(s._hdrRefused,true);
+    const p=e.sprite('Plain');delete p._hdrEntry;p._effectContext=entry;p._effect='gpu:Plain';e.api.setup(p,p._animation);await e.ready(p);
+    assert.equal(e.api.canStart(p),true);assert.equal(p._effect,'gpu:Plain');assert.equal(p._hdrRefused,undefined);
 });

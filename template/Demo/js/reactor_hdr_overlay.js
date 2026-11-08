@@ -490,9 +490,10 @@
         const a = sprite._animation || {}, e = sprite._hdrEntry;
         return e && e.sidecar || (forced(sprite) && api.overrides[a.effectName]) || null;
     }
-    // The context an effect is loaded into: the scene's for an in-scene sprite, the overlay's otherwise.
+    // The context an effect is loaded into: the one the sprite plays in.
     function load(sprite, name, onError) {
-        return sprite._effekseerInScene ? Sprite_Animation.SceneLayer.load(name, onError) : EffectManager.load(name, onError);
+        if (sprite._effekseerInScene) return Sprite_Animation.SceneLayer.load(name, onError);
+        return sprite._effectContext ? Reactor3D.GpuEffects.load(sprite._effectContext, name) : EffectManager.load(name, onError);
     }
     function resolveName(name, other) {
         return other.includes('/') ? other : name.slice(0, name.lastIndexOf('/') + 1) + other;
@@ -534,7 +535,7 @@
         return false;
     }
     api.setup = function(sprite, animation) {
-        if ((!sprite._effectContext || sprite._effekseerInScene) && animation.effectName) {
+        if (animation.effectName) {
             sprite._hdrEntry = request(animation.effectName);
             sprite._hdrSelected = false;
         }
@@ -546,19 +547,23 @@
         if (this._hdrEntry && !this._hdrSelected) {
             if (!this._hdrEntry.ready) return false;
             const inScene = !!this._effekseerInScene;
-            if ((inScene ? scene.gl() : Graphics._effekseerGL)?.isContextLost()) return false;
+            // Drawn by the 3D scene (an effect anchored on a model), which has no HDR path: its twin plays.
+            const sceneOwned = !!this._reactorInScene || (!!this._effectContext && !inScene);
+            if ((inScene || this._effectContext ? scene.gl() : Graphics._effekseerGL)?.isContextLost()) return false;
             let sc = sidecarFor(this);
             try {
                 if (sc) sc = valid(sc, this._animation.effectName);
                 if ((forced(this) || /-hdr$/i.test(this._animation.effectName)) && !sc) throw Error("HDR effect requires a sidecar or ReactorHdrOverlay.overrides entry");
             } catch (e) {
-                console.warn("[ReactorHdrOverlay] " + e.message); this._playing = false; return false;
+                console.warn("[ReactorHdrOverlay] " + e.message); this._playing = false; this._hdrRefused = true; return false;
             }
             if (this._hdrEntry.error && !sc) {
                 // Malformed metadata cannot safely identify an HDR asset or its fallback. Fail closed.
-                this._playing = false; return false;
+                this._playing = false; this._hdrRefused = true; return false;
             }
-            if (inScene) {
+            if (sceneOwned) {
+                this._hdrActive = false;
+            } else if (inScene) {
                 this._hdrActive = !!(sc && scene.ready(sc));
             } else {
                 const gl = Graphics._effekseerGL, canvas = Graphics._effekseerCanvas;
