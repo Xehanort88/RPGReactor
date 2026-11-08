@@ -64,6 +64,8 @@ class DatabaseEditorUI {
             }
         };
         this.system1Editor = new DatabaseSystem1Editor(databaseManager, system1ProjectManager, this.commonUI, this);
+        this.onlineEditor = typeof DatabaseOnlineEditor !== 'undefined' ? new DatabaseOnlineEditor(databaseManager) : null;
+        this.characterCreationEditor = typeof DatabaseCharacterCreationEditor !== 'undefined' ? new DatabaseCharacterCreationEditor(databaseManager) : null;
         this.system2Editor = new DatabaseSystem2Editor(databaseManager, { getCurrentProject: () => this.currentProject }, this.commonUI, this);
         this.featuresEditor = typeof DatabaseFeaturesEditor !== 'undefined'
             ? new DatabaseFeaturesEditor(databaseManager, { getCurrentProject: () => this.currentProject }, this.commonUI, this) : null;
@@ -937,6 +939,20 @@ class DatabaseEditorUI {
                 this.refreshDatabaseSections();
                 return;
             }
+            case 'characterCreation': {
+                // Single-player and online games alike (DatabaseCharacterCreationEditor).
+                const { detailEl } = this.prepareDatabaseSection('characterCreation', this._dbTitle('characterCreation', 'Character Creation'), { showListPanel: false });
+                this.characterCreationEditor?.showDetail(detailEl);
+                this.refreshDatabaseSections();
+                return;
+            }
+            case 'online': {
+                // Single player or online, and how an online game behaves (DatabaseOnlineEditor).
+                const { detailEl } = this.prepareDatabaseSection('online', this._dbTitle('online', 'Online'), { showListPanel: false });
+                this.onlineEditor?.showOnlineDetail(detailEl);
+                this.refreshDatabaseSections();
+                return;
+            }
             case 'system2': {
                 // Show System 2 editor
                 const { detailEl } = this.prepareDatabaseSection('system2', this._dbTitle('system2', 'System 2'), { showListPanel: false });
@@ -1547,8 +1563,9 @@ class DatabaseEditorUI {
 
         // Keep menu in viewport
         const rect = menu.getBoundingClientRect();
-        if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width - 4) + 'px';
-        if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height - 4) + 'px';
+        const view = menu.ownerDocument?.defaultView || window;
+        if (rect.right > view.innerWidth) menu.style.left = Math.max(4, view.innerWidth - rect.width - 4) + 'px';
+        if (rect.bottom > view.innerHeight) menu.style.top = Math.max(4, view.innerHeight - rect.height - 4) + 'px';
 
         const closeMenu = (e) => {
             if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('mousedown', closeMenu); }
@@ -1762,8 +1779,9 @@ class DatabaseEditorUI {
 
         document.body.appendChild(menu);
         const rect = menu.getBoundingClientRect();
-        if (rect.right > window.innerWidth) menu.style.left = `${Math.max(4, window.innerWidth - rect.width - 4)}px`;
-        if (rect.bottom > window.innerHeight) menu.style.top = `${Math.max(4, window.innerHeight - rect.height - 4)}px`;
+        const view = menu.ownerDocument?.defaultView || window;
+        if (rect.right > view.innerWidth) menu.style.left = `${Math.max(4, view.innerWidth - rect.width - 4)}px`;
+        if (rect.bottom > view.innerHeight) menu.style.top = `${Math.max(4, view.innerHeight - rect.height - 4)}px`;
         menu.setAttribute('role', 'menu');
         window.RRKeyboardNavigation?.menu(menu, {
             items: () => menu.children,
@@ -2142,7 +2160,7 @@ class DatabaseEditorUI {
                 { name: 'User Interfaces', type: 'userInterfaces' }, { name: 'Music Sequences', type: 'musicSequences' }] },
             { name: 'System', pages: [
                 { name: 'System 1', type: 'system1' }, { name: 'System 2', type: 'system2' }, { name: 'Types', type: 'types' },
-                { name: 'Terms', type: 'terms' }, { name: 'Controls', type: 'controls' },
+                { name: 'Terms', type: 'terms' }, { name: 'Controls', type: 'controls' }, { name: 'Character Creation', type: 'characterCreation' }, { name: 'Online', type: 'online' },
                 { name: 'Reactor Features', type: 'reactorFeatures' }] }
         ];
     }
@@ -3273,6 +3291,7 @@ class DatabaseEditorUI {
         const listEl = document.getElementById('image-picker-list');
         const previewEl = document.getElementById('image-picker-preview');
         const closeBtn = document.getElementById('image-picker-close-btn');
+        let importButton = null;
 
         if (this._imagePickerBaseZIndex === undefined) {
             this._imagePickerBaseZIndex = modal.style.zIndex || '';
@@ -3303,8 +3322,16 @@ class DatabaseEditorUI {
             closed = true;
             modal.style.display = 'none';
             clearPreview();
+            importButton?.remove();
         };
         this._closeImagePicker = close;
+        if (typeof options.onImport === 'function') {
+            importButton = document.createElement('button');
+            importButton.className = 'rr-btn-secondary';
+            importButton.textContent = options.importButtonLabel || tt('Import picture');
+            importButton.onclick = () => { if (isCurrent()) { close(); options.onImport(); } };
+            closeBtn.before(importButton);
+        }
         (this._detailCleanups ||= []).push(close);
         const select = (file, index) => {
             if (!isCurrent()) return;
@@ -4146,6 +4173,7 @@ class DatabaseEditorUI {
     static BATTLE_WORDS = {
         wait: 'Wait', endTurn: 'End Turn', auto: 'Auto', overwatch: 'Overwatch',
         mount: 'Mount', dismount: 'Dismount', whyNoRoom: 'No room to get off here',
+        grapple: 'Grapple', tipGrapple: '%1: next place to grapple to', tipGrappleMove: '%1 or a teal tile: grapple',
         goalDefeatAll: 'Defeat all enemies', goalSurvive: 'Survive %1 turns', goalDefeatUnit: 'Defeat %1', goal: 'Complete the objective',
         goalEnemiesLeft: 'Enemies left: %1', goalSurviveLeft: 'Survive: %1 turns left', goalSurviveLast: 'Survive: last turn', goalChanged: 'New goal: %1',
         goalLose: 'You lose if your party falls', goalTurn: 'Turn %1',

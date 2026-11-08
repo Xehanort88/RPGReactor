@@ -43,6 +43,29 @@ class DeploymentAssetPreferences {
         }
     }
 
+    static get UNUSED_FILES_KEY() { return 'rpg-reactor.deployUnusedFiles'; }
+
+    /** The editor's own distribution remembers its choice for each kind of package (web, platform, minimal). */
+    static distUnusedFilesKey(packageType) { return 'rpg-reactor.distUnusedFiles.' + (packageType || 'platform'); }
+
+    /**
+     * Don't bundle unused files: on or off, `fallback` until chosen. A choice saved by the earlier
+     * dropdown carries over: "every build" is on, "nothing" off, "Web builds" the fallback.
+     */
+    static loadUnusedFiles(storage = localStorage, key = this.UNUSED_FILES_KEY, fallback = false) {
+        try {
+            const value = storage.getItem(key);
+            if (value === '1' || value === 'all') return true;
+            if (value === '0' || value === 'off') return false;
+            return !!fallback;
+        } catch { return !!fallback; }
+    }
+
+    static saveUnusedFiles(on, storage = localStorage, key = this.UNUSED_FILES_KEY) {
+        try { storage.setItem(key, on ? '1' : '0'); return true; }
+        catch { return false; }
+    }
+
     static load(storage = localStorage) {
         try { return this.normalize(JSON.parse(storage.getItem(this.STORAGE_KEY))); }
         catch { return this.normalize(null); }

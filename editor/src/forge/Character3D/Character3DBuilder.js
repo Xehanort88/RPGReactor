@@ -67,6 +67,10 @@ class Character3DBuilder {
     }
 
     detach() {
+        this._rangeDrag = this._rangeSettle = null;
+        clearTimeout(this._settle); this._settle = 0;
+        if (this._pending) cancelAnimationFrame(this._pending);
+        this._pending = 0;
         this._closeOutfitImport?.();
         this._stopThumbs();
         const view = this._view;
@@ -74,6 +78,7 @@ class Character3DBuilder {
         this._dropHeldPreview();
         cancelAnimationFrame(view.frame);
         cancelAnimationFrame(view.loop);
+        view.clock?.dispose?.();
         view.resize?.disconnect();
         this._clearModel();
         for (const t of view.textures.values()) t.texture.dispose();
@@ -139,15 +144,17 @@ class Character3DBuilder {
     }
 
     _replace(recipe, rerender = true) {
+        this._rangeDrag = this._rangeSettle = null;
         this.recipe = RRCharacterModel.normalize(recipe);
+        if (this._openingDesign && this._openingDesign.recipe !== JSON.stringify(this.recipe)) this._openingDesign = null;
         this._commit();
         if (rerender) this._renderPanel();
         this._queueRebuild();
     }
 
     /** A catalog selection starts its own recipe and retires work from the previous body. */
-    _selectPreset(recipe) {
-        clearTimeout(this._settle);
+    _selectPreset(recipe, extreme = false) {
+        clearTimeout(this._settle); this._settle = 0;
         clearTimeout(this._shadeTimer);
         this._fast = null;
         this._shapeWorkerRef?.terminate();
@@ -155,7 +162,7 @@ class Character3DBuilder {
         this._shapeJob = null;
         this._shapeGen = (this._shapeGen || 0) + 1;
         this.cache = {};
-        this.extreme = false;
+        this.extreme = extreme;
         this.pose = 'idle';
         this.openPicker = null;
         this._heldName = '';
@@ -239,7 +246,7 @@ class Character3DBuilder {
                         <div class="rr-c3d-readout"></div>
                         <div class="rr-c3d-poses" role="group" aria-label="${this._t('Pose')}">
                             <label class="rr-c3d-poses-title" for="rr-c3d-pose-picker">${this._t('Pose')}</label>
-                            <select id="rr-c3d-pose-picker" class="rr-select rr-c3d-pose-picker" data-rr-search="always"></select>
+                            <select id="rr-c3d-pose-picker" class="rr-select rr-c3d-pose-picker" data-rr-search="always" data-rr-group-headers="accent"></select>
                         </div>
                         <div class="rr-c3d-viewbar">
                             <button class="rr-btn-chip rr-c3d-frame" data-frame="body">${this._t('Whole Body')}</button>
@@ -354,6 +361,7 @@ class Character3DBuilder {
 
     /** The chosen expression on the view's face (neutral puts the face back as built). */
     _showExpression() {
+        this._stopPreviewTween();
         const X = window.RRCharacterExpressions;
         if (!X || !this._view || !this._result) return;
         // The Face tab shows the choice once the face it fits is built (or hides it for one it does not fit).
@@ -366,10 +374,41 @@ class Character3DBuilder {
     _toggleTalk() {
         const X = window.RRCharacterExpressions;
         if (this._talk) { this._talk.stop(); return; }
+        if (!this.human) {
+            this._talk = this._talkJaw();
+            const chip = this.root.querySelector('.rr-c3d-talk');
+            if (chip && this._talk) chip.textContent = '■ ' + this._t('Stop');
+            return;
+        }
         if (!X || !this._view || !this._result) return;
         this._talk = X.talk(this._view, this._result, this.pack, THREE, { draw: () => this._draw(), done: () => { this._talk = null; const b = this.root && this.root.querySelector('.rr-c3d-talk'); if (b) b.textContent = '▶ ' + this._t('Talk'); } });
         const b = this.root.querySelector('.rr-c3d-talk');
         if (b && this._talk) b.textContent = '■ ' + this._t('Stop');
+    }
+
+    /** A creature talks with its jaw: the sample line's letters open it, as a Show Text's do in the game. */
+    _talkJaw() {
+        const view = this._view, M = window.RRCreatureMouth, id = this._result?.bones.findIndex(b => b.name === 'Jaw') ?? -1;
+        if (!view || !M || id < 0 || !view.bones[id]) return null;
+        const jaw = view.bones[id], rest = jaw.rotation.x;
+        let frame = 0, open = 0, raf = 0, stopped = false;
+        const handle = { stop: () => {
+            if (stopped) return;
+            stopped = true; cancelAnimationFrame(raf); jaw.rotation.x = rest; this._talk = null; this._draw();
+            const chip = this.root?.querySelector('.rr-c3d-talk');
+            if (chip) chip.textContent = this._t('Talk');
+        } };
+        const step = () => {
+            if (stopped) return;
+            const i = Math.floor(frame++ / 3);
+            if (i > M.LINE.length) { handle.stop(); return; }
+            open += (M.letterOpen(M.LINE[i]) - open) * 0.45;
+            jaw.rotation.x = rest + open * M.TALK_RADIANS;
+            this._draw();
+            raf = requestAnimationFrame(step);
+        };
+        raf = requestAnimationFrame(step);
+        return handle;
     }
 
     // ── controls ───────────────────────────────────────────────────────────
@@ -453,9 +492,10 @@ class Character3DBuilder {
 
     _select(path, label, choices, value) {
         const v = value ?? this._get(path);
+        const symbols=window.RRCharacterMarks?.symbolChoices(choices);
         const opts = choices.map(c => {
             if (c.group) return `<optgroup label="${rrEscapeHtml(this._t(c.group))}">${c.items.map(([id, l]) => `<option value="${rrEscapeHtml(id)}"${id === v ? ' selected' : ''}>${rrEscapeHtml(this._t(l))}</option>`).join('')}</optgroup>`;
-            return `<option value="${rrEscapeHtml(c[0])}"${c[0] === v ? ' selected' : ''}>${rrEscapeHtml(this._t(c[1]))}</option>`;
+            return `<option value="${rrEscapeHtml(c[0])}"${symbols?` data-rr-symbol="${rrEscapeHtml(c[0])}"`:""}${c[0] === v ? ' selected' : ''}>${rrEscapeHtml(this._t(c[1]))}</option>`;
         }).join('');
         return `<label class="rr-c3d-row rr-c3d-choice"><span class="rr-c3d-label">${this._t(label)}</span><select class="rr-select" data-path="${path}">${opts}</select></label>`;
     }
@@ -534,8 +574,18 @@ class Character3DBuilder {
             return;
         }
         this._set(path, value);
+        if (el.type === 'range') {
+            if (committed) { this._rangeSettle = this._rangeDrag; this._rangeDrag = null; }
+            else { this._rangeSettle = null; if (this._rangeDrag?.path !== path) this._rangeDrag = { path }; }
+        }
         // Emotion: the face shown again, nothing rebuilt.
         if (path.startsWith('emotion.')) { this._syncSliders(); if (committed) this._commit(); this._emotionChanged(path); return; }
+        // Bounce changes only animation keys, never the shape or its pictures.
+        if (path === 'bustBounce' || path === 'buttBounce' || path === 'fatBounce') {
+            this._rangeDrag = this._rangeSettle = null;
+            this._syncSliders(); if (committed) this._commit();
+            this._bounceChanged(path); return;
+        }
         // Moving a region by hand makes the pattern Custom (the select says so once the slider is let go).
         if (path.startsWith('bodyHair.regions.')) {
             const was = this.recipe.bodyHair.pattern;
@@ -553,7 +603,8 @@ class Character3DBuilder {
         if (committed && path === 'gender' && RRHumanBody.sexOf(this.recipe) !== this._shownSex) this._renderPanel();
         // A body slider moving: the fast path while the drag lasts, the whole character when it ends.
         if (el.type === 'range' && Character3DBuilder.bodyPath(path) && this.human) {
-            if (!committed && this._fastShape()) { clearTimeout(this._settle); this._settle = setTimeout(() => this._queueRebuild(), 220); return; }
+            if (!committed && this._fastShape()) { clearTimeout(this._settle); this._settle = setTimeout(() => { this._settle = 0; this._queueRebuild(); }, 220); return; }
+            clearTimeout(this._settle); this._settle = 0;
             this._fast = null;
         }
         this._queueRebuild();
@@ -569,6 +620,18 @@ class Character3DBuilder {
         // Body art tab (CharacterBodyArtPanel.js): its own buttons.
         if (act.startsWith('art-') && this._bodyArtAct && this._bodyArtAct(act, b)) return;
         if (act === 'take-outfit') { this._showModels(); return; }
+        if (act === 'garment-prop') {
+            const item=this.recipe.outfit[+b.dataset.index],manager=window.reactor?.forgeManager;
+            if(!item||!manager||!window.RRGarmentProp)return;
+            const builder=manager.propBuilder||(manager.propBuilder=new PropBuilder());
+            builder._undo.push(JSON.stringify(builder.recipe));if(builder._undo.length>80)builder._undo.shift();
+            builder.recipe=RRGarmentProp.normalize({garment:item,body:this.recipe});
+            builder.cache={emblemProject:this._project()?.path,emblemPictures:new Map(this.cache.wardrobe?.emblemPictures||[])};
+            builder.name=RRCharacterWardrobe.BY_ID.get(item.id).label;
+            builder.search='';builder.folded['cat:wearables']=false;
+            builder.tab='garment';builder._redo=[];builder._committed=JSON.stringify(builder.recipe);
+            manager.openTool('prop-builder');builder.root?.querySelector('.rr-prop-type.is-active')?.scrollIntoView({block:'nearest'});return;
+        }
         if (act === 'extreme') { this.extreme = !this.extreme; this._renderPanel(); return; }
         if (act === 'plan') {
             if ((b.dataset.plan === 'quadruped') === !this.human) return;
@@ -614,6 +677,7 @@ class Character3DBuilder {
             return;
         }
         if (act === 'remove-garment') { r.outfit = r.outfit.filter(i => i.id !== b.dataset.id); this._replace(r); return; }
+        if(act==='mark-picture'){this._chooseMarkPicture(b.dataset.path);return;}
         if (act === 'remove-prop') { r.props = r.props.filter(i => i.id !== b.dataset.id); this._replace(r); return; }
         if (act === 'picker') { this.openPicker = this.openPicker === b.dataset.id ? null : b.dataset.id; this._renderPanel(); return; }
         if (act === 'pick') {
@@ -704,6 +768,8 @@ class Character3DBuilder {
         for (const s of controls.filter(s => !absent(s.key))) put(sectionFor(s.key) || s.section, this._slider({
             path: s.key, label: s.label, natural: s.natural || [s.min, s.max], extreme: [s.min, s.max], step: s.step, format: s.integer ? 'count' : s.unit === 'm' ? 'm' : s.unit === '°' || /Angle|Pitch/.test(s.key) ? 'deg' : 'x'
         }));
+        // Talk tries the mouth out, as a Show Text will in the game.
+        if (ordinary) put('Head', `<div class="rr-c3d-row"><span class="rr-c3d-label"></span><button class="rr-btn-chip rr-c3d-talk" data-act="talk">${this._talk ? '■ ' + this._t('Stop') : this._t('Talk')}</button></div>`);
         const anatomy = ordinary && r.anatomy.detail ? this._section('Anatomy') + this._select('anatomy.sex', 'Shown as', [['male', 'Male'], ['female', 'Female']]) + RRCreatureBody.anatomySliders(r).map(s => this._slider({path:'anatomy.' + s.key, label:s.label, natural:s.natural, extreme:[s.min,s.max],format:'x'})).join('') : '';
         return this._extremeToggle(ordinary) + [...sections].map(([section,html]) => this._section(section) + html).join('') + anatomy;
     }
@@ -737,6 +803,7 @@ class Character3DBuilder {
             { path: 'age', label: 'Age', natural: [RRHumanBody.MIN_AGE, RRHumanBody.MAX_AGE], step: 1, format: 'years' },
             { path: 'height', label: 'Height', natural: M.height.natural, extreme: M.height.extreme },
             { path: 'weight', label: 'Weight', natural: M.weight.natural, extreme: M.weight.extreme, ends: ['Thin', 'Heavy'] },
+            { path: 'fatBounce', label: 'Fat bounce', natural: M.fatBounce.natural, extreme: M.fatBounce.extreme, step: .01, ends: ['Off', 'Bouncy'] },
             { path: 'muscle', label: 'Muscle', natural: M.muscle.natural, extreme: M.muscle.extreme },
             { path: 'proportions', label: 'Proportions', natural: M.proportions.natural, extreme: M.proportions.extreme, ends: ['Average', 'Ideal'] },
             { path: 'headSize', label: 'Head size', natural: [0.8, 1.25], extreme: [0.5, 2.2], format: 'x' }
@@ -744,7 +811,8 @@ class Character3DBuilder {
         const a = this.recipe.anatomy, detail = a.detail, male = RRHumanBody.sexOf(this.recipe) === 'male';
         const shownAs = detail ? this._select('anatomy.sex', 'Shown as', [['auto', 'By gender'], ['male', 'Male'], ['female', 'Female']]) : '';
         const bustTop = this._slider({ path: 'cup', label: 'Bust size', natural: M.cup.natural, extreme: M.cup.extreme })
-            + this._slider({ path: 'firmness', label: 'Firmness', natural: M.firmness.natural, extreme: M.firmness.extreme });
+            + this._slider({ path: 'firmness', label: 'Firmness', natural: M.firmness.natural, extreme: M.firmness.extreme })
+            + this._slider({ path: 'bustBounce', label: 'Bust bounce', natural: M.bustBounce.natural, extreme: M.bustBounce.extreme, step: .01, ends: ['Off', 'Bouncy'] });
         const nipples = detail ? this._slider({ path: 'anatomy.areola', label: 'Areola size', natural: [0.6, 1.6], extreme: [0.4, 2.5], format: 'x' })
             + this._slider({ path: 'anatomy.nipple', label: 'Nipple size', natural: [0.3, 2], extreme: [0, 3], format: 'x' })
             + this._slider({ path: 'anatomy.nippleProjection', label: 'Nipple projection', natural: [0, 2], extreme: [0, 10], format: 'x', ends: ['Flat', 'Raised'] })
@@ -763,7 +831,7 @@ class Character3DBuilder {
                     + this._slider({ path: 'anatomy.fold', label: 'Fold depth', natural: [0, 2], format: 'x' }));
         }
         return this._extremeToggle(true) + this._section('Build') + macro.map(s => this._slider(s)).join('') + shownAs
-            + this._shapeSliders(['Proportions', 'Torso', 'Bust', 'Arms and legs'], { Bust: { before: bustTop, after: nipples }, 'Arms and legs': { after: toes + this._bodyFeature('arms') }, Torso: { after: this._bodyFeature('spines') + this._bodyFeature('machinery') } })
+            + this._shapeSliders(['Proportions', 'Torso', 'Bust', 'Arms and legs'], { Bust: { before: bustTop, after: nipples }, 'Arms and legs': { after: toes + this._bodyFeature('arms') }, Torso: { after: this._slider({ path: 'buttBounce', label: 'Butt bounce', natural: M.buttBounce.natural, extreme: M.buttBounce.extreme, step: .01, ends: ['Off', 'Bouncy'] }) + this._bodyFeature('spines') + this._bodyFeature('machinery') } })
             + this._section('Head') + this._select('headId', 'Head', RRCharacterSpecies.heads(), RRCharacterSpecies.headId(this.recipe.head))
             + ['horns','ears','antennae','fangs','beak','tusks','whiskers','alienEyes'].map(key => this._bodyFeature(key)).join('')
             // Centaur hook: the horse's coat and build in place of a tail of the person's own.
@@ -786,13 +854,15 @@ class Character3DBuilder {
     /** Eye styles: a set of eye size, shape, iris, pupil and catchlights. */
     static get EYE_STYLES() {
         return {
-            natural: { shapes: { eyeSize: 0 }, morph: { eyeWide: 1, eyeTall: 1 }, eyes: { size: 1.25, pupilSize: 1, catchlight: false } },
-            anime: { shapes: { eyeSize: 2.4 }, morph: { eyeWide: 1.1, eyeTall: 1.55 }, eyes: { size: 1.45, pupilSize: 1.15, catchlight: true } },
+            natural: { shapes: { eyeSize: 0 }, morph: { eyeWide: 1, eyeTall: 1 }, eyes: { size: 1.2, pupilSize: 1, catchlight: false } },
+            anime: { shapes: { eyeSize: 1.1 }, morph: { eyeWide: 1.1, eyeTall: 1.3 }, eyes: { size: 1.45, pupilSize: 1.15, catchlight: true } },
             beady: { shapes: { eyeSize: -1.2 }, morph: { eyeWide: 0.85, eyeTall: 0.85 }, eyes: { size: 0.85, pupilSize: 1.3, catchlight: false } }
         };
     }
 
     _eyeStyle() {
+        // Custom is a choice too: the select stays on it, with the eye sliders below it, until a preset is picked.
+        if (this._eyeCustom) return 'custom';
         const r = this.recipe;
         for (const [id, st] of Object.entries(Character3DBuilder.EYE_STYLES)) {
             if (Math.abs(r.shapes.eyeSize - st.shapes.eyeSize) < 0.01 && Math.abs(r.morph.eyeWide - st.morph.eyeWide) < 0.01 && Math.abs(r.morph.eyeTall - st.morph.eyeTall) < 0.01
@@ -803,6 +873,7 @@ class Character3DBuilder {
 
     _applyEyeStyle(id) {
         const st = Character3DBuilder.EYE_STYLES[id];
+        this._eyeCustom = !st;
         if (!st) { this._renderPanel(); return; }
         if (!this.extreme && (st.shapes.eyeSize > 1 || st.shapes.eyeSize < -1)) this.extreme = true;
         const r = JSON.parse(JSON.stringify(this.recipe));
@@ -914,20 +985,22 @@ class Character3DBuilder {
         const knobs = { sleeves: ['Sleeves', [0, 1]], length: ['Length', [0, 1], [0, 1.4]], fit: ['Looseness', [0, 1], [0, 1.5]], flare: ['Flare', [0, 1], [0, 1.5]], bell: ['Bell sleeves', [0, 1]], open: ['Open front', [0, 1]], face: ['Covers face', [0, 1]], bulk: ['Bulk', [0, 1], [0, 1.5]] };
         const items = this.recipe.outfit.map((item, i) => {
             const g = W.BY_ID.get(item.id);
+            const wearable=window.RRGarmentProp?.supports(g.id)?`<button class="rr-btn-chip" data-act="garment-prop" data-index="${i}">${this._t('Edit as wearable prop')}</button>`:'';
             const swatches = ['#f2f0ea', '#1f1f24', '#2f4468', '#7a3b3b', '#3e5a32', '#5a3d22', '#8a8e96', '#c9a35a'];
             // [outfit transfer] A garment taken from a model shows its own picture until a color is chosen
             // (cleared, it comes back); its main color, second color and trim each move on their own.
             if (g.transfer) {
                 const html = this._color(`outfit.${i}.color`, 'Color', swatches, true) + this._color(`outfit.${i}.color2`, 'Second color', [], true) + this._color(`outfit.${i}.trim`, 'Trim', [], true);
-                return { id: item.id, label: g.label, html };
+                return { id: item.id, label: g.label, html:html+wearable };
             }
             // A modeled garment shows its own picture until a color is chosen (cleared, it comes back); its
             // pattern and trim are in the picture.
             if (g.modeled) {
-                const fitted = typeof RRCharacterClothes !== 'undefined' && RRCharacterClothes.load(this.pack).garments.get(item.id);
+                const fitted = this.pack && typeof RRCharacterClothes !== 'undefined' && RRCharacterClothes.load(this.pack).garments.get(item.id);
                 let html = this._color(`outfit.${i}.color`, 'Color', swatches, true);
-                if (fitted && fitted.regions > 1) html += this._color(`outfit.${i}.color2`, 'Second color', [], true);
-                return { id: item.id, label: g.label, html };
+                if (fitted && (fitted.regions > 1 || item.id==='mh_viking_tunic')) html += this._color(`outfit.${i}.color2`, item.id==='mh_viking_tunic'?'Mail color':'Second color', [], true);
+                if(item.id==='mh_viking_tunic')html+=this._color(`outfit.${i}.trim`,'Embroidery color',[],true)+this._slider({path:`outfit.${i}.textureContrast`,label:'Fabric contrast',natural:[.5,1.5],extreme:[.5,1.5]});
+                return { id: item.id, label: g.label, html:html+wearable };
             }
             let html = this._color(`outfit.${i}.color`, 'Color', swatches);
             html += this._color(`outfit.${i}.color2`, 'Second color', []) + this._color(`outfit.${i}.trim`, 'Trim', [], true);
@@ -956,7 +1029,8 @@ class Character3DBuilder {
             html += this._slider({ path: `outfit.${i}.trimWidth`, label: 'Trim width', natural: [0, 0.25] });
             // Wear and damage (RRCharacterWear): grime, fading, frayed hems, holes, patches and tape as it grows.
             html += this._slider({ path: `outfit.${i}.wear`, label: 'Wear', natural: [0, 1] });
-            return { id: item.id, label: g.label, html };
+            if(RRCharacterMarks.supports(g,item))html+=RRCharacterMarks.panel(this,`outfit.${i}.mark`,item.mark,{garment:true});
+            return { id: item.id, label: g.label, html:html+wearable };
         });
         // [outfit transfer] An outfit taken off one of the project's own humanoid models.
         const take = window.RRCharacterOutfitTransfer && this._project() ? `<div class="rr-c3d-tiles"><button class="rr-c3d-tile rr-c3d-import-add" data-act="take-outfit"><span class="rr-c3d-nothumb">+</span><span class="rr-c3d-tile-label">${this._t('+ From model…')}</span></button></div>` : '';
@@ -966,6 +1040,7 @@ class Character3DBuilder {
     }
 
     _propsTab() {
+        this._loadOutfitEmblems();
         const P = RRCharacterProps;
         const add = this._addPicker('prop', 'Add an accessory', P.PROPS.filter(p => RRCharacterModel.fitsProp(this.recipe,p.id)&&(!this.slime || RRSlimeBody.fits(p.id))).map(p => ({ id: p.id, label: p.label, group: p.group })), 'add-prop');
         const knobs = { size: ['Size', [0.6, 1.5], [0.3, 3]], height: ['Height', [0.5, 1.6], [0.3, 3]], length: ['Length', [0, 1]], width: ['Width', [0.6, 1.5]], up: ['Raised', [0, 1]] };
@@ -980,6 +1055,7 @@ class Character3DBuilder {
                 if (def.shapes) html += this._select(path('shape'), 'Shape', def.shapes);
                 if (def.defaults.side) html += this._select(path('side'), 'Side', [['left', 'Left'], ['right', 'Right']]);
                 for (const [key, spec] of Object.entries(def.options)) if (!['style', 'glow', 'wear'].includes(key)) html += spec === 'check' ? this._check(path(key), labels[key] || key) : this._select(path(key), labels[key] || key, spec);
+                if(item.id==='earScouter')html+=`<label class="rr-c3d-row"><span class="rr-c3d-label">${this._t('Display readout')}</span><input class="rr-input" data-path="${path('displayText')}" maxlength="32" value="${rrEscapeHtml(item.displayText||'POWER 9000')}"></label>`;
                 html += this._color(path('color'), def.labels.color, def.swatches, true) + this._color(path('color2'), def.labels.color2, def.swatches2, true);
                 html += this._slider({ path: path('glow'), label: labels.glow, natural: [0, 1] }) + this._slider({ path: path('wear'), label: labels.wear, natural: [0, 1] });
                 return { id: item.id, label: def.label, html };
@@ -989,13 +1065,14 @@ class Character3DBuilder {
             if (def.shapes) html += this._select(`props.${i}.shape`, 'Shape', def.shapes);
             if (def.defaults.side) html += this._select(`props.${i}.side`, 'Side', [['left', 'Left'], ['right', 'Right']]);
             for (const [k, [label, natural, extreme]] of Object.entries(knobs)) if (def.defaults[k] != null) html += this._slider({ path: `props.${i}.${k}`, label, natural, extreme: extreme || natural, format: k === 'length' || k === 'up' ? '' : 'x' });
-            const optionLabels={charm:'Charm',studs:'Studs',thick:'Thickness',billLength:'Bill length',pockets:'Pockets',vents:'Vents'};
+            const optionLabels={charm:'Charm',studs:'Studs',thick:'Thickness',billLength:'Bill length',pockets:'Pockets',vents:'Vents',trimWidth:'Trim width',pattern:'Pattern',patternScale:'Pattern scale'};
             for(const [key,spec]of Object.entries(def.options||{})){
                 const path=`props.${i}.${key}`,label=optionLabels[key]||key;
                 if(spec==='check')html+=this._check(path,label);
                 else if(Array.isArray(spec[0]))html+=this._select(path,label,spec);
                 else html+=this._slider({path,label,natural:spec,extreme:spec,step:key==='pockets'||key==='vents'?1:.05});
             }
+            if(['cape','scarf','jetpack'].includes(item.id))html+=RRCharacterMarks.panel(this,`props.${i}.mark`,item.mark);
             return { id: item.id, label: def.label, html };
         });
         const weapons = this.human && !this.slime ? this._heldModels() : [];
@@ -1097,10 +1174,16 @@ class Character3DBuilder {
         const S = RRCharacterSkin;
         const tones = [...RRCharacterSpecies.skinTones(this.recipe.species), '#f6e0d0', '#f1d3bd', '#e5b897', '#c69c7f', '#a8795a', '#8a5a3c', '#5e3b26', '#3f2618', '#6a8a4a', '#7a9a3a', '#b0463e', '#5e5470', '#9aa4a2', '#d8dce2'];
         const sp = this.recipe.skinPattern;
-        let out = this._section('Skin') + this._select('skinLook', 'Apply skin finish', [['', 'Choose…'], ...S.LOOKS.map(p => [p.id, p.label])])
+        let out = this._section('Skin') + this._select('skinLook', 'Apply skin look', [['', 'Choose…'], ...S.LOOKS.map(p => [p.id, p.label])])
             + this._color('skin', 'Skin color', tones) + this._select('skinPattern.type', 'Markings', S.PATTERNS);
         if (sp.type !== 'none') out += this._color('skinPattern.color', 'Marking color', []) + this._slider({ path: 'skinPattern.amount', label: 'Strength', natural: [0, 1] }) + this._slider({ path: 'skinPattern.scale', label: 'Scale', natural: [0.3, 3], format: 'x' });
         out += this._color('skinPattern.belly', 'Belly color', [], true);
+        out += this._section('Skin surface')
+            + this._select('skinSurface.finish', 'Finish', S.FINISHES.map(f => [f.id, f.label]));
+        if (this.recipe.skinSurface.finish !== 'natural') out += this._slider({ path: 'skinSurface.strength', label: 'Finish strength', natural: [0, 1] });
+        out += this._select('skinSurface.texture', 'Texture', S.SURFACE_TEXTURES);
+        if (this.recipe.skinSurface.texture !== 'smooth') out += this._slider({ path: 'skinSurface.detail', label: 'Pore detail', natural: [0, 3], format: 'x' })
+            + this._slider({ path: 'skinSurface.scale', label: 'Pore size', natural: [0.5, 2], format: 'x' });
         out += this._section('Makeup') + this._color('skinPattern.lips', 'Lips', ['#b02040', '#c8606a', '#8a2a4a', '#1a1a1a', '#6a3a8a'], true)
             + this._slider({ path: 'skinPattern.blush', label: 'Blush', natural: [0, 1] }) + this._color('skinPattern.eyeshadow', 'Eye shadow', ['#6a3a8a', '#2a4a8a', '#1a1a1a', '#8a5a3a'], true);
         if (sp.eyeshadow) out += this._slider({ path: 'skinPattern.shadowAmount', label: 'Shadow strength', natural: [0, 1] });
@@ -1234,6 +1317,7 @@ class Character3DBuilder {
         this._thumbDocument = null; this._thumbVisibility = null;
         this._previewWorker?.dispose(); this._previewWorker = null;
         this._previewMarks = null;
+        this._liveWorker?.dispose(); this._liveWorker = null; this._liveMarks = null; this._liveJob = null;
         this._thumbEpoch = (this._thumbEpoch || 0) + 1;
         this._thumbJob = null; this._thumbQueue = [];
         this._thumbReads = null;
@@ -1408,7 +1492,7 @@ class Character3DBuilder {
     }
 
     /** Pictures and imported garments are cloned once per resource revision, never per vertex. */
-    async _configurePreview(pool, recipe) {
+    async _configurePreview(pool, recipe, kept = '_previewMarks') {
         const T = window.RRCharacterOutfitTransfer;
         const keys = [...new Set((recipe.outfit || []).map(i => RRCharacterWardrobe.BY_ID.get(i.id)?.transfer).filter(Boolean))];
         if (T && keys.length) await T.preload(keys);
@@ -1425,9 +1509,9 @@ class Character3DBuilder {
         }
         const emblemPictures = this.cache.wardrobe?.emblemPictures || new Map();
         for (const [key, picture] of emblemPictures) marks.push(key, picture);
-        if (!this._previewMarks || marks.length !== this._previewMarks.length || marks.some((v, i) => v !== this._previewMarks[i])) {
+        if (!this[kept] || marks.length !== this[kept].length || marks.some((v, i) => v !== this[kept][i])) {
             pool.configure({ projectPath: this._project()?.path, eyeSource: this.eyeSource, emblemPictures, transfers });
-            this._previewMarks = marks;
+            this[kept] = marks;
         }
     }
 
@@ -1545,6 +1629,7 @@ class Character3DBuilder {
         const kind = part.kind || (part.metalness > 0.5 ? 'metal' : 'prop');
         const metal = kind === 'metal' || part.metalness > 0.5;
         const glossy = metal || ['eye', 'glass', 'goo', 'bubble'].includes(kind) || part.wet
+            || !!part.skinFinish && part.skinFinish.roughness < .5
             || !!part.metallicRoughnessTexture && (part.metalness > .15 || (part.roughness ?? .6) < .55);
         const opaque = kind !== 'goo' && !(part.opacity != null && part.opacity < 1);
         const material = new THREE.MeshPhongMaterial({
@@ -1552,7 +1637,7 @@ class Character3DBuilder {
             map: picture ? textureFor(part.texture, picture) : null,
             vertexColors: !!part.colors,
             specular: glossy ? 0x666666 : kind === 'hair' ? 0x111111 : 0x181818,
-            shininess: glossy ? 55 : 12,
+            shininess: part.skinFinish ? Math.max(4, 110 * (1 - part.skinFinish.roughness) ** 2) : glossy ? 55 : 12,
             envMap: glossy ? reflections : null, combine: THREE.AddOperation, reflectivity: metal ? 0.65 : kind === 'goo' ? 0.4 : 0.12,
             side: part.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
             transparent: !opaque, opacity: part.opacity ?? 1,
@@ -1797,6 +1882,7 @@ class Character3DBuilder {
         if (!ready || !window.THREE) { this._status(this._t('The 3D libraries could not be loaded.'), 'error'); return; }
         try {
             if (!this.pack || !this.eyeSource) [this.pack, this.eyeSource] = await Promise.all([this.pack || RRHumanBody.loadPack(), this.eyeSource || this._loadEyeSource()]);
+            await RRHumanBody.prepareAuthoring(this.pack);
             // [outfit transfer] The pictures of the outfits taken from models, decoded before the first build;
             // one that comes in later (a project's own) builds the view again.
             if (window.RRCharacterOutfitTransfer) {
@@ -1815,9 +1901,10 @@ class Character3DBuilder {
         if (!this.root || this.root !== root || this._thumbEpoch !== epoch || !this.root.querySelector('.rr-c3d-canvas')) return;
         if (this._previewPaused) { this._startOwed = true; return; }
         this._makeView();
-        this._rebuild();
-        this._refreshThumbs();
         this._status('');
+        this._rebuild();
+        if(this.tab==='outfit')this._renderPanel();
+        this._refreshThumbs();
     }
 
     /** MakeHuman's eye picture as RGBA, at 512 (the eyes are small on screen and in a file). */
@@ -1855,7 +1942,8 @@ class Character3DBuilder {
         scene.environment = this._studio(renderer);
         scene.environmentIntensity = 0.8;
         const camera = new THREE.PerspectiveCamera(30, 1, 0.05, 80);
-        scene.add(new THREE.HemisphereLight(0xfff4e8, 0x3a3430, 0.4));
+        // The ground bounces light back up: what faces down (a jaw, a full bust) stays a soft shade, not black.
+        scene.add(new THREE.HemisphereLight(0xfff4e8, 0x8a8078, 0.72));
         // The key a little softer than the room, so its shadows shade rather than black out.
         const key = new THREE.DirectionalLight(0xfff0e0, this._weak ? 2.4 : 2.0);
         key.position.set(1.6, 3.2, 2.4);
@@ -1868,7 +1956,9 @@ class Character3DBuilder {
             key.castShadow = true;
             key.shadow.mapSize.set(2048, 2048);
             key.shadow.bias = -0.0003;
-            key.shadow.normalBias = 0.012;
+            key.shadow.normalBias = 0.035;
+            // Shadows that soften rather than blacken: a hard terminator stepped along the body's facets.
+            key.shadow.intensity = 0.36;
         }
         const fill = new THREE.DirectionalLight(0xdce8ff, 0.5);
         fill.position.set(-2.5, 1.4, 1.6);
@@ -1889,9 +1979,10 @@ class Character3DBuilder {
         scene.add(blob);
         const group = new THREE.Group();
         scene.add(group);
-        const view = this._view = { renderer, scene, camera, floor, blob, group, key, meshes: [], bones: [], textures: new Map(), yaw: 0.35, pitch: 0.08, distance: 4.2, target: new THREE.Vector3(0, 0.9, 0), frame: 0, loop: 0, clock: new THREE.Clock() };
+        const view = this._view = { renderer, scene, camera, floor, blob, group, key, meshes: [], bones: [], textures: new Map(), yaw: 0.35, pitch: 0.08, distance: 4.2, target: new THREE.Vector3(0, 0.9, 0), frame: 0, loop: 0, clock: new THREE.Timer() };
 
         const size = () => {
+            if (this._sheetExporting) { this._sheetResizeOwed = true; return; }
             const w = Math.max(1, host.clientWidth), h = Math.max(1, host.clientHeight);
             renderer.setSize(w, h, false);
             camera.aspect = w / h;
@@ -1899,6 +1990,7 @@ class Character3DBuilder {
             if (this._result) this._faceFrame(this._result);
             this._draw();
         };
+        view.resizeNow = size;
         view.resize = new ResizeObserver(size);
         view.resize.observe(host);
         size();
@@ -1921,6 +2013,9 @@ class Character3DBuilder {
             this._aim();
             this._draw();
         }, { passive: false });
+        // Creating the studio tears down its predecessor via detach(), which
+        // also removes activity listeners. Restore the resume path for this view.
+        this._bindPreviewActivity();
     }
 
     _frame(which) {
@@ -1969,6 +2064,12 @@ class Character3DBuilder {
             }
         }
         if (!Number.isFinite(low[0])) return;
+        // Tall updos and broad curls belong in the Face frame; long ends below the chin do not.
+        const chin=low[1];
+        for(const part of result.parts)if(part.name==='Hair')for(let v=0;v<part.positions.length;v+=3) {
+            if(part.positions[v+1]<chin)continue;
+            for(let k=0;k<3;k++){low[k]=Math.min(low[k],part.positions[v+k]);high[k]=Math.max(high[k],part.positions[v+k]);}
+        }
         view.faceCenter = low.map((x, k) => (x + high[k]) * 0.5);
         // Fit a bounding sphere at any orbit angle, leaving room around the chin/crown.
         const radius = Math.hypot(...low.map((x, k) => (high[k] - x) * 0.5));
@@ -1981,13 +2082,14 @@ class Character3DBuilder {
         const view = this._view;
         if (!view) return;
         view.needsDraw = true;
-        if (this._previewPaused || view.frame || view.loop) return;
+        if (this._previewPaused || this._sheetExporting?.drawing || view.frame || view.loop) return;
         view.frame = requestAnimationFrame(() => { view.frame = 0; this._render(); });
     }
 
     _render() {
         const view = this._view;
         if (!view) return;
+        this._stepPreviewTween(performance.now());
         const c = view.camera, t = view.target;
         const aimed = view.aimed;
         if (!aimed || aimed.camera !== c || aimed.yaw !== view.yaw || aimed.pitch !== view.pitch || aimed.distance !== view.distance
@@ -2008,6 +2110,8 @@ class Character3DBuilder {
      * Idle only); A-pose stands still, and the view draws only when asked.
      */
     _syncPose() {
+        if (this._sheetExporting?.drawing) return;
+        this._stopPreviewTween();
         const view = this._view;
         if (!this.root) return;
         // The poses the body plan has: a person's, or a four-legged creature's own (those its kind can take).
@@ -2057,6 +2161,10 @@ class Character3DBuilder {
             view.action.time = once ? 0 : time % (view.action.getClip().duration || 1);
             view.heldSince = 0;
             view.action.play();
+            // A rebuilt clip must already be posed before its skin transition
+            // can draw; waiting for the next tick flashes the rest pose.
+            view.mixer.update(0);
+            this._plant();
         }
         if (view.action && view.mixer) {
             let carried = 0;
@@ -2069,7 +2177,7 @@ class Character3DBuilder {
                 view.loop = 0;
                 if (this._previewPaused || this._view !== view) return;
                 view.loop = requestAnimationFrame(tick);
-                const dt = Math.min(0.1, view.clock.getDelta());
+                const dt = Math.min(0.1, view.clock.update().getDelta());
                 carried += dt;
                 if (!view.halfRate) {
                     gaps.push(dt);
@@ -2077,6 +2185,7 @@ class Character3DBuilder {
                     if (gaps.length === 30 && gaps.slice().sort((a, b) => a - b)[15] > 0.022) view.halfRate = true;
                 }
                 if (view.halfRate && carried < 1 / 32 && !view.needsDraw) return;
+                this._restorePreviewRig();
                 view.mixer.update(carried);
                 if (view.poseMeta && view.poseMeta.once && view.action && !view.action.isRunning()) {
                     view.heldSince = (view.heldSince || 0) + carried;
@@ -2087,13 +2196,29 @@ class Character3DBuilder {
                 this._render();
             };
             view.resumeAnimation = () => {
-                if (view.loop || this._previewPaused || this._view !== view) return;
+                if (view.loop || this._previewPaused || this._sheetExporting?.drawing || this._view !== view) return;
                 carried = 0; gaps.length = 0;
-                view.clock.getDelta();
+                view.clock.reset();
                 view.loop = requestAnimationFrame(tick);
             };
             view.resumeAnimation();
         } else this._draw();
+    }
+
+    _bounceChanged(path) {
+        const result = this._result, view = this._view;
+        if (!result || !view || !result.bones.some(b => b.softTissue)) { this._queueRebuild(); return; }
+        for (const b of result.bones) if (b.softTissue) b.softTissue.amount = this.recipe[b.softTissue.kind + 'Bounce'];
+        for (const b of view.boneDefs) if (b.softTissue) b.softTissue.amount = this.recipe[b.softTissue.kind + 'Bounce'];
+        result.recipe[path] = this.recipe[path];
+        result.clips = result.clips.map(c => RRCharacterPoses.withSoftTissueMotion(result.bones, c));
+        view.idleClip = result.clips[0] || null;
+        const source = this.pose !== 'idle' && view.actions.get(this.pose)?.source;
+        view.bounceSource = source ? { id: this.pose, clip: source } : null;
+        const old = [...view.actions.values()].map(a => a.action);
+        view.actions.clear();
+        this._syncPose();
+        for (const a of old) if (a !== view.action) view.mixer.uncacheClip(a.getClip());
     }
 
     /** A pose's action on this build's skeleton: Idle from the build, the others from RRCharacterPoses. */
@@ -2104,8 +2229,11 @@ class Character3DBuilder {
         // Merfolk hook: a merfolk's skeleton plays the tail's own motions.
         const mer = !!window.RRMerfolkBody && RRMerfolkBody.hasTail(view.boneDefs);
         const cen = !!window.RRCharacterCentaur && RRCharacterCentaur.hasHorse(view.boneDefs);
-        let made = id === 'idle' ? view.idleClip : cen ? RRCharacterCentaur.poseClip(view.boneDefs, id, view.bodySkin, this.recipe) : view.plan === 'slime' ? RRSlimeBody.poseClip(view.boneDefs, id, this.recipe) : view.plan === 'quadruped' ? RRCreatureBody.poseClip(view.boneDefs, id, this.recipe) : mer ? RRMerfolkBody.poseClip(view.boneDefs, id, view.bodySkin, this.recipe) : RRCharacterPoses.clip(view.boneDefs, id, view.bodySkin);
+        const cached = view.bounceSource; view.bounceSource = null;
+        let made = cached?.id === id ? cached.clip : id === 'idle' ? view.idleClip : cen ? RRCharacterCentaur.poseClip(view.boneDefs, id, view.bodySkin, this.recipe) : view.plan === 'slime' ? RRSlimeBody.poseClip(view.boneDefs, id, this.recipe) : view.plan === 'quadruped' ? RRCreatureBody.poseClip(view.boneDefs, id, this.recipe) : mer ? RRMerfolkBody.poseClip(view.boneDefs, id, view.bodySkin, this.recipe) : RRCharacterPoses.clip(view.boneDefs, id, view.bodySkin);
         if (!made) return null;
+        made = RRCharacterPoses.withSoftTissueMotion(view.boneDefs, made);
+        const source = made;
         // Loose cloth worked out over the clip off the page (RRCharacterCloth, coarser in the view; kept per clip, body and
         // garment): until it is ready the cloth rides its anchor, then the pose takes it up where it is.
         const result = this._result;
@@ -2119,12 +2247,16 @@ class Character3DBuilder {
         // A track turns its bone, or with a path moves it ('translation') or squashes it ('scale').
         const tracks = made.tracks.map(t => new (t.path ? THREE.VectorKeyframeTrack : THREE.QuaternionKeyframeTrack)(view.bones[t.bone].name + (t.path === 'scale' ? '.scale' : t.path === 'translation' ? '.position' : '.quaternion'), Array.from(t.times || made.times), Array.from(t.values)));
         const action = view.mixer.clipAction(new THREE.AnimationClip(made.name || id, -1, tracks));
-        view.actions.set(id, { action, meta: { plant: !!made.plant, lift: made.lift || null, skin: !!made.skin, once: !!made.once, seat: made.seat || null } });
+        view.actions.set(id, { action, source, meta: { plant: !!made.plant, lift: made.lift || null, skin: !!made.skin, once: !!made.once, seat: made.seat || null } });
         return action;
     }
 
     /** A pose's cloth is worked out: its action is made again with it, carrying on from the pose's own time. */
     _clothReady(id, result) {
+        if (this._sheetExporting?.drawing) {
+            (this._sheetExporting.clothReady ||= []).push({ id, result });
+            return;
+        }
         const view = this._view, entry = view && view.actions && view.actions.get(id);
         if (!entry || this._result !== result) return;
         const old = entry.action, playing = view.action === old;
@@ -2206,6 +2338,11 @@ class Character3DBuilder {
      */
     _fastShape() {
         const view = this._view, result = this._result, pack = this.pack;
+        // The shared human sculpt refits its offsets, eyes, lids and scalp
+        // with the recipe. Moving an earlier model by its old skin bindings
+        // shows a different face until release. Use the same off-page full
+        // build for input and change; the newest recipe is already coalesced.
+        if (window.RRHeadMesh?.applies(this.recipe) || this.recipe.shapes?.abs > 1) return false;
         // These fitted features change their rest skeleton or the shared cranial rim.
         // Rebuild them with the new body rather than temporarily stretching old fittings.
         if (this.recipe.head?.heads===2 || this.recipe.features?.arms?.type === 'insect' || this.recipe.features?.machinery?.type === 'android') return false;
@@ -2251,15 +2388,19 @@ class Character3DBuilder {
         if (this._shapeWorkerRef !== undefined) return this._shapeWorkerRef;
         this._shapeWorkerRef = null;
         try {
-            if (typeof Worker === 'undefined' || typeof require !== 'function') return null;
+            if (typeof Worker === 'undefined' || typeof require !== 'function' || !(typeof process !== 'undefined' && process.versions?.node)) return null;
             const fs = require('fs'), path = require('path');
             const dir = path.join(RRHumanBody.dataFolder(), '..');
-            const code = ['HumanTargets', 'HumanBody'].map(f => fs.readFileSync(path.join(dir, f + '.js'), 'utf8')).join('\n;\n') + `
+            const code = ['HumanTargets', 'FaceFieldData', 'HeadMeshData', 'HumanBody', 'CharacterExpressions'].map(f => fs.readFileSync(path.join(dir, f + '.js'), 'utf8')).join('\n;\n') + `
                 let pack = null;
                 self.onmessage = e => {
-                    if (e.data.init) { pack = self.RRHumanBody.openPack(e.data.json, new Uint8Array(e.data.bin)); return; }
+                    if (e.data.init) {
+                        pack = self.RRHumanBody.openPack(e.data.json, new Uint8Array(e.data.bin));
+                        pack._expressionUnits = e.data.expressionUnits || null;
+                        return;
+                    }
                     const B = self.RRHumanBody, shaped = B.shape(pack, e.data.recipe);
-                    const normals = Float32Array.from(B.normals(shaped, pack.body.source, pack.body.index, pack.vertexCount));
+                    const normals = B.gather(B.skinNormals(pack, shaped, e.data.recipe), pack.body.source, 3);
                     const joints = B.joints(pack, shaped), heads = new Float32Array(joints.length * 3);
                     joints.forEach((j, i) => heads.set(j.head, i * 3));
                     const out = Float32Array.from(shaped);
@@ -2268,7 +2409,8 @@ class Character3DBuilder {
             const worker = new Worker(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
             const data = RRHumanBody.dataFolder(), bin = fs.readFileSync(path.join(data, 'human.bin'));
             const buffer = bin.buffer.slice(bin.byteOffset, bin.byteOffset + bin.byteLength);
-            worker.postMessage({ init: true, json: JSON.parse(fs.readFileSync(path.join(data, 'human.json'), 'utf8')), bin: buffer }, [buffer]);
+            const expressionUnits = window.RRCharacterExpressions?.units(this.pack) || null;
+            worker.postMessage({ init: true, json: JSON.parse(fs.readFileSync(path.join(data, 'human.json'), 'utf8')), bin: buffer, expressionUnits }, [buffer]);
             worker.onmessage = e => this._shapeDone(e.data);
             worker.onerror = () => { worker.terminate(); this._shapeWorkerRef = null; this._shapeJob = null; };
             this._shapeWorkerRef = worker;
@@ -2283,6 +2425,9 @@ class Character3DBuilder {
     _fastApply(shaped, normals, jointHeads) {
         const view = this._view, result = this._result, pack = this.pack, F = this._fast;
         if (!view || !F || F.result !== result) return;
+        this._stopPreviewTween();
+        const translated = new Set((view.action?.getClip().tracks || []).filter(t => t.name.endsWith('.position')).map(t => t.name.slice(0, -9)));
+        const posed = view.bones.map(b => ({ position: b.position.clone(), quaternion: b.quaternion.clone(), scale: b.scale.clone() }));
         let floor = Infinity;
         for (const v of pack.body.source) floor = Math.min(floor, shaped[v * 3 + 1]);
         const lift = F.floor - floor;
@@ -2340,7 +2485,12 @@ class Character3DBuilder {
             if (k === 0) {
                 g.getAttribute('normal').array.set(normals);
                 g.getAttribute('normal').needsUpdate = true;
-            } else if (part.interpolation) g.computeVertexNormals();
+            } else if (part.interpolation) {
+                if (part.headMesh && window.RRHeadMesh) {
+                    g.getAttribute('normal').array.set(RRHeadMesh.posedNormals(part, a));
+                    g.getAttribute('normal').needsUpdate = true;
+                } else g.computeVertexNormals();
+            }
         });
         // The skeleton: each joint by how far the body's own joint moved, bound again standing on the
         // floor, then the pose playing taken up again where it was (stopping it would start it over).
@@ -2355,12 +2505,32 @@ class Character3DBuilder {
             const parent = b.parent >= 0 ? heads[b.parent] : [0, 0, 0];
             view.bones[i].position.set(heads[i][0] - parent[0], heads[i][1] - parent[1], heads[i][2] - parent[2]);
             view.bones[i].quaternion.identity();
+            view.bones[i].scale.set(1, 1, 1);
+            view.bones[i].userData.rest.p.copy(view.bones[i].position);
         });
         view.group.updateMatrixWorld(true);
         view.skeleton.calculateInverses();
+        // The mixer caches constant track values. update(0) alone will not
+        // restore a floor pose's constant root turn after the bind calculation.
+        // Preserve the displayed pose while unanimated positions use the new rig.
+        view.bones.forEach((bone, i) => {
+            if (translated.has(bone.name)) bone.position.copy(posed[i].position);
+            bone.quaternion.copy(posed[i].quaternion);
+            bone.scale.copy(posed[i].scale);
+        });
         if (view.actions) for (const a of view.actions.values()) delete a.meta.skinFloor;
         this._resumePose();
         this._lastChange = Date.now();
+        // The camera follows the body as it changes: it aims by the height, and left at the last whole build's it jumped when the
+        // slider was let go, as if the body had snapped back.
+        let tall = -Infinity;
+        for (const v of pack.body.source) tall = Math.max(tall, shaped[v * 3 + 1]);
+        tall -= floor;
+        if (!F.aim) { let was = -Infinity; for (const v of pack.body.source) was = Math.max(was, F.shaped[v * 3 + 1]); F.aim = { tall: was - F.floor, height: view.height, body: view.bodyHeight, face: view.faceCenter ? [...view.faceCenter] : null }; }
+        const grown = tall / F.aim.tall;
+        view.height = F.aim.height * grown; view.bodyHeight = F.aim.body * grown;
+        if (F.aim.face) view.faceCenter = [F.aim.face[0], F.aim.face[1] * grown, F.aim.face[2]];
+        if (view.target) this._aim();
         this._draw();
     }
 
@@ -2425,35 +2595,100 @@ class Character3DBuilder {
 
     _queueRebuild() {
         this._rebuildOwed = true;
-        if (this._previewPaused) return;
+        if (this._previewPaused || this._sheetExporting) return;
         this._lastChange = Date.now();
         if (this._pending) return;
-        this._pending = requestAnimationFrame(() => { this._pending = 0; this._rebuild(); });
+        this._pending = requestAnimationFrame(() => { this._pending = 0; this._rebuildOffPage(); });
+    }
+
+    /** A second worker of the view's own: thumbnails queue on theirs, and a drag must not wait behind them. */
+    _livePool() {
+        if (this._liveFailed || typeof process === 'undefined' || !process.versions?.node || typeof require !== 'function') return null;
+        if (this._liveWorker) return this._liveWorker;
+        try {
+            const { PreviewWorker } = require(require('path').join(RRHumanBody.dataFolder(), '..', 'CharacterPreviewWorker.cjs'));
+            this._liveWorker = new PreviewWorker({ arrays: window, timeoutMs: 120000, maxQueued: 1 });
+            this._liveMarks = null;
+        } catch (error) { console.warn('[Character3DBuilder] live worker', error); this._liveFailed = true; }
+        return this._liveWorker || null;
+    }
+
+    /** A whole build costs a second or more, so it runs off the page: one at a time, showing completed drag samples and building the newest recipe next. */
+    _rebuildOffPage() {
+        if (this._previewPaused || this._sheetExporting) { this._rebuildOwed = true; return; }
+        const pool = this._view && this.pack ? this._livePool() : null;
+        if (!pool) { this._rebuild(); return; }
+        const job = this._liveJob || (this._liveJob = { busy: false, owed: false });
+        if (job.busy) { job.owed = true; return; }
+        job.busy = true;
+        this._rebuildOwed = false;
+        const epoch = this._thumbEpoch, recipe = JSON.parse(JSON.stringify(this.recipe)), drag = this._rangeDrag;
+        (async () => {
+            this._loadOutfitEmblems?.();
+            await this._configurePreview(pool, recipe, '_liveMarks');
+            return pool.build({ key: 'live', cacheKey: 'live', recipe, options: { live: true, ...this._buildOptions() } });
+        })().then(result => {
+            if (this._thumbEpoch !== epoch || !this._view) return;
+            job.busy = false;
+            // A complete sampled shape can be shown while the same slider is
+            // still moving. Discarding every older sample starved continuous
+            // drags until release. Other recipe edits and ended drags still
+            // reject stale work; a settled value always gets its exact build.
+            const current = JSON.stringify(this.recipe) === JSON.stringify(recipe);
+            const moving = drag && this._rangeDrag === drag && Character3DBuilder.rangeContext(this.recipe, drag.path) === Character3DBuilder.rangeContext(recipe, drag.path);
+            if (!current && !moving) { job.owed = false; this._queueRebuild(); return; }
+            // A body drag came back while this was building: the drag's own shape stands until it rests.
+            if (this._settle) return;
+            this.cache.skinKey = result.skinKey;
+            if (result.textures?.['skin.png']) this.cache.skin = result.textures['skin.png'];
+            this._applyBuild(result);
+            if (!current || job.owed) { job.owed = false; this._queueRebuild(); }
+        }, error => {
+            job.busy = false;
+            if (this._thumbEpoch !== epoch || !this._view) return;
+            const owed = job.owed; job.owed = false;
+            if (error?.name === 'AbortError') { if (owed) this._queueRebuild(); return; }
+            console.warn('[Character3DBuilder] live build, building on the page', error);
+            this._liveFailed = true;
+            this._rebuild();
+        });
+    }
+
+    _buildOptions() {
+        return { quality: 'preview', bodyArtPictures: this._artPictures, atlasSize: this._weak ? 1024 : undefined, hairBudget: this._weak ? 0.45 : 1, draft: !!((this.slime || !this.human) && this._dragDraft) };
     }
 
     _rebuild() {
-        if (this._previewPaused) { this._rebuildOwed = true; return; }
+        if (this._previewPaused || this._sheetExporting) { this._rebuildOwed = true; return; }
         this._rebuildOwed = false;
         const view = this._view;
         if (!view || !this.pack) return;
         let result;
         try {
             this._loadOutfitEmblems?.();
-            result = RRCharacterModel.build(this.pack, this.recipe, this.cache, { quality: 'preview', eyeSource: this.eyeSource, paintSkin: (key, args) => this._paintSkin(key, args), bodyArtPictures: this._artPictures, atlasSize:this._weak?1024:undefined,hairBudget: this._weak ? 0.45 : 1, draft: !!((this.slime || !this.human) && this._dragDraft) });
+            result = RRCharacterModel.build(this.pack, this.recipe, this.cache, { ...this._buildOptions(), eyeSource: this.eyeSource, paintSkin: (key, args) => this._paintSkin(key, args) });
         } catch (error) {
             console.error('[Character3DBuilder] build', error);
             this._status(this._t('This character could not be built.'), 'error');
             return;
         }
+        this._applyBuild(result);
+    }
+
+    /** A finished build into the view, from the page or the live worker alike. */
+    _applyBuild(result) {
+        const previous = (this._rangeDrag || this._rangeSettle || this._previewTween) && this._previewSnapshot();
         this._result = result;
         if (this._talk) this._talk.stop();
         this._show(result);
         // The drag's fast path made ready while the page is idle, so the first move of a slider does not wait on it.
-        if (result.plan === 'human' && result.built) {
+        if (result.plan === 'human' && result.built && !(result.recipe?.shapes?.abs > 1) && !window.RRHeadMesh?.applies(result.recipe || this.recipe)) {
             const ready = () => { if (this._result === result && this._view && (!this._fast || this._fast.result !== result)) this._fast = this._fastStart(result); };
             if (typeof requestIdleCallback === 'function') requestIdleCallback(ready, { timeout: 1500 }); else setTimeout(ready, 400);
         }
         this._showExpression();
+        if (previous) this._tweenPreview(previous);
+        if (JSON.stringify(result.recipe) === JSON.stringify(this.recipe)) this._rangeSettle = null;
         this._queueShading();
         const readout = this.root.querySelector('.rr-c3d-readout');
         if (readout) {
@@ -2462,6 +2697,123 @@ class Character3DBuilder {
             readout.textContent = this._t('Height {m} m', { m: result.height.toFixed(2) }) + ' · ' + this._t('{n} triangles', { n: Math.round(count.total).toLocaleString() });
             readout.title = count.outfit != null ? this._t('Outfit {outfit} · Hair {hair} · Body {body}', { outfit: count.outfit.toLocaleString(), hair: count.hair.toLocaleString(), body: count.body.toLocaleString() }) : '';
         }
+        const opening = this._openingDesign;
+        if (opening && opening.recipe === JSON.stringify(result.recipe) && opening.recipe === JSON.stringify(this.recipe)) {
+            this._openingDesign = null;
+            this._status(this._t('Opened {name}.', { name: opening.name }), 'ok');
+        }
+    }
+
+    /** Capture the displayed sample, including any unfinished transition. */
+    _previewSnapshot() {
+        const view = this._view, tween = this._previewTween;
+        if (!view || !this._result) return null;
+        const snapshot = { view, bones: (view.bones || []).map((bone, i) => ({ name: bone.name,
+            rest: bone.userData.rest.p.clone().add(tween?.rig[i]?.offset || new THREE.Vector3()),
+            inverse: view.skeleton.boneInverses[i].clone() })),
+            camera: view.target && { target: view.target.clone(), distance: view.distance },
+            parts: view.meshes.map((mesh, i) => ({ part: this._result.parts[i], name: this._result.parts[i]?.name,
+            positions: Float32Array.from(mesh.geometry.getAttribute('position').array),
+            normals: Float32Array.from(mesh.geometry.getAttribute('normal').array),
+            attributes: Object.fromEntries(['uv', 'uv1', 'skinWeight', 'skinIndex'].flatMap(name => {
+                const a = mesh.geometry.getAttribute(name); return a ? [[name, a.array.slice()]] : [];
+            })), index: Uint32Array.from(mesh.geometry.index.array) })) };
+        this._stopPreviewTween(false);
+        return snapshot;
+    }
+
+    /** Remove the display offsets before animation evaluates its target rig. */
+    _restorePreviewRig(tween = this._previewTween) {
+        if (!tween) return;
+        for (const r of tween.rig) {
+            r.bone.position.sub(r.offset); r.offset.set(0, 0, 0);
+            r.inverse.copy(r.toInverse);
+        }
+    }
+
+    _stopPreviewTween(finish = true) {
+        const tween = this._previewTween;
+        if (!tween) return;
+        cancelAnimationFrame(tween.frame);
+        this._restorePreviewRig(tween);
+        this._previewTween = null;
+        if (finish) for (const part of tween.parts) {
+            for (const a of part.attributes) { a.attribute.array.set(a.to); a.attribute.needsUpdate = true; }
+        }
+        if (finish && tween.camera) {
+            tween.view.target.copy(tween.camera.to); tween.view.distance = tween.camera.toDistance;
+        }
+    }
+
+    /** A small display-only transition between complete worker builds.
+     * Skin and its bind rig travel together, including while Idle is playing.
+     * Recipe and export buffers stay exact. */
+    _tweenPreview(previous) {
+        const view = this._view;
+        if (!previous || previous.view !== view) return;
+        if (previous.bones.length !== (view.bones || []).length || previous.bones.some((b, i) => b.name !== view.bones[i].name)) return;
+        const equal = (a, b) => a === b || (!!a && !!b && a.length === b.length && a.every((v, i) => v === b[i]));
+        const parts = [];
+        view.meshes.forEach((mesh, i) => {
+            const before = previous.parts[i], current = this._result.parts[i], g = mesh.geometry, position = g.getAttribute('position'), normal = g.getAttribute('normal');
+            if (!before || before.name !== this._result.parts[i]?.name || before.positions.length !== position.array.length || before.normals.length !== normal.array.length || before.index.length !== g.index.array.length || before.index.some((v, k) => v !== g.index.array[k])) return;
+            // Equal counts alone do not identify corresponding skin vertices
+            // or procedurally resampled strands.
+            if (!equal(before.part?.source, current.source) || !equal(before.part?.seamMap, current.seamMap)) return;
+            if (current.kind === 'hair' && !current.source) return;
+            if (!equal(before.attributes.skinIndex, g.getAttribute('skinIndex')?.array)) return;
+            const attributes = [['position', before.positions], ['normal', before.normals], ...['uv', 'uv1', 'skinWeight'].map(name => [name, before.attributes[name]])]
+                .flatMap(([name, from]) => {
+                    const attribute = g.getAttribute(name);
+                    return from && attribute && from.length === attribute.array.length ? [{ attribute, from, to: attribute.array.slice() }] : [];
+                });
+            if (attributes.some(a => !equal(a.from, a.to))) parts.push({ attributes });
+        });
+        if (!parts.length) return;
+        const now = performance.now(), interval = this._lastPreviewSample ? now - this._lastPreviewSample : 140;
+        this._lastPreviewSample = now;
+        const rig = (view.bones || []).map((bone, i) => ({ bone, from: previous.bones[i].rest,
+            to: bone.userData.rest.p.clone(), offset: new THREE.Vector3(), inverse: view.skeleton.boneInverses[i],
+            fromInverse: previous.bones[i].inverse, toInverse: view.skeleton.boneInverses[i].clone() }));
+        const camera = previous.camera && { from: previous.camera.target, to: view.target.clone(),
+            fromDistance: previous.camera.distance, toDistance: view.distance, last: view.target.clone(), lastDistance: view.distance };
+        const tween = this._previewTween = { parts, rig, camera, view, result: this._result, started: now, duration: Math.max(80, Math.min(200, interval)), frame: 0 };
+        const tick = () => {
+            if (this._previewTween !== tween || this._view !== view || this._result !== tween.result) return;
+            if (this._previewPaused) { this._stopPreviewTween(); return; }
+            this._render();
+            if (this._previewTween === tween) tween.frame = requestAnimationFrame(tick);
+        };
+        this._stepPreviewTween(now);
+        tween.frame = requestAnimationFrame(tick);
+    }
+
+    _stepPreviewTween(now) {
+        const tween = this._previewTween;
+        if (!tween) return;
+        this._restorePreviewRig(tween);
+        // A stream of samples must keep moving: restarting an ease-in for
+        // every completed build repeatedly stopped the surface mid-drag.
+        const t = Math.max(0, Math.min(1, (now - tween.started) / tween.duration));
+        for (const part of tween.parts) for (const a of part.attributes) {
+            const out = a.attribute.array;
+            for (let k = 0; k < out.length; k++) out[k] = t === 1 ? a.to[k] : a.from[k] + (a.to[k] - a.from[k]) * t;
+            a.attribute.needsUpdate = true;
+        }
+        for (const r of tween.rig) {
+            r.offset.copy(r.from).sub(r.to).multiplyScalar(1 - t);
+            r.bone.position.add(r.offset);
+            for (let k = 0; k < 16; k++) r.inverse.elements[k] = r.fromInverse.elements[k] + (r.toInverse.elements[k] - r.fromInverse.elements[k]) * t;
+        }
+        const c = tween.camera, view = tween.view;
+        if (c && (!view.target.equals(c.last) || view.distance !== c.lastDistance)) tween.camera = null;
+        else if (c) {
+            view.target.lerpVectors(c.from, c.to, t); view.distance = c.fromDistance + (c.toDistance - c.fromDistance) * t;
+            c.last.copy(view.target); c.lastDistance = view.distance;
+        }
+        if (view.group) view.group.updateMatrixWorld(true);
+        if (view.action) this._plant();
+        if (t === 1) { cancelAnimationFrame(tween.frame); this._previewTween = null; }
     }
 
     /** New pictures into the materials that show them, in place: nothing else is made again. */
@@ -2506,6 +2858,7 @@ class Character3DBuilder {
     }
 
     _clearModel() {
+        this._stopPreviewTween(false);
         const view = this._view;
         if (!view) return;
         view.held?.removeFromParent();
@@ -2538,28 +2891,7 @@ class Character3DBuilder {
 
     /** A small studio, filtered into an environment light: two softboxes, a floor bounce, dark walls. */
     _studio(renderer) {
-        const room = new THREE.Scene();
-        const box = (w, h, d, color, x, y, z, intensity) => {
-            const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(intensity), side: THREE.BackSide }));
-            m.position.set(x, y, z);
-            room.add(m);
-            return m;
-        };
-        box(14, 8, 14, '#2a2c32', 0, 3, 0, 1);
-        const soft = (w, h, x, y, z, intensity, color) => {
-            const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(intensity), side: THREE.DoubleSide }));
-            m.position.set(x, y, z);
-            m.lookAt(0, 1, 0);
-            room.add(m);
-        };
-        soft(3, 2, 3, 4, 4, 9, '#fff2e4');
-        soft(2, 3, -4, 2.5, 2, 3.5, '#dfe8ff');
-        soft(4, 1, -1, 3, -5, 6, '#e8eeff');
-        soft(8, 8, 0, -0.9, 0, 0.6, '#8a7a6a');
-        const pmrem = new THREE.PMREMGenerator(renderer);
-        const target = pmrem.fromScene(room, 0.03);
-        pmrem.dispose();
-        room.traverse(o => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
+        const target = ModelPreview3D.studioEnvironment(renderer);
         (this._envTargets = this._envTargets || []).push(target);
         return target.texture;
     }
@@ -2600,7 +2932,8 @@ class Character3DBuilder {
         }
         if(!this._weak && part.iridescence){
             m.iridescence=part.iridescence; m.iridescenceIOR=part.iridescenceIOR ?? 1.3;
-            m.iridescenceThicknessRange=part.iridescenceThicknessRange || [100,400];
+            const thickness=part.iridescenceThicknessRange || [100,400];
+            m.iridescenceThicknessMinimum=thickness[0]; m.iridescenceThicknessMaximum=thickness[1];
             m.iridescenceThicknessMap=linearMap(part.iridescenceThicknessTexture);
         }
         if (part.emissive) {
@@ -2632,37 +2965,18 @@ class Character3DBuilder {
         // Merfolk hook: a part's own relief picture (the tail's scales), as the saved file carries it; wet hair glossy.
         const merfolk = () => window.RRMerfolkBody && RRMerfolkBody.viewMaterial(m, part, result, (name, tex) => (textureFor ? textureFor(name, tex) : this._texture(name, tex)));
         merfolk();
-        if (this._weak) { if ((kind === 'eye' && !part.facetSurface) || kind === 'glass') m.roughness = 0.08; return ownRoom(); }
-        // Skin: a soft sheen in the skin's own color (from its picture), so it warms skin and stays dark on a
-        // painted scalp, stubble or markings.
-        if (kind === 'skin') {
-            m.roughness = Math.max(0.52, part.roughness ?? 0); m.sheen = 0.3; m.sheenRoughness = 0.55; m.sheenColor = new THREE.Color(0.9, 0.7, 0.62); if (m.map) m.sheenColorMap = m.map; m.specularIntensity = 0.4;
-            // Pores and fine lines, tiled small over the skin: the light breaks up on it as on real skin.
-            if (m.map && !m.normalMap) { m.normalMap = Character3DBuilder.skinDetail(); m.normalScale = new THREE.Vector2(0.3, 0.3); }
+        // The same factors are written to the GLB (including clearcoat, skin/cloth sheen,
+        // hair cutoffs and specular color); preview-only material tweaks must not change its look.
+        const look = RRCharacterGlb.materialLook(part, !!this._weak);
+        for (const [key, value] of Object.entries(look)) {
+            if (key === 'sheenColor' || key === 'specularColor') m[key].setRGB(...value);
+            else m[key] = value;
         }
-        // A cloth with its own tile: its roughness is the tile's, its sheen the saved file's (KHR_materials_sheen).
-        else if (kind === 'cloth' && part.fabric) {
-            if (part.sheen) { m.sheen = 1; m.sheenColor = new THREE.Color(1, 1, 1).multiplyScalar(part.sheen.strength ?? 0.5); m.sheenRoughness = part.sheen.roughness ?? 0.5; if (m.map) m.sheenColorMap = m.map; }
-            m.specularIntensity = (part.roughness ?? 0.9) > 0.8 ? 0.45 : 0.75;
+        if (this._weak) return ownRoom();
+        if (look.sheen && m.map) m.sheenColorMap = m.map;
+        if (kind === 'skin' && m.map && !m.normalMap) {
+            m.normalMap = Character3DBuilder.skinDetail(); m.normalScale = new THREE.Vector2(0.025, 0.025);
         }
-        // Cloth: a soft sheen in the cloth's own color at grazing angles (from its picture), so it reads as fabric
-        // without a white film washing its color out.
-        else if (kind === 'cloth') { m.sheen = 0.3; m.sheenRoughness = 0.85; m.sheenColor = new THREE.Color(0.8, 0.8, 0.8); if (m.map) m.sheenColorMap = m.map; m.roughness = Math.max(m.roughness, 0.8); m.specularIntensity = 0.12; }
-        else if (kind === 'metal') { m.metalness = Math.max(0.85, m.metalness); m.roughness = Math.min(0.4, m.roughness); m.clearcoat = 0.3; }
-        // Hair: matte, its soft highlight in its own color; no sheen and no anisotropic band, which both
-        // read as grey panels over dark hair.
-        else if (kind === 'hair') {
-            m.sheen = 0; m.specularIntensity = 0.2;
-            if(part.envMapIntensity<.2)m.specularIntensity=.025;
-            const own = part.colors ? new THREE.Color(part.colors[0], part.colors[1], part.colors[2]) : new THREE.Color(0x444444);
-            m.specularColor = own.clone().lerp(new THREE.Color(0xffffff), 0.35);
-            // A head of hair keeps a soft shine of its own color.
-            if (!part.onSkin && part.name === 'Hair') { m.roughness = 0.62; m.specularIntensity = 0.32; m.specularColor = own.clone().lerp(new THREE.Color(0xffffff), 0.25); }
-        }
-        // A compound eye: an even faceted surface with a soft sheen, not a wet lens mirroring the room.
-        else if (kind === 'eye' && part.facetSurface) { m.roughness = Math.max(0.38, m.roughness * 0.75); m.clearcoat = 0.35; m.clearcoatRoughness = 0.35; m.envMapIntensity = 0.55; }
-        else if (kind === 'eye') { m.roughness = 0.08; m.clearcoat = 1; m.clearcoatRoughness = 0.03; }
-        else if (kind === 'glass') { m.roughness = 0.02; m.metalness = 0; m.clearcoat = 1; m.envMapIntensity = 2; }
         merfolk();
         // A part may hold how much of the room it reflects (a grey's black lenses, the floor kept out of them).
         return ownRoom();
@@ -2671,7 +2985,7 @@ class Character3DBuilder {
     /** The build in the view: a skeleton from its bones, a skinned mesh per part, its Idle ready to play. */
     /** What the meshes in the view are made of: the same structure can be updated in place. */
     _structure(result) {
-        return result.plan + '|' + result.bones.map(b => b.name + ':' + b.parent).join(',') + '|' + result.parts.map(p => [p.name, p.positions.length, p.index.length, p.texture || '', p.normalTexture || '', p.emissiveTexture || '', p.metallicRoughnessTexture || '', p.iridescence || 0, p.iridescenceIOR || 0, String(p.iridescenceThicknessRange || ''), p.iridescenceThicknessTexture || '', p.roughness ?? .6, p.metalness ?? 0, p.normalScale ?? 1, p.kind || '', p.doubleSided ? 1 : 0, p.opacity ?? 1, !!p.uvs, !!p.uvs1, p.normalTexCoord || 0, p.occlusionTexture || '', p.fabric || '', p.sheen ? p.sheen.strength + '/' + p.sheen.roughness : '', !!p.colors, !!p.keepColors].join(':')).join(';');
+        return result.plan + '|' + result.bones.map(b => b.name + ':' + b.parent).join(',') + '|' + result.parts.map(p => [p.name, p.positions.length, p.index.length, p.texture || '', p.normalTexture || '', p.emissiveTexture || '', p.metallicRoughnessTexture || '', p.iridescence || 0, p.iridescenceIOR || 0, String(p.iridescenceThicknessRange || ''), p.iridescenceThicknessTexture || '', p.roughness ?? .6, p.metalness ?? 0, JSON.stringify(p.skinFinish || null), p.normalScale ?? 1, p.kind || '', p.doubleSided ? 1 : 0, p.opacity ?? 1, !!p.uvs, !!p.uvs1, p.normalTexCoord || 0, p.occlusionTexture || '', p.fabric || '', p.sheen ? p.sheen.strength + '/' + p.sheen.roughness : '', !!p.colors, !!p.keepColors].join(':')).join(';');
     }
 
     /**
@@ -2731,23 +3045,24 @@ class Character3DBuilder {
         view.extent = Math.max(view.height, box.max.x - box.min.x, box.max.z - box.min.z);
         view.blob.scale.set(Math.max(0.25, (box.max.x - box.min.x) * 0.55), Math.max(0.25, (box.max.z - box.min.z) * 0.75 + 0.08), 1);
         view.blob.position.x = (box.max.x + box.min.x) / 2; view.blob.position.z = (box.max.z + box.min.z) / 2;
-        this._resumePose();
-        if (priorExtent && Math.abs(Math.log(view.extent / priorExtent)) > 0.35) this._frame('body');
-        else { this._aim(); this._draw(); }
-        // Cloth and creature motion keys belong to their original body dimensions.
-        // Rebuild the active clip after compatible topology is resized too.
-        if ((result.cloth || result.plan === 'quadruped') && view.actions?.size) {
+        // Motion keys, including human Idle, belong to the build's dimensions.
+        // Rebind them before drawing: the old mixer can skip constant turns
+        // after the temporary standing rig used to calculate inverse binds.
+        if (view.actions?.size) {
             const old = [...view.actions.values()].map(a => a.action);
             view.actions.clear();
             this._syncPose();
             for (const a of old) if (a !== view.action) view.mixer.uncacheClip(a.getClip());
-        }
+        } else this._resumePose();
+        if (priorExtent && Math.abs(Math.log(view.extent / priorExtent)) > 0.35) this._frame('body');
+        else { this._aim(); this._draw(); }
     }
 
     /** The pose playing laid on the skeleton at its current time and stood on the floor, before a draw. */
     _resumePose() {
         const view = this._view;
         if (!view || !view.action || !view.mixer) return;
+        this._restorePreviewRig();
         view.mixer.update(0);
         this._plant();
         this._attachHeldPreview();
@@ -2758,9 +3073,9 @@ class Character3DBuilder {
         // The same structure as what is shown: moved in place.
         const structure = this._structure(result);
         if (view.structure === structure && view.meshes.length) { this._swapTextures(result); this._update(result); return; }
-        view.structure = structure;
         const time = view.action ? view.action.time : 0;
         this._clearModel();
+        view.structure = structure;
         const bones = result.bones.map(b => { const bone = new THREE.Bone(); bone.name = b.name; return bone; });
         result.bones.forEach((b, i) => {
             const parent = b.parent >= 0 ? result.bones[b.parent].head : [0, 0, 0];
@@ -2825,7 +3140,7 @@ class Character3DBuilder {
             // coats. Keep the ordinary face/contact bias for other models.
             const tack=result.parts.some(p=>p.name.startsWith('Gear ')&&p.doubleSided);
             view.key.shadow.bias=tack?-.002:-.0003;
-            view.key.shadow.normalBias=tack?.004:.012;
+            view.key.shadow.normalBias=tack?.004:.035;
             const c = view.key.shadow.camera, r = view.extent * 0.75 + 0.2, mid = new THREE.Vector3(0, view.height / 2, 0);
             view.key.target.position.copy(mid);
             view.key.position.copy(mid).add(new THREE.Vector3(1.6, 3.2, 2.4).normalize().multiplyScalar(r * 3));
@@ -2853,6 +3168,8 @@ class Character3DBuilder {
             if (!result || !view || result.shaded) return;
             const apply = ao => {
                 if (this._result !== result || !this._view) return;
+                RRCharacterShading.chestFromBody(result.parts, ao, this.pack);
+                RRCharacterShading.headFromBody(result.parts, ao, this.pack);
                 result.parts.forEach((p, k) => { if (p.kind === 'eye' || p.name === 'Eyes') delete ao[k]; });
                 const shaded = RRCharacterShading.applyOcclusion(result.parts, ao);
                 shaded.forEach((part, k) => {
@@ -2940,14 +3257,15 @@ class Character3DBuilder {
     /** The skin painter: the body's own modules and data, loaded into a worker once. */
     _skinWorker() {
         if (this._skinWorkerRef !== undefined) return this._skinWorkerRef;
+        if (!(typeof process !== 'undefined' && process.versions?.node)) return (this._skinWorkerRef = null);
         try {
             const fs = require('fs'), path = require('path');
             const dir = path.join(RRHumanBody.dataFolder(), '..');
             // Body art (CharacterBodyArtMotifs, CharacterBodyArt): tattoos, paint and scars painted with the skin, and their finer charts.
-            const code = ['HumanTargets', 'HumanBody', 'CharacterOutfit', 'CharacterHair', 'CharacterBodyArtMotifs', 'CharacterBodyArt', 'CharacterSkin'].filter(f => fs.existsSync(path.join(dir, f + '.js'))).map(f => fs.readFileSync(path.join(dir, f + '.js'), 'utf8')).join('\n;\n') + `
+            const code = ['HumanTargets', 'FaceFieldData', 'HeadMeshData', 'HumanBody', 'CharacterOutfit', 'CharacterHair', 'CharacterBodyArtMotifs', 'CharacterBodyArt', 'CharacterSkin', 'CharacterExpressions'].filter(f => fs.existsSync(path.join(dir, f + '.js'))).map(f => fs.readFileSync(path.join(dir, f + '.js'), 'utf8')).join('\n;\n') + `
                 let pack = null;
                 self.onmessage = e => {
-                    if (e.data.init) { pack = self.RRHumanBody.openPack(e.data.json, new Uint8Array(e.data.bin)); return; }
+                    if (e.data.init) { pack = self.RRHumanBody.openPack(e.data.json, new Uint8Array(e.data.bin)); pack._expressionUnits = e.data.units; return; }
                     const a = e.data.args, t = self.RRCharacterSkin.paint(pack, a.skin, a.pattern, a.options), list = [];
                     const pk = q => { if (!q) return null; list.push(q.data.buffer); return { width: q.width, height: q.height, name: q.name, data: q.data.buffer }; };
                     const normal = pk(t.normal), emissive = pk(t.emissive);
@@ -2958,7 +3276,10 @@ class Character3DBuilder {
             const data = RRHumanBody.dataFolder();
             const bin = fs.readFileSync(path.join(data, 'human.bin'));
             const buffer = bin.buffer.slice(bin.byteOffset, bin.byteOffset + bin.byteLength);
-            worker.postMessage({ init: true, json: JSON.parse(fs.readFileSync(path.join(data, 'human.json'), 'utf8')), bin: buffer }, [buffer]);
+            // The painter's anatomical rest field must use the same closed
+            // mouth and head schema as the page and full model worker.
+            const units = window.RRCharacterExpressions?.units(this.pack);
+            worker.postMessage({ init: true, json: JSON.parse(fs.readFileSync(path.join(data, 'human.json'), 'utf8')), bin: buffer, units }, [buffer]);
             this._skinWorkerRef = worker;
         } catch (error) {
             console.warn('[Character3DBuilder] skin painter', error);
@@ -2970,6 +3291,7 @@ class Character3DBuilder {
     /** The shading worker: CharacterShading.js itself, run off the page. */
     _shadingWorker() {
         if (this._worker !== undefined) return this._worker;
+        if (!(typeof process !== 'undefined' && process.versions?.node)) return (this._worker = null);
         try {
             const fs = require('fs'), path = require('path');
             const file = [path.join(RRHumanBody.dataFolder(), '..', 'CharacterShading.js')].find(f => fs.existsSync(f));
@@ -3198,8 +3520,20 @@ class Character3DBuilder {
         }, reference => assets.imageUrlFor(folder, reference), item.emblemPicture || undefined, { selectButtonLabel: this._t('Use This Picture'), zIndex: 10500 });
     }
 
+    _chooseMarkPicture(path) {
+        const project=this._project(),assets=window.RRAssetFiles,picker=window.reactor?.databaseEditorUI;
+        if(!project||!assets||!picker?.showImagePicker)return;
+        const folder=require('path').join(project.path,'img','pictures'),files=assets.listImageReferences(folder);
+        if(!files.length){RRDialog.alert(this._t('No pictures in img/pictures yet. Add one there to use it here.'),{title:this._t('Emblem picture')});return;}
+        const before=JSON.stringify(this._get(path));
+        picker.showImagePicker(this._t('Choose a picture'),files,reference=>{
+            if(!reference||this._project()?.path!==project.path||JSON.stringify(this._get(path))!==before||!assets.findImage(folder,reference))return;
+            this._emblemFailed?.delete(reference);this._set(path+'.picture',reference);this._commit();this._renderPanel();this._queueRebuild();
+        },reference=>assets.imageUrlFor(folder,reference),this._get(path+'.picture')||undefined,{selectButtonLabel:this._t('Use This Picture'),zIndex:10500});
+    }
+
     /** Decode small emblem rasters once per project, shared by preview and save atlases. */
-    _loadOutfitEmblems() {
+    _loadOutfitEmblems(recipe = this.recipe) {
         const project = this._project(), assets = window.RRAssetFiles;
         if (!project || !assets) return Promise.resolve([]);
         if (this._emblemProject !== project.path) {
@@ -3210,7 +3544,7 @@ class Character3DBuilder {
         const share = () => {
             this.cache.wardrobe = this.cache.wardrobe || {};
             const caches = [this.cache.wardrobe];
-            for (const kind of ['dress', 'garment', 'species']) {
+            for (const kind of ['dress', 'garment', 'species','prop']) {
                 this._thumbCache[kind] = this._thumbCache[kind] || {};
                 this._thumbCache[kind].wardrobe = this._thumbCache[kind].wardrobe || {};
                 caches.push(this._thumbCache[kind].wardrobe);
@@ -3223,9 +3557,10 @@ class Character3DBuilder {
         };
         share();
         const folder = require('path').join(project.path, 'img', 'pictures');
-        for (const item of this.recipe.outfit || []) {
+        const emblemItems=[...(recipe.outfit||[]),...(recipe.props||[])].flatMap(i=>[...(i.pattern==='emblem'?[{emblemPicture:i.emblemPicture}]:[]),...(i.mark?.shape==='picture'?[{emblemPicture:i.mark.picture}]:[])]);
+        for (const item of emblemItems) {
             const name = item.emblemPicture;
-            if (item.pattern !== 'emblem' || typeof name !== 'string' || !name || pictures.has(name) || this._emblemPending.has(name) || this._emblemFailed.has(name)) continue;
+            if (typeof name !== 'string' || !name || pictures.has(name) || this._emblemPending.has(name) || this._emblemFailed.has(name)) continue;
             if (/^(?:[a-z]+:|[\\/])/i.test(name) || name.replace(/\\/g, '/').split('/').includes('..') || !assets.findImage(folder, name)) { this._emblemFailed.add(name); continue; }
             const pending = this._emblemPending, failed = this._emblemFailed, img = new Image();
             let resolveReady, settled = false, watchdog;
@@ -3237,12 +3572,12 @@ class Character3DBuilder {
                 pending.delete(name);
                 if (this._project()?.path !== project.path || this._emblemPictures !== pictures || !this._view) { finish(false); return; }
                 try {
-                    const scale = Math.min(1, 256 / Math.max(img.naturalWidth, img.naturalHeight));
+                    const scale = Math.min(1, 1024 / Math.max(img.naturalWidth, img.naturalHeight));
                     const width = Math.max(1, Math.round(img.naturalWidth * scale)), height = Math.max(1, Math.round(img.naturalHeight * scale));
                     const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
                     const context = canvas.getContext('2d'); context.drawImage(img, 0, 0, width, height);
                     pictures.set(name, { width, height, data: new Uint8Array(context.getImageData(0, 0, width, height).data.buffer) });
-                    const active = new Set((this.recipe.outfit || []).filter(i => i.pattern === 'emblem').map(i => i.emblemPicture));
+                    const active = new Set([...(this.recipe.outfit||[]),...(recipe.outfit||[]),...(this.recipe.props||[]),...(recipe.props||[])].flatMap(i=>[i.pattern==='emblem'?i.emblemPicture:'',i.mark?.shape==='picture'?i.mark.picture:'']).filter(Boolean));
                     for (const ref of pictures.keys()) { if (pictures.size <= 16) break; if (!active.has(ref)) pictures.delete(ref); }
                     for (const cache of share()) delete cache.atlas;
                     this._queueRebuild();
@@ -3294,7 +3629,7 @@ class Character3DBuilder {
         return new Promise((resolve, reject) => {
             const fs = require('fs'), path = require('path');
             const dir = path.join(RRHumanBody.dataFolder(), '..');
-            const code = ['HumanTargets', 'HumanBody', 'CharacterOutfit', 'CharacterSimplify', 'CharacterOutfitTransfer'].map(name => fs.readFileSync(path.join(dir, name + '.js'), 'utf8')).join('\n;\n') + `
+            const code = ['HumanTargets', 'FaceFieldData', 'HumanBody', 'CharacterOutfit', 'CharacterSimplify', 'CharacterOutfitTransfer'].map(name => fs.readFileSync(path.join(dir, name + '.js'), 'utf8')).join('\n;\n') + `
                 self.onmessage = e => {
                     try {
                         const a = e.data, pack = self.RRHumanBody.openPack(a.json, new Uint8Array(a.bin));
@@ -3487,9 +3822,10 @@ class Character3DBuilder {
         if (input) input.value = name;
         const recipe = RRCharacterModel.normalize(data.recipe || data);
         // A recipe past the natural ranges opens with Extreme on, so its sliders reach its values.
-        this.extreme = this.extreme || JSON.stringify(RRHumanBody.naturalRecipe ? RRHumanBody.naturalRecipe(recipe) : recipe) !== JSON.stringify(RRHumanBody.normalizeRecipe(recipe));
-        this._replace(recipe);
-        this._status(this._t('Opened {name}.', { name }), 'ok');
+        const extreme = this.extreme || JSON.stringify(RRHumanBody.naturalRecipe ? RRHumanBody.naturalRecipe(recipe) : recipe) !== JSON.stringify(RRHumanBody.normalizeRecipe(recipe));
+        this._openingDesign = { name, recipe: JSON.stringify(recipe) };
+        this._status(this._t('Opening {name}…', { name }));
+        this._selectPreset(recipe, extreme);
     }
 
     /** A picture as PNG bytes. */
@@ -3514,44 +3850,67 @@ class Character3DBuilder {
     }
 
     async save() {
+        this._stopPreviewTween();
+        if (this._savingModel || this._sheetExporting) return;
+        this._savingModel = true;
+        try { await this._saveModel(); }
+        finally { this._savingModel = false; }
+    }
+
+    async _saveModel() {
         const project = this._project();
         if (!project || !this.pack) return;
+        const root = this.root, view = this._view, directory = this._charactersDir();
+        const current = () => this.root === root && this._view === view && this._project()?.path === project.path;
         let name = this._folderName(this.name);
         if (!name) {
             name = this._folderName(await RRDialog.prompt(this._t('Name this character:'), { title: this._t('Export Model To Project'), value: this._t('Villager') }));
-            if (!name) return;
+            if (!name || !current()) return;
             this.name = name;
             const input = this.root.querySelector('.rr-c3d-name-input');
             if (input) input.value = name;
         }
         const fs = require('fs'), path = require('path');
-        const folder = path.join(this._charactersDir(), name);
+        const folder = path.join(directory, name);
         const file = path.join(folder, 'source', name + '.glb');
         if (fs.existsSync(file) && !await RRDialog.confirm(this._t('Replace the saved character {name}?', { name }), { title: this._t('Export Model To Project'), ok: this._t('Replace'), danger: true })) return;
+        if (!current()) return;
         this._status(this._t('Saving…'));
         try {
-            await this._loadOutfitEmblems?.();
-            await this._loadArtPictures?.();
-            // The file at full quality: its own build, the outfit's picture shared with the view's.
+            // One export describes one design, even if the controls change while
+            // skin painting, cloth baking or PNG encoding yields to the editor.
+            const recipe = JSON.parse(JSON.stringify(this.recipe)), motions = this.motions || 'useful';
+            const eyeSource = this.eyeSource, bodyArtPictures = new Map(this._artPictures || []);
+            const emblemPictures = new Map(this.cache?.wardrobe?.emblemPictures || []);
+            const thumb = this._thumbnail();
+            await this._loadOutfitEmblems?.(recipe);
+            await this._loadArtPictures?.(recipe);
+            if (!current()) return;
+            for (const [name, picture] of this._artPictures || []) bodyArtPictures.set(name, picture);
+            for (const [name, picture] of this.cache?.wardrobe?.emblemPictures || []) emblemPictures.set(name, picture);
+            const requiredPictures=[...(recipe.outfit||[]),...(recipe.props||[])].flatMap(item=>[item.pattern==='emblem'?item.emblemPicture:'',item.mark?.shape==='picture'?item.mark.picture:'']).filter(Boolean);
+            if(requiredPictures.some(name=>!emblemPictures.has(name)))throw new Error('Emblem picture could not be loaded.');
+            const cache = { wardrobe: { emblemPictures } };
+            // A full-quality build in its own cache, independent of later preview edits.
             // The full-size skin painted off the page first, then the file built with it.
             let wanted = null;
-            const probe = { wardrobe: this.cache.wardrobe };
-            RRCharacterModel.build(this.pack, this.recipe, probe, { quality: 'save', eyeSource: this.eyeSource, bodyArtPictures: this._artPictures, paintSkin: (key, args) => { wanted = { key, args }; return null; } });
+            RRCharacterModel.build(this.pack, recipe, cache, { quality: 'save', eyeSource, bodyArtPictures, paintSkin: (key, args) => { wanted = { key, args }; return null; } });
             const skin = wanted ? await this._paintSkinNow(wanted.args) : null;
-            const result = RRCharacterModel.build(this.pack, this.recipe, { wardrobe: this.cache.wardrobe }, { quality: 'save', eyeSource: this.eyeSource, bodyArtPictures: this._artPictures, paintSkin: skin ? () => skin : undefined });
+            if (!current()) return;
+            const result = RRCharacterModel.build(this.pack, recipe, cache, { quality: 'save', eyeSource, bodyArtPictures, paintSkin: skin ? () => skin : undefined });
             // A person saved ready to use: its poses and motions as clips, rigged, each motion where the game plays it.
-            const ready = window.RRCharacterPoses && RRCharacterPoses.savedModel ? RRCharacterPoses.savedModel(result, this.motions || 'useful') : null;
+            const ready = window.RRCharacterPoses && RRCharacterPoses.savedModel ? RRCharacterPoses.savedModel(result, motions) : null;
             if (ready) {
                 const names = new Set((result.clips || []).map(clip => clip.name));
                 result.clips = (result.clips || []).concat(ready.clips.filter(clip => !names.has(clip.name)));
             }
             const glb = await RRCharacterModel.toGlb(result, name, tex => this._png(tex));
+            if (!current()) return;
             // Written whole or not at all: a save cut short leaves the last good file.
             const atomic = window.RRWriteFileAtomicSync || ((io, target, data) => io.writeFileSync(target, data));
             fs.mkdirSync(path.dirname(file), { recursive: true });
             atomic(fs, file, glb);
-            atomic(fs, path.join(folder, 'character.json'), JSON.stringify({ builder: 'character3d', version: 2, recipe: this.recipe }, null, 2) + '\n');
-            const thumb = this._thumbnail();
+            atomic(fs, path.join(folder, 'character.json'), JSON.stringify({ builder: 'character3d', version: 2, recipe }, null, 2) + '\n');
             if (thumb) atomic(fs, path.join(folder, 'thumbnail.png'), thumb);
             if (result.sidecar || ready) {
                 // A creature's rig, or a person's rig and motions, go in its model.json; what else the 3D Models page
@@ -3568,11 +3927,12 @@ class Character3DBuilder {
                 atomic(fs, sidecarFile, JSON.stringify(next, null, 2) + '\n');
                 if (ready && ready.rigBinary) atomic(fs, path.join(folder, 'model.rig.bin'), Buffer.from(ready.rigBinary));
             }
+            await window.RPGReactorHost?.flush?.();
             this._status(this._t('Saved to 3D Models › Characters/{name}.', { name }), 'ok');
             window.dispatchEvent(new CustomEvent('rr-models-changed', { detail: { name: 'Characters/' + name } }));
         } catch (error) {
             console.error('[Character3DBuilder] save', error);
-            this._status(this._t('{name} could not be saved.', { name }), 'error');
+            if (current()) this._status(this._t('{name} could not be saved.', { name }), 'error');
         }
     }
 }
@@ -3634,7 +3994,7 @@ Character3DBuilder.skinDetail = function() {
     }
     const t = new THREE.DataTexture(data, n, n, THREE.RGBAFormat);
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
-    t.repeat.set(40, 40);
+    t.repeat.set(100, 100);
     t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearMipmapLinearFilter; t.generateMipmaps = true;
     t.needsUpdate = true;
     return (Character3DBuilder._skinDetail = t);
@@ -3660,8 +4020,17 @@ Character3DBuilder.bodyPath = function(path) {
     return /^(shapes\.|morph\.|anatomy\.(length|girth|testicles|mons|labia|innerLabia|clitoris|fold|nipple|nippleProjection)$|gender$|age$|height$|weight$|muscle$|cup$|firmness$|proportions$|headSize$)/.test(path);
 };
 
+/** Everything except the one value being dragged must still match. */
+Character3DBuilder.rangeContext = function(recipe, path) {
+    const copy = JSON.parse(JSON.stringify(recipe)), keys = path.split('.');
+    let owner = copy;
+    for (const key of keys.slice(0, -1)) owner = owner?.[key];
+    if (owner && typeof owner === 'object') delete owner[keys.at(-1)];
+    return JSON.stringify(copy);
+};
+
 /** Bumped when the previews' look changes, so pictures kept on disk are drawn again. */
-Character3DBuilder.PREVIEW_VERSION = 48;
+Character3DBuilder.PREVIEW_VERSION = 98;
 
 /** Rigidly fit authored grip markers in the hand's rest frame; its bone carries every pose. */
 Character3DBuilder.fitHeldPreview = function(object, shape, frame, T) {

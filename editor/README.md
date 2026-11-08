@@ -1,8 +1,8 @@
 # RPG Reactor
 
-For the consolidated update, read the [0.99.2 release notes](../docs/posts/release-notes-0.99.2.md). Battle Rooms and visual Action Sequences are opt-in systems; see the [battle guide](../docs/BATTLE-PRESENTATION.md) and the [rigging guide](../docs/RIGGING-MODELS.md) for setup and current limits.
+For the consolidated update, read the [0.99.3 release notes](../docs/posts/release-notes-0.99.3.md). Battle Rooms and visual Action Sequences are opt-in systems; see the [battle guide](../docs/BATTLE-PRESENTATION.md) and the [rigging guide](../docs/RIGGING-MODELS.md) for setup and current limits.
 
-RPG Reactor 0.99.2 is an open-source, cross-platform RPG game editor and runtime for RPG Maker MV/MZ-compatible projects, built on NW.js, PixiJS v8 and Three.js. RPG Reactor provides its own modern runtime, PixiJS 8 for 2D and Three.js for HD-2D/3D maps, while preserving compatibility with RPG Maker project data and targeting backwards compatibility with both RPG Maker MZ and MV plugins. Create 2D and HD-2D RPG games with a complete development environment featuring map editing, event scripting, database management, and game testing capabilities.
+RPG Reactor 0.99.4 (in development) is an open-source, cross-platform RPG game editor and runtime for RPG Maker MV/MZ-compatible projects, built on NW.js, PixiJS v8 and Three.js. RPG Reactor provides its own modern runtime, PixiJS 8 for 2D and Three.js for HD-2D/3D maps, while preserving compatibility with RPG Maker project data and targeting backwards compatibility with both RPG Maker MZ and MV plugins. Create 2D and HD-2D RPG games with a complete development environment featuring map editing, event scripting, database management, and game testing capabilities.
 
 ## Features
 
@@ -293,6 +293,12 @@ Composable character sprite generator for actor walking sprites and generated ou
 - **Hair Forge styles**: Includes `Layered Bob`, `Long Layered`, `Short Shag`, `Short Spiky`, and `Center Part Long`. Short Spiky uses style-specific spike silhouettes, spiky side bangs, connected rear spikes, and length-aware back/nape behavior; Center Part Long uses symmetrical straight strands, a visible middle part, smooth side bangs, face-framing long curtains, and subtle walk-frame sway.
 - **Template analyzer**: Imports PNG/JPEG/WebP sprite sheets, classifies pixels into material letters, supports material-paint correction, and emits style-specific `RR_CG_BODY_TEMPLATE_SHEETS[style][variant]` snippets for body-template work
 - **Parts (PNG) tab**: Layers user-supplied PNG sprite-sheet parts from the active project's `forge/character_generator/styles/<style>/parts/` folder with draggable ordering
+
+#### 3D Character Builder
+Shapes humans, humanoid species and creatures with sliders and pickers, dresses them from the wardrobe and saves them to the project as rigged GLB models with their recipes, so they can be reopened and edited. Sheets export to `img/characters`, `img/sv_actors` and `img/faces`. Default human faces and body appearance are still under review. See the [guide](../docs/CHARACTER-BUILDER.md).
+
+#### 3D Prop Builder
+Builds flags, props made from pictures, weapons, wearables, containers, furniture and vehicles, and saves each to the project as a GLB model with its recipe. See the [guide](../docs/PROP-BUILDER.md).
 
 #### Sound Effect Generator
 Procedural sfxr-style SFX and instrument generator built on Web Audio. Bakes straight to the project's `audio/se/` folder, so a sound effect never has to be sourced outside the editor.

@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),crypto=require('node:crypto'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-global.THREE=require('three');
+global.THREE=require('./helpers/three.cjs');
 const Rules=require('../src/forge/Character3D/ConstructionPatterns.js'),Surface=require('../src/forge/Character3D/ConstructionSurface.js'),F=require('../src/forge/Props/FurnitureProp.js'),C=require('../src/forge/Props/ContainerProp.js'),M=require('../src/forge/Props/PropModel.js'),A=require('../src/forge/Props/AccessoryProp.js'),CP=require('../src/forge/Props/ContainerPaint.js'),Catalog=require('../src/forge/Props/PropCatalog.js');
 const hash=(parts,fields=['positions','index'])=>{const h=crypto.createHash('sha256');for(const p of parts)for(const k of fields)if(p[k])h.update(Buffer.from(p[k].buffer,p[k].byteOffset,p[k].byteLength));return h.digest('hex');};
 function builder(){const box={window:{},RRPropModel:M,RRPropCatalog:Catalog,THREE:global.THREE,sessionStorage:{getItem:()=>null},console};vm.createContext(box);vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/forge/Props/PropBuilder.js'),'utf8')+';globalThis.Builder=PropBuilder;',box);return new box.Builder();}
@@ -9,8 +9,18 @@ test('construction rules match recipe traits in order, consume explicit controls
  for(const style of ['modern','rustic','scifi']){const ctx={recipe:{kind:'furniture',style},parts:[]};assert.deepEqual(bank.assemble(ctx),style==='modern'?['frame']:['frame','joinery']);assert.deepEqual(ctx.parts,style==='modern'?['frame']:['frame','joinery']);}
  assert.deepEqual(Rules.anchor({deck:[0,1,0]},'deck',[.1,0,.2]),[.1,1,.2]);assert.throws(()=>Rules.anchor({deck:[0,NaN,0]},'deck'),/anchor/);assert.throws(()=>Rules.bank([{id:'x',build(){}},{id:'x',build(){}}]),/pattern/);
 });
-test('all sixteen furniture styles select different actual construction, including with details disabled',()=>{
- for(const [form]of F.FORMS)for(const details of [false,true]){const hashes=new Set();for(const style of ['modern','rustic','scifi']){const r=F.build({...F.fromPreset(form),style,details},{});hashes.add(hash(r.parts));assert.ok(r.construction.length,form+' construction plan');}assert.equal(hashes.size,3,form+' styles must change the mesh, details='+details);}
+const STYLED_FORMS=['chair','armchair','sofa','bench','table','desk','bed','cabinet','bookshelf','fridge','microwave','tv','computer','wallPanel','console','serverRack'];
+test('all sixteen styled furniture forms select different actual construction, including with details disabled',()=>{
+ for(const form of STYLED_FORMS)for(const details of [false,true]){const hashes=new Set();for(const style of ['modern','rustic','scifi']){const r=F.build({...F.fromPreset(form),style,details},{});hashes.add(hash(r.parts));assert.ok(r.construction.length,form+' construction plan');}assert.equal(hashes.size,3,form+' styles must change the mesh, details='+details);}
+});
+test('style on every later furniture form still picks a different finish, and every form has a construction plan',()=>{
+ // These forms have one construction; Style sets their finish. STYLED_FORMS above change shape as well.
+ for(const [form]of F.FORMS.filter(([id])=>!STYLED_FORMS.includes(id))){const looks=new Set();for(const style of ['modern','rustic','scifi']){const r=F.build({...F.fromPreset(form),style,...F.styleLook(form,style)},{});assert.ok(r.construction.length,form+' construction plan');const pictures=crypto.createHash('sha256');for(const t of Object.values(r.textures))if(t?.data)pictures.update(t.data);looks.add(JSON.stringify(r.parts.map(p=>[p.name,p.color,p.roughness,p.metalness,p.texture]))+pictures.digest('hex'));}assert.equal(looks.size,3,form+' styles must change the finish');}
+});
+test('default television, computer and wall panel keep their crafted builds; sci-fi televisions and computers keep their holo builds',()=>{
+ for(const form of ['tv','computer','wallPanel'])assert.deepEqual(F.build(F.fromPreset(form),{}).construction,['crafted-'+form]);
+ for(const form of ['tv','computer'])assert.notDeepEqual(F.build({...F.fromPreset(form),style:'scifi'},{}).construction,['crafted-'+form]);
+ const live=F.build({...F.fromPreset('computer'),style:'scifi',screenStyle:'status',animateScreen:true},{});assert.ok(live.parts.some(p=>/^Live display/.test(p.name)),'sci-fi computer readout animates');
 });
 test('upholstery settings deform the cushion surface, with finite normals and original skin support',()=>{
  for(const form of ['chair','armchair','sofa','bench','bed']){const hashes=new Set();for(const upholstery of ['plain','tufted','channel']){const r=F.build({...F.fromPreset(form),upholstery},{}),parts=r.parts.filter(p=>p.kind==='cloth');hashes.add(hash(parts,['positions','normals']));assert.ok(parts.every(p=>p.normals.every(Number.isFinite)),form);}assert.equal(hashes.size,3,form+' upholstery must change its shape');}
@@ -49,6 +59,7 @@ test('cross position changes tall banners and repeated emblems fit their painted
 test('keycap assemblies have fitted modifier widths, engraved legends and a real space bar',()=>{
  const K=require('../src/forge/Props/PropKeycaps.js');for(const n of [3,4,5,6]){const rows=K.layout(n);assert.equal(rows.length,n);if(n>=4)assert.ok(rows.flat().some(([name,width])=>name==='SPACE'&&width>4));}
  for(const form of ['computer','console']){const r=F.build(F.fromPreset(form),{}),p=r.parts.find(p=>p.name.endsWith(' legends'));assert.ok(p&&p.cutout&&p.texture);const t=r.textures[p.texture];assert.ok(t.data.some((v,i)=>i%4===3&&v===0));assert.ok(t.data.some((v,i)=>i%4===3&&v>200));assert.ok(p.uvs.every(v=>v>=-1e-6&&v<=1.000001));}
+ const keys=keyRows=>F.build({...F.fromPreset('computer'),keyRows},{}).parts.find(p=>p.name.endsWith(' keys')).index.length;assert.ok(keys(3)<keys(4)&&keys(4)<keys(6),'Key rows reach the crafted computer');
 });
 
 test('character chokers follow the actual neck below the jaw instead of a displaced lower-neck ellipse',async()=>{
@@ -64,7 +75,13 @@ test('character chokers follow the actual neck below the jaw instead of a displa
 test('cap crown contains sampled crew hair above its lower band on both body types',async()=>{
  const B=require('../src/forge/Character3D/HumanBody.js'),P=require('../src/forge/Character3D/CharacterProps.js'),Hair=require('../src/forge/Character3D/CharacterHair.js'),T=global.THREE,pack=await B.loadPack();
  for(const gender of [0,1]){const built=B.build(pack,B.normalizeRecipe({gender})),hair=Hair.build(pack,built,{style:'crew'},{seed:11,budget:.5,gender}),r=P.build(pack,built,[{id:'cap'}],hair),cap=r.parts[0],tris=[];
-  for(let k=0;k<cap.index.length;k+=3)tris.push(new T.Triangle(...[0,1,2].map(j=>new T.Vector3(...cap.positions.subarray(cap.index[k+j]*3,cap.index[k+j]*3+3)))));
+  // Test the crown surface. A ray can cross a stitched tube immediately
+  // beside it; merging those nearby hits changes parity without a hair leak.
+  const parent=Int32Array.from({length:cap.positions.length/3},(_,i)=>i),find=v=>{while(parent[v]!==v){parent[v]=parent[parent[v]];v=parent[v];}return v;};
+  for(let k=0;k<cap.index.length;k+=3){const a=find(cap.index[k]);parent[find(cap.index[k+1])]=a;parent[find(cap.index[k+2])]=a;}
+  const components=new Map();
+  for(let k=0;k<cap.index.length;k+=3){const id=find(cap.index[k]);let c=components.get(id);if(!c){c={triangles:[],area:0,lo:Infinity,hi:-Infinity};components.set(id,c);}const points=[0,1,2].map(j=>new T.Vector3(...cap.positions.subarray(cap.index[k+j]*3,cap.index[k+j]*3+3))),tri=new T.Triangle(...points);c.triangles.push(tri);c.area+=tri.getArea();for(const point of points){c.lo=Math.min(c.lo,point.y);c.hi=Math.max(c.hi,point.y);}}
+  const crown=[...components.values()].filter(c=>c.hi-c.lo>.03).sort((a,b)=>b.area-a.area)[0];assert.ok(crown,'the cap has a crown surface');tris.push(...crown.triangles);
   let checked=0;for(const part of hair.filter(p=>/^Hair/.test(p.name)))for(let v=0;v<part.positions.length/3;v+=Math.max(1,Math.ceil(part.positions.length/3/160))){const p=new T.Vector3(...part.positions.subarray(v*3,v*3+3));if(p.y<r.landmarks.brow+.03)continue;const ray=new T.Ray(p,new T.Vector3(.913,.271,.303).normalize()),q=new T.Vector3(),hits=[];for(const tri of tris)if(ray.intersectTriangle(tri.a,tri.b,tri.c,false,q)){const d=p.distanceTo(q);if(!hits.some(x=>Math.abs(x-d)<1e-5))hits.push(d);}assert.equal(hits.length%2,1,'hair pierces cap on body '+gender+' at '+p.toArray().join(','));checked++;}assert.ok(checked>10,'crew coverage not sampled');
  }
 });

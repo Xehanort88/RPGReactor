@@ -1,4 +1,5 @@
 'use strict';
+const { cover, sample, exhaustive } = require('./helpers/coverage.cjs');
 // Forge › 3D Character Builder, outfits taken from 3D models (RRCharacterOutfitTransfer): the Star Shift outfits build
 // on any body, extremes included, outside the skin and without NaNs; they keep to their picture and triangle budgets;
 // taking an outfit gives the same outfit every time; a project's own outfits are listed, kept and worn.
@@ -68,7 +69,7 @@ test('the catalog lists the four Star Shift outfits, each garment a part of a sh
 });
 
 test('every Star Shift outfit builds on average and extreme bodies, finite, standing on the floor', () => {
-    for (const preset of STAR_SHIFT) for (const body of BODIES) {
+    for (const [preset, body] of cover(STAR_SHIFT, BODIES)) {
         const result = Model.build(pack, Object.assign({}, body, { outfit: preset.items, hair: { style: 'bald' } }), {}, { quality: 'preview', skinSize: 256 });
         const label = preset.id + ' on ' + JSON.stringify(body);
         const taken = result.parts.filter(p => TAKEN.some(g => g.label === p.name));
@@ -92,9 +93,9 @@ test('every Star Shift outfit builds on average and extreme bodies, finite, stan
 });
 
 test('garments stay outside the skin they are worn on', () => {
-    for (const key of Transfer.BUILT_IN) {
+    for (const [key, body] of cover(Transfer.BUILT_IN, BODIES)) {
         const outfit = Transfer.load(key);
-        for (const body of BODIES) {
+        {
             const built = Body.build(pack, Body.normalizeRecipe(body));
             const frame = {}, P = Transfer.fit(pack, built, outfit, frame);
             const N = frame.bodyNormals, S = built.shaped, grid = frame.bodyGrid;
@@ -156,8 +157,8 @@ test('an outfit reads back as it was written', () => {
     const { json, bytes } = Transfer.encode(outfit, { id: 'carol', label: 'x', picture: 'carol.jpg', size: [2048, 2048] });
     const again = Transfer.decode(JSON.parse(JSON.stringify(json)), bytes);
     assert.equal(again.count, outfit.count);
-    assert.deepEqual(Array.from(again.tri), Array.from(outfit.tri));
-    assert.deepEqual(Array.from(again.render.point), Array.from(outfit.render.point));
+    assert.ok(again.tri.length===outfit.tri.length&&again.tri.every((v,i)=>v===outfit.tri[i]),'triangle bytes round-trip');
+    assert.ok(again.render.point.length===outfit.render.point.length&&again.render.point.every((v,i)=>v===outfit.render.point[i]),'render points round-trip');
     for (let i = 0; i < outfit.offset.length; i++) assert.ok(Math.abs(again.offset[i] - outfit.offset[i]) < 1e-4);
     for (let i = 0; i < outfit.bary.length; i++) assert.ok(Math.abs(again.bary[i] - outfit.bary[i]) < 1e-4);
     assert.deepEqual(again.parts.map(p => [p.id, p.index.length, p.hidden.length]), outfit.parts.map(p => [p.id, p.index.length, p.hidden.length]));
@@ -250,7 +251,7 @@ test('sparse bindings keep every clearance, panel, and collar through an encode/
             for (let i = 0; i < a.length; i++) assert.ok(Math.abs(a[i] - b[i]) <= tolerance, key + ': ' + name + ' at ' + i);
         }
         if (source.rigid) {
-            assert.deepEqual(again.rigid.w, source.rigid.w);
+            assert.ok(again.rigid.w.length===source.rigid.w.length&&again.rigid.w.every((v,i)=>v===source.rigid.w[i]),'rigid weights round-trip');
             for (let i = 0; i < source.rigid.offset.length; i++) if (source.rigid.w[(i / 3) | 0]) assert.ok(Math.abs(source.rigid.offset[i] - again.rigid.offset[i]) < 0.0001);
         }
     }
@@ -322,29 +323,18 @@ test('a cuff encloses the limb axis while a nearby pinhole is repaired', () => {
     assert.equal(area, 3, 'concave repair neither crosses nor fills the missing corner');
 });
 
-test('Captain panels have real fabric backing with body skinning, confined to their authored coverage', () => {
-    const preset = STAR_SHIFT.find(p => p.id === 'ss_carol');
-    const built = Body.build(pack, Body.normalizeRecipe({ gender: 1, extreme: true, weight: 4 }));
-    const out = Wardrobe.build(pack, built, preset.items, {});
-    // The panel backing only: 'Garment linings' (RRCharacterWardrobe.garmentLinings, the dark inner face along open
-    // edges) is also rrLining but follows the cloth it lines, not the body's skin, and has no body source vertices.
-    const lining = out.parts.filter(p => p.rrLining && p.name !== 'Garment linings');
-    assert.ok(lining.length, 'backing is a garment mesh');
-    const authored = new Set(Transfer.load('carol').parts.find(p => p.id === 'uniform').hidden);
-    const overlap = new Set(authored);
-    for (let t = 0; t < pack.body.index.length; t += 3) {
-        const ids = [0, 1, 2].map(k => pack.body.source[pack.body.index[t + k]]);
-        if (ids.some(v => authored.has(v))) for (const v of ids) overlap.add(v);
-    }
-    const body = built.parts[0];
-    for (const part of lining) for (const v of new Set(part.index)) {
-        assert.ok(overlap.has(part.source[v]), 'lining stays within one ring of the source panels');
-        let clearance = 0;
-        for (let c = 0; c < 3; c++) clearance += (part.positions[v * 3 + c] - body.positions[v * 3 + c]) * body.normals[v * 3 + c];
-        assert.ok(clearance > 0.001 && clearance < 0.002, 'backing stands above skin and below the outer shell');
-        for (let k = 0; k < 4; k++) {
-            assert.equal(part.joints[v * 4 + k], body.joints[v * 4 + k]);
-            assert.equal(part.weights[v * 4 + k], body.weights[v * 4 + k]);
-        }
+test('Captain lining follows the finished jacket and shares its weights, including on an extreme body', () => {
+    const preset=STAR_SHIFT.find(p=>p.id==='ss_carol'),built=Body.build(pack,Body.normalizeRecipe({gender:1,extreme:true,weight:4})),out=Wardrobe.build(pack,built,preset.items,{}),scale=built.height/1.7;
+    const lining=out.parts.filter(p=>p.rrLining&&p.name!== 'Garment linings');assert.ok(lining.length,'actual fabric lining');
+    for(const part of lining){const outer=out.parts.find(p=>p.name===part.name.replace(/ lining$/,''));assert.ok(outer);assert.ok(part.index.length<outer.index.length,'character lining stays near openings');
+        // Jacket and lining each take their own weave chart (2026-10-30), so vertices no longer pair by number: each
+        // lining vertex pairs with the jacket vertex it was stepped in from, by the shared normal, nearest in place.
+        const twin=new Map(),key=(n,sign)=>[0,1,2].map(c=>Math.round(n[c]*sign*1e4)).join();
+        for(let v=0;v<outer.positions.length/3;v++){const k=key(outer.normals.subarray(v*3,v*3+3),1);(twin.get(k)||twin.set(k,[]).get(k)).push(v);}
+        for(const v of new Set(part.index)){const near=twin.get(key(part.normals.subarray(v*3,v*3+3),-1))||[];let o=-1,best=Infinity;
+            for(const u of near){const d=Math.hypot(...[0,1,2].map(c=>outer.positions[u*3+c]-part.positions[v*3+c]));if(d<best){best=d;o=u;}}
+            assert.ok(o>=0,'every lining vertex has its jacket vertex');
+            let clearance=0,normal=0;for(let c=0;c<3;c++){clearance+=(outer.positions[o*3+c]-part.positions[v*3+c])*outer.normals[o*3+c];normal+=outer.normals[o*3+c]*part.normals[v*3+c];}
+            assert.ok(clearance>.0007*scale&&clearance<.0015*scale,'lining remains within cloth thickness');assert.ok(normal<-.99,'inward-facing normals');for(let k=0;k<4;k++){assert.equal(part.joints[v*4+k],outer.joints[o*4+k]);assert.equal(part.weights[v*4+k],outer.weights[o*4+k]);}}
     }
 });

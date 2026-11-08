@@ -75,41 +75,44 @@
     // Units named without a side move both sides. `gaze` is [across, up] in radians (+across: the character's left);
     // `blush` and `tears` are 0..1.
 
-    // Each is drawn to read at a glance on a 144-pixel face sheet: the brows, the lids and the mouth's corners
-    // carry it, each well past MakeHuman's own measure where a portrait needs it (Expressiveness scales them all).
+    // Each is a believable face, the way a good portrait or an animated film draws it: both sides alike (a smirk and
+    // a thought are the one-sided ones), each unit near MakeHuman's own measure, and no two units fighting over one
+    // feature. The brows, the lids and the mouth's corners carry it; the teeth show only where a face would show them
+    // (a laugh, a shout, pain). Expressiveness scales them all.
     const EXPRESSIONS = [
         { id: 'neutral', label: 'Normal', units: {} },
-        // Duchenne smile: the corners pulled up, the cheeks raised, the lower lids lifted, the brows lifted a little.
-        { id: 'happy', label: 'Happy', units: { smile: 1.25, grin: 0.4, lipsPart: 0.45, cheekRaise: 1.2, eyeSquint: 0.55, eyeClose: 0.12, browUp: 0.45, browInnerUp: 0.2 } },
-        // The eyes squeezed nearly shut, the mouth open wide, the brows up.
-        { id: 'laugh', label: 'Laughing', units: { smile: 1.3, grin: 0.6, jawDrop: 0.5, lipsPart: 0.45, upperLipRaise: 0.35, cheekRaise: 1.4, eyeSquint: 0.8, eyeClose: 0.5, browUp: 0.55, browInnerUp: 0.3 } },
-        // The inner brows drawn up and together, the corners well down, the lids heavy, the eyes lowered.
-        { id: 'sad', label: 'Sad', units: { browInnerUp: 1.8, browDown: 0.4, frown: 1.25, pout: 0.15, eyeClose: 0.32, eyeSquint: 0.1 }, gaze: [0, -0.22] },
-        // The brows down hard and together (the outer ends up, a V), the upper lids raised, the teeth bared.
-        { id: 'angry', label: 'Angry', units: { browDown: 1.9, browOuterUp: 0.45, browInnerUp: -0.25, eyeWide: 0.55, eyeSquint: 0.65, lipPress: 0.3, frown: 0.75, sneer: 0.6, upperLipRaise: 0.35, nostrilFlare: 1.2 } },
-        // The brows high, the eyes wide, the mouth dropped open in an O.
-        { id: 'surprised', label: 'Surprised', units: { browUp: 1.8, browInnerUp: 0.35, eyeWide: 1.5, jawDrop: 0.7, lipsPart: 0.3, funnel: 0.3 } },
-        // Brows raised and drawn together, the eyes wide, the lips stretched back off the teeth.
-        { id: 'scared', label: 'Scared', units: { browInnerUp: 1.5, browUp: 0.8, browDown: 0.35, eyeWide: 1.5, stretch: 1, grimaceOpen: 0.7, jawDrop: 0.22, neckTense: 0.5 } },
-        // The nose wrinkled and the upper lip raised, more on one side; the brows lowered.
-        { id: 'disgusted', label: 'Disgusted', units: { sneer: 1.4, sneerL: 0.4, upperLipRaise: 1, frown: 0.7, browDown: 1, browInnerUp: 0.2, eyeSquint: 0.75, pout: 0.3, cheekRaise: 0.5, noseCompress: 1 }, gaze: [0.06, -0.04] },
-        // One corner up, the cheek on that side; lids half down, one brow raised.
-        { id: 'smirk', label: 'Smirk', units: { smileL: 1.8, grinL: 0.35, cheekRaiseL: 0.9, eyeSquintL: 0.5, eyeClose: 0.3, lipPress: 0.3, browOuterUpR: 1.3, browUpR: 0.8, browDownL: 0.6 }, gaze: [0.08, 0] },
-        // The brows set low, the eyes narrowed, the mouth firm with the corners held level.
-        { id: 'determined', label: 'Determined', units: { browDown: 1.25, browOuterUp: 0.35, eyeSquint: 0.7, eyeWide: 0.2, lipPress: 0.6, smile: 0.35, stretch: 0.2, nostrilFlare: 0.6 } },
-        { id: 'worried', label: 'Worried', units: { browInnerUp: 2, browDown: 0.35, eyeWide: 0.7, stretch: 0.85, frown: 0.75, lipPress: 0.2, grimaceOpen: 0.2 }, gaze: [0.12, -0.08] },
+        // Duchenne smile: the corners up, the cheeks raised, the lower lids lifted a little, the lips just parted.
+        { id: 'happy', label: 'Happy', units: { smile: 1, lipsPart: 0.42, cheekRaise: 1, eyeSquint: 0.42, browUp: 0.12 } },
+        // The eyes narrowed by the cheeks, the mouth open, the brows up a little.
+        { id: 'laugh', label: 'Laughing', units: { smile: 0.95, grin: 0.2, jawDrop: 0.32, lipsPart: 0.35, cheekRaise: 0.95, eyeSquint: 0.45, eyeClose: 0.2, browUp: 0.3, browInnerUp: 0.15 } },
+        // The inner brows drawn up, the corners gently down, the lids a little heavy, the eyes lowered.
+        { id: 'sad', label: 'Sad', units: { browInnerUp: 1.45, frown: 0.85, lipPress: 0.1, eyeClose: 0.12 }, gaze: [0, -0.12] },
+        // The brows down and drawn together, the eyes narrowed, the lips pressed.
+        { id: 'angry', label: 'Angry', units: { browDown: 1.2, eyeSquint: 0.45, eyeWide: 0.15, lipPress: 0.4, frown: 0.5, sneer: 0.15, nostrilFlare: 0.6 } },
+        // The brows high, the eyes wide, the jaw dropped into a soft oval.
+        { id: 'surprised', label: 'Surprised', units: { browUp: 1.25, browInnerUp: 0.2, eyeWide: 0.85, jawDrop: 0.42, lipsPart: 0.05, funnel: 0.3 } },
+        // The brows up and drawn together, the eyes wide, the mouth a little open and stretched.
+        { id: 'scared', label: 'Scared', units: { browInnerUp: 1.2, browUp: 0.5, browDown: 0.15, eyeWide: 1, stretch: 0.35, jawDrop: 0.24, lipsPart: 0.1 } },
+        // The nose wrinkled and the upper lip raised, the brows lowered, the eyes narrowed.
+        { id: 'disgusted', label: 'Disgusted', units: { sneer: 0.7, upperLipRaise: 0.45, noseCompress: 0.5, frown: 0.35, browDown: 0.6, eyeSquint: 0.4, cheekRaise: 0.3 }, gaze: [0.05, -0.03] },
+        // One corner up and the cheek on that side, the other brow raised a little, the lids lazy.
+        { id: 'smirk', label: 'Smirk', units: { smileL: 0.85, cheekRaiseL: 0.45, eyeSquintL: 0.2, eyeClose: 0.12, lipPress: 0.2, browOuterUpR: 0.5, browUpR: 0.3 }, gaze: [0.05, 0] },
+        // The brows set low and level, the eyes steady, the mouth firm with a hint of a smile: resolve, not anger.
+        { id: 'determined', label: 'Determined', units: { browDown: 0.7, eyeSquint: 0.2, lipPress: 0.7, smile: 0.25, stretch: 0.15, nostrilFlare: 0.3 } },
+        // The inner brows up, the eyes a little wide and aside, the mouth tight and its corners down.
+        { id: 'worried', label: 'Worried', units: { browInnerUp: 1.35, browDown: 0.2, eyeWide: 0.35, frown: 0.45, stretch: 0.25, lipPress: 0.2 }, gaze: [0.08, -0.05] },
         // A shy smile, the brows up in the middle, the eyes lowered and aside, the cheeks colored.
-        { id: 'embarrassed', label: 'Embarrassed', units: { smile: 0.75, lipPress: 0.35, browInnerUp: 1, browDown: 0.2, eyeClose: 0.3, cheekRaise: 0.5 }, gaze: [0.3, -0.26], blush: 1 },
+        { id: 'embarrassed', label: 'Embarrassed', units: { smile: 0.45, lipPress: 0.2, browInnerUp: 0.6, eyeClose: 0.1, cheekRaise: 0.35 }, gaze: [0.22, -0.16], blush: 1 },
         // The lids most of the way down, the brows slack, the mouth a little open.
-        { id: 'sleepy', label: 'Sleepy', units: { eyeClose: 0.82, browInnerUp: 0.35, browOuterUp: -0.3, lipsPart: 0.35, jawDrop: 0.08 }, gaze: [0, -0.12] },
+        { id: 'sleepy', label: 'Sleepy', units: { eyeClose: 0.6, browInnerUp: 0.2, lipsPart: 0.2, jawDrop: 0.05 }, gaze: [0, -0.08] },
         // Brows up in the middle, the eyes screwed up, the corners down, the lips parted; tears and a flushed face.
-        { id: 'crying', label: 'Crying', units: { browInnerUp: 1.8, browDown: 0.5, eyeSquint: 0.9, eyeClose: 0.45, cheekRaise: 0.9, frown: 1.2, grimaceOpen: 0.6, jawDrop: 0.18, neckTense: 0.35 }, tears: 1, blush: 0.6 },
-        // The jaw dropped wide, the lips stretched, the upper lip raised, the brows down, the neck tensed.
-        { id: 'shouting', label: 'Shouting', units: { browDown: 1.5, browOuterUp: 0.35, eyeWide: 0.8, eyeSquint: 0.3, jawDrop: 0.75, stretchOpen: 0.75, upperLipRaise: 0.6, neckTense: 0.5, nostrilFlare: 1.2, lipsPart: 0.35 } },
-        // One brow down, the other well up, the lips pressed and pushed to one side, the eyes up and aside.
-        { id: 'thinking', label: 'Thinking', units: { browDownR: 1, browOuterUpL: 1, browUpL: 0.6, eyeSquintR: 0.45, lipPress: 0.4, smileL: 0.4, frownR: 0.3, jawSide: 0.9 }, gaze: [-0.32, 0.3] },
-        // The brows lowered, the eyes screwed shut, the cheeks raised, the nose wrinkled, the teeth bared in a grimace.
-        { id: 'pain', label: 'Pain', units: { browDown: 1.3, browInnerUp: 0.9, eyeClose: 0.85, eyeSquint: 1, cheekRaise: 1.1, sneer: 0.9, upperLipRaise: 0.65, stretch: 1, grimaceOpen: 0.75 } }
+        { id: 'crying', label: 'Crying', units: { browInnerUp: 1.3, browDown: 0.3, eyeSquint: 0.5, eyeClose: 0.3, cheekRaise: 0.5, frown: 0.8, lipsPart: 0.3, jawDrop: 0.1, stretch: 0.2 }, tears: 1, blush: 0.6 },
+        // The jaw dropped, the lips open and stretched, the upper lip raised, the brows down.
+        { id: 'shouting', label: 'Shouting', units: { browDown: 1, eyeWide: 0.4, eyeSquint: 0.15, jawDrop: 0.55, stretchOpen: 0.4, upperLipRaise: 0.3, lipsPart: 0.3, neckTense: 0.3, nostrilFlare: 0.6 } },
+        // One brow a little up and the other a little down, the lips pressed and drawn aside, the eyes up and aside.
+        { id: 'thinking', label: 'Thinking', units: { browDownR: 0.5, browOuterUpL: 0.7, browUpL: 0.35, eyeSquintR: 0.15, lipPress: 0.35, jawSide: 0.5 }, gaze: [-0.2, 0.16] },
+        // The brows lowered and drawn up in the middle, the eyes screwed shut, the cheeks raised, the teeth bared.
+        { id: 'pain', label: 'Pain', units: { browDown: 0.8, browInnerUp: 0.7, eyeClose: 0.55, eyeSquint: 0.6, cheekRaise: 0.6, sneer: 0.35, upperLipRaise: 0.3, stretch: 0.5, grimaceOpen: 0.3 } }
     ];
     const BY_ID = new Map(EXPRESSIONS.map(e => [e.id, e]));
 
@@ -177,7 +180,7 @@
     /** The units of an expression at a character's strength: the jaw and the lips' opening grow half as fast, a lid never past shut. */
     const SLOW = new Set(['jawDrop', 'stretchOpen', 'funnel', 'pucker', 'lipsPart', 'neckTense']);
     /** Past these a unit folds the face instead of moving it further: weights beyond them grow at a third of the rate. */
-    const KNEE = { browDown: 1.9, browInnerUp: 2.2, browOuterUp: 1.8, browUp: 2, pout: 0.35, frown: 1.2, sneer: 1.6, lipPress: 1.1, noseCompress: 1.2, upperLipRaise: 1.3, eyeWide: 1.8, smile: 2, grin: 0.9, cheekRaise: 1.6 };
+    const KNEE = { browDown: 1.5, browInnerUp: 1.9, browOuterUp: 1.2, browUp: 1.7, pout: 0.35, frown: 1.1, sneer: 1, lipPress: 1, noseCompress: 1, upperLipRaise: 0.8, eyeWide: 1.3, eyeSquint: 0.9, smile: 1.6, grin: 0.5, cheekRaise: 1.3, stretch: 0.8, grimaceOpen: 0.5 };
     function strengthen(b, emotion) {
         const e = normalizeEmotion(emotion), s = e.strength;
         const units = {};
@@ -189,7 +192,8 @@
         }
         for (const sd of ['L', 'R']) if (units['eyeClose' + sd] > 0.92) units['eyeClose' + sd] = 0.92;
         const g = 1 + (s - 1) * 0.5;
-        return { units, gaze: [b.gaze[0] * g, b.gaze[1] * g], blush: b.blush * e.blush, tears: b.tears, blushColor: e.blushColor };
+        // Past the middle of its range Blushing flushes any face, not only those with a blush of their own (Embarrassed).
+        return { units, gaze: [b.gaze[0] * g, b.gaze[1] * g], blush: Math.max(b.blush * e.blush, Math.max(0, e.blush - 1) * 0.9), tears: b.tears, blushColor: e.blushColor };
     }
 
     /** A face by name: an expression, `viseme_<id>`, `blink`, or a weight map of units. */
@@ -264,7 +268,9 @@
                 if (Math.sign(V[i]) !== side) continue;
                 for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], V[i + k]); hi[k] = Math.max(hi[k], V[i + k]); }
             }
-            return { side, c: [0, 1, 2].map(k => (lo[k] + hi[k]) / 2), r: [0, 1, 2].map(k => (hi[k] - lo[k]) / 2) };
+            const c = [0, 1, 2].map(k => (lo[k] + hi[k]) / 2), r = [0, 1, 2].map(k => (hi[k] - lo[k]) / 2);
+            // The mesh is the ball's front only: it turns about the sphere's true middle, a radius back from its front, or it swings out of its socket.
+            return { side, c, r, pivot: [c[0], c[1], hi[2] - r[0]] };
         });
     }
 
@@ -429,7 +435,8 @@
         const M = measure(pack, result);
         let b = spec && spec.units && spec.gaze ? spec : blend([[spec, weight]]);
         // A character's own strength (an expression's; a viseme or the blink is asked for without it).
-        if (emotion) b = strengthen(b, emotion);
+        const physical = typeof spec === 'string' && (spec === 'blink' || spec.startsWith('viseme_') || VISEME_BY_ID.has(spec));
+        if (emotion && !physical) b = strengthen(b, emotion);
         const delta = new Float32Array(pack.vertexCount * 3);
         const out = { delta, units: b.units, gaze: b.gaze, blush: b.blush, tears: b.tears, blushColor: b.blushColor || EMOTION.blushColor, moved: false };
         if (!M || !M.ok) return out;
@@ -453,9 +460,77 @@
             for (const t of [u, r]) for (let i = 0; i < t.index.length; i++) { const v = t.index[i] * 3; for (let c = 0; c < 3; c++) delta[v + c] += t.delta[i * 3 + c] * k; }
         }
         if (!out.moved && !(b.gaze && (b.gaze[0] || b.gaze[1]))) return out;
+        softenSmile(pack, M, delta);
+        easeCheeks(pack, M, delta);
         keepLipsApart(M, delta);
         keepLidsOut(M, delta);
         return out;
+    }
+
+    /**
+     * MakeHuman's smile hauls the corners up and leaves the lips' middle where it was, bending the upper lip into a U. A real smile mostly
+     * widens the mouth: here the corners lift less, the middle lifts with them, and the mouth stretches, the skin over the lip going along.
+     */
+    function softenSmile(pack, M, delta) {
+        const F = M.F, P = pack.positions;
+        if (!F.smileArea) {
+            let corner = 0, low = Infinity, high = -Infinity;
+            for (const v of F.lips) { corner = Math.max(corner, Math.abs(P[v * 3])); low = Math.min(low, P[v * 3 + 1]); high = Math.max(high, P[v * 3 + 1]); }
+            const tall = high - low;
+            F.smileArea = { corner, list: [...new Set(pack.body.source)].filter(v => Math.abs(P[v * 3]) < corner * 1.35 && P[v * 3 + 1] > low - tall * 0.7 && P[v * 3 + 1] < high + tall * 1.5 && P[v * 3 + 2] > 0.02).map(v => [v, Math.abs(P[v * 3]) / corner, P[v * 3 + 1] > high ? 1 - Math.min(1, (P[v * 3 + 1] - high) / (tall * 1.5)) : P[v * 3 + 1] < low ? 1 - Math.min(1, (low - P[v * 3 + 1]) / (tall * 0.7)) : 1]) };
+        }
+        const { corner, list } = F.smileArea;
+        let lift = 0, n = 0;
+        for (const v of F.lips) if (Math.abs(P[v * 3]) > corner * 0.8) { lift += delta[v * 3 + 1]; n++; }
+        lift = n ? lift / n : 0;
+        if (lift < 0.0006) return;
+        for (const [v, s, weight] of list) {
+            const side = Math.min(1.2, s), ease = side * side;
+            delta[v * 3 + 1] += (delta[v * 3 + 1] * -0.18 * ease + lift * 0.22 * (1 - Math.min(1, ease))) * weight;
+            delta[v * 3] += Math.sign(P[v * 3]) * lift * 0.34 * ease * weight;
+        }
+        // The skin between the nose and the lip: the unit pulls it in as the lip lifts, and it buckled into a dent over the lip. It stays out,
+        // and moves as one smooth piece with the lip under it.
+        if (!F.smileUpper) {
+            let high = -Infinity;
+            for (const v of F.lips) high = Math.max(high, P[v * 3 + 1]);
+            F.smileUpper = [...new Set(pack.body.source)].filter(v => !F.lips.includes(v) && Math.abs(P[v * 3]) < corner * 1.5 && P[v * 3 + 1] > high - 0.002 && P[v * 3 + 1] < high + 0.02 && P[v * 3 + 2] > 0.04);
+        }
+        const { offsets, flat } = Body.neighbors(pack);
+        for (const v of F.smileUpper) if (delta[v * 3 + 2] < 0) delta[v * 3 + 2] *= 0.1;
+        for (let pass = 0; pass < 12; pass++) {
+            const next = Float32Array.from(delta);
+            for (const v of F.smileUpper) for (let k = 0; k < 3; k++) {
+                let sum = 0;
+                for (let i = offsets[v]; i < offsets[v + 1]; i++) sum += delta[flat[i] * 3 + k];
+                next[v * 3 + k] = delta[v * 3 + k] * 0.4 + 0.6 * sum / Math.max(1, offsets[v + 1] - offsets[v]);
+            }
+            delta.set(next);
+        }
+    }
+
+    /**
+     * The cheek beside the mouth moves in sharp folds in MakeHuman's units: a smile cut a hard comma past each corner. Evened out over the skin
+     * there, the lips themselves untouched, it reads as the soft fold of a real cheek.
+     */
+    function easeCheeks(pack, M, delta) {
+        const F = M.F, { offsets, flat } = Body.neighbors(pack);
+        if (!F.cheekRing) {
+            const P = pack.positions, lips = new Set(F.lips);
+            let corner = 0, low = Infinity, high = -Infinity;
+            for (const v of F.lips) { corner = Math.max(corner, Math.abs(P[v * 3])); low = Math.min(low, P[v * 3 + 1]); high = Math.max(high, P[v * 3 + 1]); }
+            const tall = high - low;
+            F.cheekRing = [...new Set(pack.body.source)].filter(v => !lips.has(v) && Math.abs(P[v * 3]) > corner * 0.85 && Math.abs(P[v * 3]) < corner * 1.7 && P[v * 3 + 1] > low - tall * 1.1 && P[v * 3 + 1] < high + tall * 1.3 && P[v * 3 + 2] > 0.02);
+        }
+        for (let pass = 0; pass < 5; pass++) {
+            const next = Float32Array.from(delta);
+            for (const v of F.cheekRing) for (let k = 0; k < 3; k++) {
+                let sum = 0;
+                for (let i = offsets[v]; i < offsets[v + 1]; i++) sum += delta[flat[i] * 3 + k];
+                next[v * 3 + k] = delta[v * 3 + k] * 0.5 + 0.5 * sum / Math.max(1, offsets[v + 1] - offsets[v]);
+            }
+            delta.set(next);
+        }
     }
 
     /**
@@ -515,7 +590,7 @@
      * canines, premolars and molars of their own widths, each crown rounded
      * and tapering to its edge, set in a gum.
      */
-    function mouthParts(pack, built, recipe) {
+    function mouthParts(pack, built, recipe, faceFit) {
         if (recipe && recipe.head && recipe.head.kind) return [];
         const S = built.shaped, F = packFields(pack);
         const head = built.bones.findIndex(b => b.name === 'Head');
@@ -526,7 +601,13 @@
         let corner = 0, corner0 = 0, half = 0;
         for (const v of F.lips) { corner = Math.max(corner, Math.abs(S[v * 3])); corner0 = Math.max(corner0, Math.abs(B[v * 3])); }
         for (const v of F.upperTeeth) half = Math.max(half, Math.abs(S[v * 3]));
-        base.squeeze = Math.min(1, (corner / Math.max(1e-6, corner0)) / Math.max(1e-6, half / base.half));
+        base.squeeze = Math.min(1.18, (corner / Math.max(1e-6, corner0)) / Math.max(1e-6, half / base.half));
+        // The mouth's line, where the lips meet in the middle: the upper teeth's edges hang just under it, however the mouth was placed.
+        let lipLow = Infinity, lipHigh = -Infinity;
+        for (const v of F.lips) { if (Math.abs(S[v * 3]) > 0.005) continue; if (F.upperLip[v] > F.lowerLip[v]) lipLow = Math.min(lipLow, S[v * 3 + 1]); else lipHigh = Math.max(lipHigh, S[v * 3 + 1]); }
+        if (isFinite(lipLow) && isFinite(lipHigh)) base.line = (lipLow + lipHigh) / 2;
+        const lineShift = faceFit ? faceFit.center - base.line : 0;
+        if (faceFit) { base.line = faceFit.center; base.closedFace = true; base.squeeze *= Math.min(1.2, faceFit.corner / Math.max(1e-6, corner)); }
         base.upperEdge = arch(S, F.upperTeeth, 'upper', teeth, base);
         arch(S, F.lowerTeeth, 'lower', teeth, base);
         if (teeth.idx.length) {
@@ -544,10 +625,10 @@
         // At rest its tip lies low behind the lower teeth, under the lip line.
         let tf = -Infinity, tb = Infinity;
         for (let i = 0; i < tpos.length; i += 3) { tf = Math.max(tf, tpos[i + 2]); tb = Math.min(tb, tpos[i + 2]); }
-        for (let i = 0; i < tpos.length; i += 3) { const t = smooth(0.4, 1, (tpos[i + 2] - tb) / Math.max(1e-4, tf - tb)); tpos[i + 1] -= 0.005 + 0.003 * t; tpos[i + 2] -= 0.0075 * t; }
+        for (let i = 0; i < tpos.length; i += 3) { const t = smooth(0.4, 1, (tpos[i + 2] - tb) / Math.max(1e-4, tf - tb)); tpos[i + 1] += lineShift - 0.005 - 0.003 * t; tpos[i + 2] -= 0.0075 * t; }
         const tn = tg.source.length, tcol = new Float32Array(tn * 3);
         // Deep in the mouth and in its shadow: a dull, dark red (a glossy one lit up as a pale ball in an open mouth).
-        for (let i = 0; i < tn; i++) { tcol[i * 3] = 0.3; tcol[i * 3 + 1] = 0.07; tcol[i * 3 + 2] = 0.075; }
+        for (let i = 0; i < tn; i++) { tcol[i * 3] = 0.17; tcol[i * 3 + 1] = 0.04; tcol[i * 3 + 2] = 0.045; }
         parts.push({
             name: 'Tongue', positions: tpos, index: Uint32Array.from(tg.index), colors: tcol, keepColors: true, normals: normalsOf(tpos, tg.index),
             joints: new Uint8Array(tn * 4).map((_, i) => (i % 4 === 0 ? head : 0)), weights: new Float32Array(tn * 4).map((_, i) => (i % 4 === 0 ? 1 : 0)),
@@ -567,7 +648,7 @@
         const P = ids.map(v => [S[v * 3], S[v * 3 + 1], S[v * 3 + 2], v]);
         const ys = P.map(p => p[1]), y0 = Math.min(...ys), y1 = Math.max(...ys);
         const half = Math.max(...P.map(p => Math.abs(p[0])));
-        const mm = 0.001 * half / base.half;
+        const mm = 0.001 * half / base.half * Math.max(1, base.squeeze);
         // The arch's front line in the ground plane: the front-most helper point near each place across.
         const outer = x => { let best = -Infinity; for (const p of P) if (Math.abs(p[0] - x) < half * 0.18) best = Math.max(best, p[2] - Math.abs(p[0] - x) * 0.3); return best; };
         const samples = [];
@@ -605,9 +686,10 @@
         const sign = upper ? -1 : 1; // from gum to edge: down for the upper teeth, up for the lower.
         // The upper edges just under the lip line; the lower edges 1.5 mm over them, 3 mm behind, the lower arch inside the upper.
         // Both a little behind the helper's front, clear of the lips' inner folds.
-        const edgeY = upper ? y0 + (y1 - y0) * 0.01 : base.upperEdge + 1.5 * mm;
-        const back = upper ? 1.2 * mm : 4.2 * mm;
-        const ivory = [0.7, 0.65, 0.54], edge = [0.72, 0.72, 0.69], gum = [0.52, 0.17, 0.18];
+        const edgeY = upper ? (base.line !== undefined ? base.line + (base.closedFace ? 2 : -3) * mm : y0 + (y1 - y0) * 0.01) : base.upperEdge + 1.5 * mm;
+        // (Far enough back that the hairline between closed lips shows the dark of the mouth, not white teeth.)
+        const back = upper ? 3 * mm : 5.5 * mm;
+        const ivory = [0.7, 0.65, 0.54], edge = [0.72, 0.72, 0.69], gum = [0.38, 0.1, 0.11];
         const nearestHelper = (x, y, z) => { let b = P[0], bd = Infinity; for (const p of P) { const d = (p[0] - x) ** 2 + (p[1] - y) ** 2 + (p[2] - z) ** 2; if (d < bd) { bd = d; b = p; } } return b[3]; };
         const vert = (x, y, z, col) => { out.pos.push(x, y, z); out.col.push(col[0], col[1], col[2]); out.src.push(nearestHelper(x, y, z)); return out.pos.length / 3 - 1; };
         const tri = (a, b, c) => { if (upper) out.idx.push(a, c, b); else out.idx.push(a, b, c); };
@@ -629,7 +711,7 @@
                     for (let a = 0; a < SEG; a++) {
                         const ang = (a / SEG) * Math.PI * 2, cx = Math.cos(ang), cz = Math.sin(ang);
                         const sq = (q, p) => Math.sign(q) * Math.pow(Math.abs(q), p);
-                        const px = sq(cx, 0.4) * w * 0.48 * narrow, pz = (sq(cz, 0.5) * 0.5 - 0.5) * D * thin;
+                        const px = sq(cx, 0.4) * w * 0.5 * narrow, pz = (sq(cz, 0.5) * 0.5 - 0.5) * D * thin;
                         const y = g + sign * L * v;
                         const x = c.x + c.tx * px + c.ox * (pz - back), z = c.z + c.tz * px + c.oz * (pz - back);
                         // Further back in the mouth, less light reaches.
@@ -783,10 +865,10 @@
             if (part.name === 'Lashes' && pack.helpers.lashes && pack.helpers.lashes.source.length === n) return { mode: 'source', map: pack.helpers.lashes.source };
             if (part.name === 'Teeth') return { mode: 'teeth' };
             if (part.name === 'Tongue' && part.source && part.source.length === n) return { mode: 'tongue', map: part.source };
-            if ((part.name === 'Forehead detail' || part.chestDetail) && part.interpolation) return { mode: 'interpolation', map: part.interpolation };
+            if ((part.name === 'Forehead detail' || part.chestDetail || part.headMesh) && part.interpolation) return { mode: 'interpolation', map: part.interpolation };
             // Cyberware (RRCharacterCyberGear): per vertex, still, riding the skin under it, or swinging with the jaw.
             if (part.faceFollow && part.faceFollow.mode.length === n) return { mode: 'follow', map: part.faceFollow };
-            if (part.source && part.source.length === n && (part.name === 'Tongue' || part.name === 'Brows' || part.decal || part.onSkin)) return { mode: 'source', map: part.source };
+            if (part.source && part.source.length === n && (part.name === 'Tongue' || part.name === 'Brows' || part.name === 'Lashes' || part.decal || part.onSkin)) return { mode: 'source', map: part.source };
             // Facial hair and the features on the face (tusks, a muzzle's whiskers): each strand or piece by its root.
             if (part.name === 'Facial hair' || part.kind === 'feature') return rigid(part, nearest, o);
             return null;
@@ -864,6 +946,13 @@
 
     function posePartsWith(pack, result, M, f) {
         const D = f.delta, b = bind(pack, result);
+        const Head = root.RRHeadMesh || (typeof require === 'function' ? require('./CharacterHeadMesh.js') : null);
+        const head = result.parts.find(p => p.name === 'Head skin');
+        let headDelta = D;
+        if (head && (f.units.eyeCloseL || f.units.eyeCloseR)) {
+            const units = { ...f.units, eyeCloseL: 0, eyeCloseR: 0 };
+            headDelta = field(pack, result, { ...f, units }).delta;
+        }
         const positions = [], normals = [];
         const still = !f.moved && !(f.gaze && (f.gaze[0] || f.gaze[1]));
         result.parts.forEach((part, k) => {
@@ -872,18 +961,20 @@
             const base = part.positions, n = base.length / 3;
             if (m.mode === 'interpolation') {
                 const P = Float32Array.from(base), bind = m.map;
+                const delta = part.headMesh ? headDelta : D;
                 for (let i = 0; i < n; i++) for (let j = bind.offsets[i]; j < bind.offsets[i + 1]; j++) {
                     const v = bind.vertices[j], w = bind.weights[j];
-                    for (let c = 0; c < 3; c++) P[i * 3 + c] += D[v * 3 + c] * w;
+                    for (let c = 0; c < 3; c++) P[i * 3 + c] += delta[v * 3 + c] * w;
                 }
-                positions.push(P); normals.push(Body.normals(P, Uint32Array.from({ length: n }, (_, i) => i), part.index, n));
+                positions.push(P); normals.push(Head && part.headMesh ? Head.posedNormals(part, P) : Body.normals(P, Uint32Array.from({ length: n }, (_, i) => i), part.index, n));
             } else if (m.mode === 'source') {
                 const P = Float32Array.from(base), map = m.map;
+                const delta = part.name === 'Lashes' && head ? headDelta : D;
                 let any = false;
                 for (let i = 0; i < n; i++) {
                     const v = map[i];
                     if (v < 0) continue;
-                    const dx = D[v * 3], dy = D[v * 3 + 1], dz = D[v * 3 + 2];
+                    const dx = delta[v * 3], dy = delta[v * 3 + 1], dz = delta[v * 3 + 2];
                     if (dx || dy || dz) { P[i * 3] += dx; P[i * 3 + 1] += dy; P[i * 3 + 2] += dz; any = true; }
                 }
                 positions.push(any ? P : null);
@@ -939,7 +1030,7 @@
                 for (let i = 0; i < n; i++) {
                     const e = base[i * 3] - o[0] >= 0 ? M.eyes[0] : M.eyes[1];
                     const rot = (x, y, z) => { const x1 = x * cy + z * sy, z1 = -x * sy + z * cy; return [x1, y * cp + z1 * sp, -y * sp + z1 * cp]; };
-                    const c = [e.c[0] + o[0], e.c[1] + o[1], e.c[2] + o[2]];
+                    const c = [e.pivot[0] + o[0], e.pivot[1] + o[1], e.pivot[2] + o[2]];
                     const r = rot(base[i * 3] - c[0], base[i * 3 + 1] - c[1], base[i * 3 + 2] - c[2]);
                     P[i * 3] = c[0] + r[0]; P[i * 3 + 1] = c[1] + r[1]; P[i * 3 + 2] = c[2] + r[2];
                     if (N) { const q = rot(N[i * 3], N[i * 3 + 1], N[i * 3 + 2]); N[i * 3] = q[0]; N[i * 3 + 1] = q[1]; N[i * 3 + 2] = q[2]; }
@@ -957,11 +1048,16 @@
                 positions.push(P); normals.push(null);
             } else { positions.push(null); normals.push(null); }
         });
+        if (head && Head) result.parts.forEach((part, k) => {
+            if (!(part.lidRows || part.name === 'Lashes')) return;
+            const P = positions[k] || Float32Array.from(part.positions);
+            if (Head.closeLids(head, part, P, f.units)) { positions[k] = P; normals[k] = part.lidRows ? Head.normalsOf(P, part.index) : Head.posedNormals(part, P); }
+        });
         // The body's normals from its moved shape.
         if (positions[0]) {
             const S2 = Float32Array.from(M.S);
             for (let i = 0; i < S2.length; i++) S2[i] += D[i];
-            normals[0] = Body.normals(S2, pack.body.source, pack.body.index, pack.vertexCount);
+            normals[0] = Body.gather(Body.skinNormals(pack, S2, result.recipe), pack.body.source, 3);
             // The brows and other skin decals lie along the skin's new normals.
             result.parts.forEach((part, k) => {
                 const m = b.maps[k];
@@ -1080,6 +1176,13 @@
         if (!supports(pack, result)) return [];
         const list = names || MORPH_NAMES;
         const out = [];
+        // Hidden skin remains in the source position array for fast slider
+        // fitting. It needs no saved morph data when no triangle uses it.
+        const used = result.parts.map(part => {
+            const mask = new Uint8Array(part.positions.length / 3);
+            for (const vertex of part.index) mask[vertex] = 1;
+            return mask;
+        });
         for (const name of list) {
             // The expressions at the character's own strength and blush; the mouth shapes as they are.
             const own = String(name).startsWith('expression_') ? emotionOf(result.recipe) : undefined;
@@ -1095,6 +1198,7 @@
                 if (hair && most < 0.0025) return;
                 // Under a tenth of a millimeter is left out.
                 for (let i = 0; i < base.length / 3; i++) {
+                    if (!used[k][i]) continue;
                     const dx = P[i * 3] - base[i * 3], dy = P[i * 3 + 1] - base[i * 3 + 1], dz = P[i * 3 + 2] - base[i * 3 + 2];
                     if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) > 1e-4) { idx.push(i); d.push(dx, dy, dz); }
                 }

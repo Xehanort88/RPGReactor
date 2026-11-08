@@ -19,8 +19,11 @@
     const need = (name, file) => root[name] || (typeof require === 'function' ? require(file) : null);
     const Body = need('RRHumanBody', './HumanBody.js');
     const Glb = need('RRCharacterGlb', './CharacterGlb.js');
+    const Motions = need('RRCharacterPoses', './CharacterPoses.js');
     const Hair = need('RRCharacterHair', './CharacterHair.js');
     const Wardrobe = need('RRCharacterWardrobe', './CharacterWardrobe.js');
+    const HeadMesh = root.RRHeadMesh || (typeof require === 'function' ? require('./CharacterHeadMesh.js') : null);
+    const Fit = root.RRCharacterFit || (typeof require === 'function' ? require('./CharacterFit.js') : null);
     const Props = need('RRCharacterProps', './CharacterProps.js');
     const Species = need('RRCharacterSpecies', './CharacterSpecies.js');
     const Skin = need('RRCharacterSkin', './CharacterSkin.js');
@@ -53,11 +56,12 @@
             species: Species.BY_ID.has(r.species) && !Species.BY_ID.get(r.species).plan ? r.species : 'human',
             features: Species.normalizeFeatures(r.features),
             skinPattern: Skin.normalizeSkin(r.skinPattern),
+            skinSurface: Skin.normalizeSurface(r.skinSurface),
             eyes: Skin.normalizeEyes(r.eyes),
             // A pattern without regions of its own: a woman's Natural and Light are a woman's.
             bodyHair: Skin.normalizeBodyHair(r.bodyHair && !r.bodyHair.regions && Body.sexOf(body) === 'female' && Skin.HAIR_PRESETS[(r.bodyHair.pattern || 'natural') + 'Female']
                 ? Object.assign({}, r.bodyHair, { regions: Skin.HAIR_PRESETS[(r.bodyHair.pattern || 'natural') + 'Female'] }) : r.bodyHair),
-            hair: Hair.normalizeHair(r.hair || (r.bald ? { style: 'bald', brows: { style: 'none' } } : undefined)),
+            hair: Hair.normalizeHair(r.hair || (r.bald ? { style: 'bald', brows: { style: 'none' } } : body.gender < 0.4 && (!r.species || r.species === 'human') ? { style: 'centerPartLong', fringe: 0 } : undefined)),
             outfit: Wardrobe.normalizeOutfit(r.outfit),
             props: Props.normalizeProps(r.props),
             // A Head choice (`headId`, from the picker) sets the head anew; otherwise the recipe's own head.
@@ -117,7 +121,7 @@
         const hairBase = was.bald || was.hair ? Hair.randomHair(((old.seed ?? 1) ^ 0x5bd1e995) >>> 0, { gender: old.gender > 0.5 ? 'male' : 'female' }) : old.hair;
         const next = Object.assign({}, preset, {
             plan: 'human', gender: old.gender, age: own('age'), ancestry: old.ancestry,
-            skin: own('skin'), skinPattern: own('skinPattern'), eyes: own('eyes'), head: own('head') || null,
+            skin: own('skin'), skinPattern: own('skinPattern'), skinSurface: old.skinSurface, bustBounce: old.bustBounce, buttBounce: old.buttBounce, fatBounce: old.fatBounce, eyes: own('eyes'), head: own('head') || null,
             bodyHair: preset.bodyHair || was.bodyHair ? (preset.bodyHair || {}) : old.bodyHair,
             anatomy: { ...old.anatomy, paired: id === 'klingon' },
             outfit: old.outfit, bodyArt: old.bodyArt, emotion: old.emotion, props: (preset.props || []).concat(old.props.filter(p => !brought.has(p.id) && !(preset.props || []).some(q => q.id === p.id))),
@@ -128,8 +132,8 @@
         return normalize(next);
     }
 
-    const HAIR_COVERS = new Set(['helm', 'greathelm', 'visorhelm', 'powerhelm', 'hood', 'hoodie', 'poncho', 'headWrap', 'techSmock']);
-    const FACE_COVERS = new Set(['greathelm', 'visorhelm', 'powerhelm']);
+    const HAIR_COVERS = Wardrobe.HAIR_COVERS;
+    const FACE_COVERS = Wardrobe.FACE_COVERS;
 
     function textureKey(name, settings) { return name + ':' + JSON.stringify(settings); }
 
@@ -147,7 +151,7 @@
         if (r.plan === 'slime') return Slime.build(r, cache, o);
         if (r.plan === 'quadruped') {
             const built = Creature.build(r, { quality: o.quality || 'save', hairBudget: o.hairBudget, static: o.static, draft: o.draft });
-            if (o.quality === 'save' || o.quality == null || o.shade) shade(built.parts);
+            if (o.quality === 'save' || o.quality == null || o.shade) shade(built.parts, pack);
             return { recipe: r, parts: built.parts, bones: built.bones, height: built.height, textures: built.textures || {}, clips: built.clips, sidecar: Creature.sidecar(built), plan: 'quadruped' };
         }
         const built = Body.build(pack, r);
@@ -170,9 +174,12 @@
 
         // The outfit, and the skin it covers left out.
         cache.wardrobe = cache.wardrobe || {};
-        cache.wardrobe.pictureSize = o.static ? o.atlasSize || 256 : 1024;
-        cache.wardrobe.atlasSize = o.atlasSize || (o.static?256:2048);
+        // Test runs set smaller defaults (tests/helpers/small-pictures.cjs); nothing in the editor does.
+        const small = globalThis.RR_DEFAULT_PICTURES;
+        cache.wardrobe.pictureSize = o.static ? o.atlasSize || 256 : small?.picture || 1024;
+        cache.wardrobe.atlasSize = o.atlasSize || (o.static?256:small?.atlas || 2048);
         cache.wardrobe.quality = o.quality === 'preview' || o.static ? 'preview' : 'save';
+        cache.wardrobe.anatomy = r.anatomy; cache.wardrobe.female = Body.sexOf(r) === 'female';
         const outfit = Wardrobe.build(pack, built, r.outfit, cache.wardrobe);
         if (outfit.texture) textures[outfit.texture.name] = outfit.texture;
         for (const t of outfit.textures || []) textures[t.name] = t;
@@ -182,10 +189,21 @@
         // Body art hook: skin a replaced cyber limb takes the place of.
         const modHidden = BodyMods && r.bodyArt ? BodyMods.hiddenSkin(pack, r.bodyArt, r.outfit) : null;
         if (modHidden && modHidden.size) strandHidden = new Set([...(strandHidden || []), ...modHidden]);
-        if (outfit.hidden.size || mer || cen || (modHidden && modHidden.size)) {
+        // Skin detail under clothes isn't drawn: cloth makes its own peak over a raised nipple (RRCharacterFit), and a plate covers it.
+        if (r.anatomy.detail && outfit.parts?.length) {
+            const skinNormals = Body.vertexNormals(pack, built.shaped), S = built.shaped, ids = pack._bodyIds || (pack._bodyIds = [...new Set(pack.body.source)]);
+            for (const nip of Body.anatomyFields(pack).nipples) {
+                const at = [S[nip.v * 3], S[nip.v * 3 + 1], S[nip.v * 3 + 2]], out = [skinNormals[nip.v * 3], skinNormals[nip.v * 3 + 1], skinNormals[nip.v * 3 + 2]];
+                // Looked for from under the skin: the shape already holds the raised tip, which may stand past the cloth.
+                if (outfit.hidden.has(nip.v) || !Fit.covered(at.map((c, k) => c - out[k] * 0.012), out, outfit.parts, 0.06)) continue;
+                for (const v of ids) if (Math.hypot(S[v * 3] - at[0], S[v * 3 + 1] - at[1], S[v * 3 + 2] - at[2]) < 0.03) outfit.hidden.add(v);
+            }
+        }
+        const headHidden = HeadMesh?.applies(r) && !r.outfit.some(item => FACE_COVERS.has(item.id)) ? HeadMesh.hidden(r) : null;
+        if (outfit.hidden.size || mer || cen || headHidden || (modHidden && modHidden.size)) {
             const keep = [];
             const src = pack.body.source, I = body.index;
-            const gone = v => outfit.hidden.has(v) || (!!mer && mer.hidden.has(v)) || (!!cen && cen.hidden.has(v)) || (!!modHidden && modHidden.has(v));
+            const gone = v => outfit.hidden.has(v) || (!!headHidden && headHidden.has(v)) || (!!mer && mer.hidden.has(v)) || (!!cen && cen.hidden.has(v)) || (!!modHidden && modHidden.has(v));
             for (let t = 0; t < I.length; t += 3) {
                 if (gone(src[I[t]]) && gone(src[I[t + 1]]) && gone(src[I[t + 2]])) continue;
                 keep.push(I[t], I[t + 1], I[t + 2]);
@@ -193,9 +211,9 @@
             body.index = Uint32Array.from(keep);
         }
         // The skin picture: 1024 in the view (painted once per skin setting), 2048 in a saved file.
-        const skinSize = o.skinSize || (o.quality === 'preview' ? 1024 : 2048);
+        const skinSize = o.skinSize || small?.skin || (o.quality === 'preview' ? 1024 : 2048);
         // A man's shaved beard shadows his jaw, unless his species has no hair.
-        const beard = r.gender > 0.6 && r.age > 16 && !(Species.BY_ID.get(r.species)?.recipe || {}).bald ? Math.round((r.gender - 0.6) * 2.5 * 10) / 10 : 0;
+        const beard = r.gender > 0.6 && r.age > 16 && !(Species.BY_ID.get(r.species)?.recipe || {}).bald ? Math.round((r.gender - 0.6) * 2.5 * 10) / 10 * (headHidden ? 0.4 : 1) : 0;
         const sex = Body.sexOf(r);
         const anatomy = { detail: r.anatomy.detail, female: sex === 'female', cup: 0, areola: r.anatomy.areola, areolaColor: r.anatomy.areolaColor, fold: r.anatomy.fold };
         const bodyHair = Object.assign({}, r.bodyHair, { color: r.bodyHair.color || r.hair.color });
@@ -211,9 +229,9 @@
         const artPictures = art.some(l => l.motif === 'picture') && o.bodyArtPictures ? o.bodyArtPictures : null;
         const artDetail = art.length && !o.static && skinSize >= 512 ? { size: skinSize } : null;
         const artKey = art.length ? [art, artDetail, art.filter(l => l.motif === 'picture').map(l => l.picture + ':' + !!(artPictures && (artPictures.get ? artPictures.get(l.picture) : artPictures[l.picture])))] : 0;
-        const skinKey = textureKey('skin', [r.skin, r.skinPattern, skinSize, beard, anatomy, bodyHair, earHoles, scalp, Skin.ageStep(r.age), facial, artKey]);
+        const skinKey = textureKey('skin', [r.skin, r.skinPattern, skinSize, beard, anatomy, bodyHair, earHoles, scalp, Skin.ageStep(r.age), facial, artKey, !!headHidden]);
         if (cache.skinKey !== skinKey) {
-            const args = { skin: r.skin, pattern: r.skinPattern, options: { size: skinSize, beard, anatomy, bodyHair, earHoles, scalp, age: Skin.ageStep(r.age), facial, ...(art.length ? { bodyArt: art, bodyArtPictures: artPictures, detail: artDetail } : {}) } };
+            const args = { skin: r.skin, pattern: r.skinPattern, options: { size: skinSize, beard, anatomy, bodyHair, earHoles, scalp, age: Skin.ageStep(r.age), facial, noLips: !!headHidden, ...(art.length ? { bodyArt: art, bodyArtPictures: artPictures, detail: artDetail } : {}) } };
             // A painter off the page (the builder's worker) answers later; until then the last skin stays.
             const painted = o.paintSkin ? o.paintSkin(skinKey, args) : Skin.paint(pack, args.skin, args.pattern, args.options);
             if (painted) { cache.skin = painted; cache.skinKey = skinKey; }
@@ -230,9 +248,11 @@
 
         const eyes = Object.assign({}, built.parts[1], { roughness: 0.25, cutout: true });
         if (o.eyeSource) {
-            const eyeKey = textureKey('eyes', [r.eyes, o.eyeSource.width, o.eyeSource.height]);
+            // (This head's eyeballs are larger than the eye picture was drawn for: a pupil kept to a natural share of the iris.)
+            const eyePaint = headHidden ? { ...r.eyes, size: r.eyes.size * 0.82, pupilSize: (r.eyes.pupilSize ?? 1) * 0.8 } : r.eyes;
+            const eyeKey = textureKey('eyes', [eyePaint, o.eyeSource.width, o.eyeSource.height]);
             if (cache.eyeKey !== eyeKey) {
-                cache.eyes = { width: o.eyeSource.width, height: o.eyeSource.height, data: Skin.paintEyes(o.eyeSource.data, o.eyeSource.width, r.eyes), name: 'eyes.png' };
+                cache.eyes = { width: o.eyeSource.width, height: o.eyeSource.height, data: Skin.paintEyes(o.eyeSource.data, o.eyeSource.width, eyePaint), name: 'eyes.png' };
                 cache.eyeKey = eyeKey;
             }
             textures['eyes.png'] = cache.eyes;
@@ -269,7 +289,7 @@
             }
         }
         // The areolas: their own patch with its own picture, sharp at any distance.
-        if (r.anatomy.detail && !outfit.hidden.has(Body.anatomyFields(pack).nipples[0].v)) {
+        if (r.anatomy.detail && Body.anatomyFields(pack).nipples.some(nip => !outfit.hidden.has(nip.v))) {
             const reach = (sex === 'female' ? 0.026 : 0.014) * r.anatomy.areola;
             const nip = Body.anatomyFields(pack).nipples[0].v;
             const cover = bodyHair.amount > 0.01 || bodyHair.fur > 0.05 ? Skin.hairCover(bodyHair, Skin.hairField(pack, bodyHair.regions)[nip]) : 0;
@@ -282,6 +302,24 @@
             const patch = chest ? chest.overlay : Detail.areolaPart(pack, built.shaped, skinNormals, reach, body);
             if (cache.areola.normal) { textures['areola_n.png'] = cache.areola.normal; patch.normalTexture = 'areola_n.png'; patch.normalScale = 0.4; }
             parts.push(patch);
+        }
+        const headSkin = headHidden ? HeadMesh.part(pack, built, r, body) : null;
+        let mouthFit = null;
+        if (headSkin && eyes) { HeadMesh.sphereEyes(eyes, headSkin, r, pack, built.shaped); built.parts[1] = eyes; }
+        if (headSkin) { parts.push(headSkin, HeadMesh.lidPart(headSkin)); if (headSkin.normalTexture === 'face-detail.png') textures['face-detail.png'] = HeadMesh.detailTexture(); }
+        // The lips: their own patch and picture, for every humanoid. Left out where a mask or a muzzle hides the mouth.
+        if (!Expressions?.mouthCovered?.(pack, outfit.hidden) && !o.noLips) {
+            const size = o.static ? 256 : o.quality === 'save' ? 1024 : 768, lipColor = r.skinPattern?.lips || '';
+            const fit = headSkin ? HeadMesh.lipFit(pack, built.shaped, r, headSkin) : Detail.lipFit(pack, built.shaped), lipKey = textureKey('lips', [r.skin, lipColor, size, fit && fit.up.join(), fit && fit.low.join(), fit && fit.bend.toFixed(2)]);
+            if (headSkin) mouthFit = fit;
+            if (cache.lipKey !== lipKey) { cache.lips = Detail.lipTexture(pack, r.skin, { size, relief: !o.static, color: lipColor, fit }); cache.lipKey = lipKey; }
+            const lips = headSkin ? HeadMesh.lipPart(headSkin, fit) : Detail.lipPart(pack, built.shaped, skinNormals);
+            if (headSkin) parts.push(HeadMesh.mouthPart(headSkin, fit, r, pack));
+            if (lips) {
+                textures['lips.png'] = cache.lips;
+                if (cache.lips.normal) { textures['lips_n.png'] = cache.lips.normal; lips.normalTexture = 'lips_n.png'; lips.normalScale = 0.4; }
+                parts.push(lips);
+            }
         }
         // Local anatomical geometry and relief; left out under covering garments.
         if (r.anatomy.detail && !mer && !cen && !outfit.hidden.has(Body.anatomyFields(pack).low)) {
@@ -314,19 +352,20 @@
         // Under a soft cap (a beanie) the hair stays: flatter, pressed under the cap and out below its brim, never through it.
         const capped = !!(outfit.caps && outfit.caps.length) && hairRecipe.style !== 'bald';
         if (capped) hairRecipe = Object.assign({}, hairRecipe, { volume: Math.min(hairRecipe.volume ?? 0.5, 0.3) });
-        const hair = Hair.build(pack, built, hairRecipe, { seed: r.seed, skin: r.skin, budget: o.hairBudget, gender: r.gender, outfitParts: outfit.parts });
+        const hair = Hair.build(pack, built, hairRecipe, { seed: r.seed, skin: r.skin, budget: o.hairBudget, gender: r.gender, outfitParts: outfit.parts, lashRim: headSkin ? HeadMesh.lashRim(headSkin, r) : null });
+        if (headSkin) { const at = hair.findIndex(p => p.name === 'Brows'); if (at >= 0) hair[at] = HeadMesh.browPart(headSkin, hair[at], r, Hair.BROW_BOX); }
         if (capped) capHair(built, outfit, hair.filter(p => /^Hair\b/.test(p.name)));
         if (mer && r.merfolk.wetHair) Merfolk.wetHair(hair);
         if (hair.some(p => p.texture === 'lashes.png')) textures['lashes.png'] = cache.lashes || (cache.lashes = Hair.lashTexture(128));
         if (hair.some(p => p.texture === 'hair.png')) textures['hair.png'] = cache.hairStrands || (cache.hairStrands = Hair.hairTexture(256));
         if (hair.some(p => p.texture === 'brows.png')) {
-            const browKey = JSON.stringify([hairRecipe.brows, hairRecipe.color]);
-            if (cache.browKey !== browKey) { cache.brows = Hair.browTexture(Hair.normalizeHair(hairRecipe).brows, (hairRecipe.brows && hairRecipe.brows.color) || hairRecipe.color); cache.browKey = browKey; }
+            const browKey = JSON.stringify([hairRecipe.brows, hairRecipe.color, +(r.gender ?? 0.5).toFixed(2)]);
+            if (cache.browKey !== browKey) { cache.brows = Hair.browTexture(Hair.normalizeHair(hairRecipe).brows, (hairRecipe.brows && hairRecipe.brows.color) || hairRecipe.color, r.gender); cache.browKey = browKey; }
             textures['brows.png'] = cache.brows;
         }
         const L = Props.landmarks(pack, built);
         const coveredHands = r.outfit.some(item => Wardrobe.BY_ID.get(item.id)?.slot === 'hands' && item.id !== 'fingerlessGloves');
-        const props = Props.build(pack, built, coveredHands ? r.props.filter(item => item.id !== 'nails' && item.id !== 'claws') : r.props, hair, { outfitParts: outfit.parts });
+        const props = Props.build(pack, built, coveredHands ? r.props.filter(item => item.id !== 'nails' && item.id !== 'claws') : r.props, hair, { outfitParts: outfit.parts, images:cache.wardrobe?.emblemPictures });
         // Furred features grow the body's coat when it has one (its length and color), a coat of their own when not.
         const furred = bodyHair.fur > 0.05;
         const features = Species.build(pack, built, graftKind ? headless(r.features) : r.features, L, { body, hooded: covers.some(id => HAIR_COVERS.has(id)), coat: { length: furred ? bodyHair.length || 1 : 1, color: furred ? bodyHair.color : null, budget } });
@@ -418,7 +457,7 @@
         // under a covering that hides the lips (a full-face helmet) none of the mouth is left.
         if (Expressions && !graftKind && !insectHeaded) {
             if (Expressions.mouthCovered(pack, outfit.hidden)) Expressions.hideMouth(pack, built, body, outfit.hidden);
-            else { Expressions.tintMouth(pack, built, body); parts.push(...Expressions.mouthParts(pack, built, r)); }
+            else { Expressions.tintMouth(pack, built, body); parts.push(...Expressions.mouthParts(pack, built, r, mouthFit)); }
         }
         // Body art hook: the skin under the art on its own finer picture; piercings and cyber mods.
         if (BodyArt && cache.skin.detail && art.length) {
@@ -438,11 +477,13 @@
         Object.assign(textures,props.textures);
         parts.push(...outfit.parts, ...hair, ...props.parts, ...features.parts);
         const bones = built.bones.concat(features.bones.map(b => ({ ...b })));
+        Body.rigSoftTissue(pack, parts, bones, built.shaped, r);
         // Merfolk hook: the leg bones carry no skin; what they held, the hips hold.
         if (mer) parts.splice(0, parts.length, ...Merfolk.liftLegs(parts, bones));
         // Centaur hook: the person onto a horse's body at the waist; the horse's bones first, the person's under its chest.
         const horse = cen ? Centaur.build(pack, built, r, parts, bones, { skinNormals, quality: o.quality || 'save', hairBudget: o.hairBudget, textures, cache }) : null;
         if (horse) Object.assign(textures, horse.textures);
+        Skin.applySurface(parts, r.skinSurface, textures);
         // The floor: shoes and boots stand on it.
         let floor = 0;
         for (const p of parts) for (let i = 1; i < p.positions.length; i += 3) floor = Math.min(floor, p.positions[i]);
@@ -460,7 +501,7 @@
         let height = 0;
         for (const p of parts) for (let i = 1; i < p.positions.length; i += 3) height = Math.max(height, p.positions[i]);
         // Occlusion in the vertex colors: always in a file, in the view once the sliders rest (`shade`).
-        if (o.quality === 'save' || o.shade) shade(parts);
+        if (o.quality === 'save' || o.shade) shade(parts, pack);
         const result = { recipe: r, parts, bones, height, bodyHeight: built.height - Math.min(0, floor), textures, clips: o.static ? [] : clipsFor(bones, r, built, pack), plan: 'human', built, cloth: hung ? hung.cloth : null };
         // Expressions hook: a saved file carries the expressions and visemes as named morph targets.
         if (Expressions && (o.quality === 'save' || o.quality == null || o.morphs)) result.morphs = Expressions.morphTargets(pack, result);
@@ -478,7 +519,10 @@
         const before = outfit.caps.map(c => Float32Array.from(c.positions));
         const done = O.clipUnderCap(built, outfit.caps, hairParts);
         if (!done.stretched) return;
-        const byEntry = new Map(outfit.caps.map((c, k) => [c.entry, k])), normals = outfit.caps.map(c => O.triangleNormals(c.positions, c.index));
+        const byEntry = new Map(outfit.caps.flatMap((c, k) => c.entry == null ? [] : [[c.entry, k]])), normals = outfit.caps.map(c => O.triangleNormals(c.positions, c.index));
+        // Formed caps already share their arrays with the output part; unlike atlas
+        // cloth they need no reference remap, but their eased normals must follow.
+        outfit.caps.forEach((cap,k)=>{if(cap.part)cap.part.normals=normals[k];});
         for (const p of outfit.parts) {
             const refs = p.fabricRefs || p.sewnRefs;
             if (!refs) continue;
@@ -1245,8 +1289,10 @@
     }
 
     /** Bakes ambient occlusion into the parts' colors, in place. */
-    function shade(parts) {
+    function shade(parts, pack) {
         const ao = Shading.ambientOcclusion(parts);
+        Shading.chestFromBody(parts, ao, pack);
+        Shading.headFromBody(parts, ao, pack);
         // The eyes sit inside the lids: occlusion would black them out, so they keep their own light.
         parts.forEach((p, k) => { if (p.kind === 'eye' || p.name === 'Eyes') delete ao[k]; });
         const shaded = Shading.applyOcclusion(parts, ao);
@@ -1285,9 +1331,9 @@
     /** The humanoid Idle, with a tail swaying when there is one. */
     function clipsFor(bones, r, built, pack) {
         // Merfolk hook: the tail's own clips (Idle first).
-        if (Merfolk && r.species === 'merfolk') return Merfolk.clips(bones, r, built, pack, armAngle(r, built, pack));
+        if (Merfolk && r.species === 'merfolk') return Merfolk.clips(bones, r, built, pack, armAngle(r, built, pack)).map(c => Motions.withSoftTissueMotion(bones, c));
         // Centaur hook: the horse's gaits under the person's upper body (Idle first).
-        if (Centaur && r.species === 'centaur') return Centaur.clips(bones, r, armAngle(r, built, pack));
+        if (Centaur && r.species === 'centaur') return Centaur.clips(bones, r, armAngle(r, built, pack)).map(c => Motions.withSoftTissueMotion(bones, c));
         const idle = Glb.idleClip(bones, { armAngle: armAngle(r, built, pack) });
         if (!idle) return [];
         const steps = idle.times.length;
@@ -1301,7 +1347,7 @@
             }
             idle.tracks.push({ bone: i, values });
         });
-        return [Species.followMotion(bones, Object.assign({ name: 'Idle' }, idle))];
+        return [Motions.withSoftTissueMotion(bones, Species.followMotion(bones, Object.assign({ name: 'Idle' }, idle)))];
     }
 
     /**
@@ -1323,7 +1369,7 @@
         });
         // Every clip with its cloth worked out (RRCharacterCloth): the game only plays the keys.
         const clips = Cloth && result.cloth && result.clips ? await Cloth.bakeAllAsync(result, result.clips, { quality: 'save' }) : result.clips;
-        return Glb.toGlb({ parts, bones: result.bones, morphs: result.morphs }, { name, clips, images: files });
+        return Glb.toGlb({ parts, bones: result.bones, morphs: result.morphs }, { name, clips, images: files, characterMaterials: true });
     }
 
     /** A seeded random character: a body, then a fitting outfit, hair and maybe accessories. */

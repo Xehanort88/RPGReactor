@@ -32,10 +32,10 @@
  * With n frames per row other than three ('8d' and 'mz' only), the sheet is
  * an [NF] sheet ($Name[8D][6F], $Name[6F]; frameTag): every block is n frames
  * wide, in the order the game plays them, 0 to n - 1 round again, resting on
- * 0. A walk or carry row stands on frame 0 and walks the clip's cycle over the
- * rest in even steps from its passing frame, so the loop comes back round to
- * standing; a dash row is the run's cycle the same way, frame 0 its passing
- * frame. Attack and the poses spread their motion over the n frames. A [1F]
+ * 0. A walk or carry row samples the clip's full cycle in even steps from
+ * its passing frame, including frame 0, with no unrelated idle pose at the
+ * wrap. A dash row samples the run's full cycle the same way. Attack and
+ * the poses spread their motion over the n frames. A [1F]
  * sheet is one frame a row: standing, the run's passing frame, each pose's key.
  * The side-view sheet is MZ's 9 × 6 cells, 18 motions down three columns in
  * Sprite_Actor.MOTIONS order; the face sheet MZ's 4 × 2 portraits.
@@ -126,7 +126,7 @@
     const columnsOf = (id, n) => { const l = layout(id), f = framesOf(id, n); return f === 3 ? l.columns : l.columns / 3 * f; };
     // n-frame rows ([NF] order: 0 to n - 1, resting on 0). `to` and `u` mean a time u of the way from `at` to `to`;
     // `shift` a time that much further round the clip.
-    const cycleRow = (n, clip, stand) => Array.from({ length: n }, (_, i) => (i === 0 && stand ? { clip: 'idle', at: 0 } : { clip, at: 'pass', shift: i / n }));
+    const cycleRow = (n, clip, stand) => Array.from({ length: n }, (_, i) => (n === 1 && stand ? { clip: 'idle', at: 0 } : { clip, at: 'pass', shift: i / n }));
     const spreadRow = (n, clip, from, to) => Array.from({ length: n }, (_, i) => ({ clip, at: from, to, u: n > 1 ? i / (n - 1) : 0.5 }));
     /** A one-time motion over n frames: from its start up to the key pose by the middle frame, then on after it. */
     const onceRow = (n, clip) => {
@@ -326,7 +326,7 @@
     const LOOKS = [{ id: 'smooth', label: 'Smooth' }, { id: 'pixel', label: 'Pixel art' }];
 
     /** The builder's anime eyes: large irises with a catchlight. */
-    const ANIME_EYES = { shapes: { eyeSize: 2.4 }, morph: { eyeWide: 1.1, eyeTall: 1.55 }, eyes: { size: 1.45, pupilSize: 1.15, catchlight: true } };
+    const ANIME_EYES = { shapes: { eyeSize: 1.1 }, morph: { eyeWide: 1.1, eyeTall: 1.3 }, eyes: { size: 1.45, pupilSize: 1.15, catchlight: true } };
 
     /**
      * A human recipe drawn as RPG art: short limbs and trunk, a broad build,
@@ -635,7 +635,8 @@
         const view = builder._view, original = builder._result;
         if (!original || original.plan !== 'human' || !root.RRCharacterModel || !builder.pack) return null;
         const copy = root.RRCharacterModel.build(builder.pack, chibiRecipe(builder.recipe), builder.cache, {
-            quality: 'preview', eyeSource: builder.eyeSource, paintSkin: (key, args) => builder._paintSkin(key, args), hairBudget: builder._weak ? 0.45 : 1
+            quality: 'preview', eyeSource: builder.eyeSource, bodyArtPictures: builder._artPictures,
+            paintSkin: (key, args) => builder._paintSkin(key, args), hairBudget: builder._weak ? 0.45 : 1
         });
         builder._result = copy;
         builder._show(copy);
@@ -643,8 +644,7 @@
         cancelAnimationFrame(view.loop); view.loop = 0;
         return () => {
             if (builder._result === copy) builder._result = original;
-            builder._show(builder._result);
-            dropActions(view);
+            if (builder._view === view) { builder._show(builder._result); dropActions(view); }
         };
     }
 
@@ -671,7 +671,39 @@
     }
 
     async function render(builder, settings, progress) {
+        if (builder._sheetExporting) throw new Error('A sprite sheet is already being rendered.');
+        const view = builder._view;
+        const framing = view && { yaw: view.yaw, pitch: view.pitch, distance: view.distance, target: view.target?.clone() };
+        const pose = builder.pose, time = view?.action?.time || 0;
+        // Painting a skin or finishing a background build can queue a rebuild
+        // while this loop yields. Keep the temporary chibi model for the whole
+        // sheet, then let those jobs update the editor again.
+        const exportState = builder._sheetExporting = { drawing: false };
+        try {
+            return await renderSheet(builder, settings, progress);
+        } finally {
+            delete builder._sheetExporting;
+            if (view && builder._view === view) {
+                Object.assign(view, { yaw: framing.yaw, pitch: framing.pitch, distance: framing.distance });
+                if (framing.target) view.target.copy(framing.target);
+                if (builder.pose === pose) {
+                    view.resumeAt = time;
+                    if (view.action) view.action.time = time;
+                }
+            }
+            builder._syncPose();
+            for (const job of exportState.clothReady || []) builder._clothReady(job.id, job.result);
+            if (builder._sheetResizeOwed) {
+                builder._sheetResizeOwed = false;
+                builder._view?.resizeNow?.();
+            }
+            if (builder._rebuildOwed && builder._view) builder._queueRebuild();
+        }
+    }
+
+    async function renderSheet(builder, settings, progress) {
         const THREE = root.THREE, view = builder._view;
+        const rootElement = builder.root;
         if (!THREE || !view || !view.meshes.length || !view.mixer) throw new Error('The character is not built yet.');
         const l = layout(settings.layout), size = Math.max(16, Math.min(512, Math.round(settings.frame || l.frame)));
         const restore = settings.style === 'chibi' && settings.layout !== 'face' ? showChibi(builder) : null;
@@ -688,12 +720,15 @@
         const renderer = view.renderer, canvas = renderer.domElement;
         const saved = { ratio: renderer.getPixelRatio(), size: renderer.getSize(new THREE.Vector2()), action: view.action, yaw: view.group.rotation.y, floor: view.floor.visible, blob: view.blob.visible, visibility: canvas.style.visibility, clear: renderer.getClearAlpha() };
         cancelAnimationFrame(view.loop); view.loop = 0;
+        cancelAnimationFrame(view.frame); view.frame = 0;
+        builder._sheetExporting.drawing = true;
         canvas.style.visibility = 'hidden';
         // A sprite is seen small, on a bright map: a soft fill from the front and a rim from behind on top
         // of the studio's lights, a little brighter; the grade after lifts the darks.
         saved.exposure = renderer.toneMappingExposure;
-        renderer.toneMappingExposure = saved.exposure * 1.25;
-        const fill = new THREE.DirectionalLight(0xfff8f0, 0.9), rim = new THREE.DirectionalLight(0xe8f0ff, 0.9);
+        const portrait = settings.layout === 'face';
+        renderer.toneMappingExposure = saved.exposure * (portrait ? 1 : 1.25);
+        const fill = new THREE.DirectionalLight(0xfff8f0, portrait ? 0 : 0.9), rim = new THREE.DirectionalLight(0xe8f0ff, portrait ? 0 : 0.9);
         fill.position.set(0, 1.4, 3); rim.position.set(0.6, 2.6, -3);
         view.scene.add(fill, rim);
         view.floor.visible = false; view.blob.visible = false;
@@ -713,6 +748,7 @@
         const breathe = async () => {
             done++;
             if (performance.now() - budget > 14) { if (progress) progress(done, total); await new Promise(r => setTimeout(r, 0)); budget = performance.now(); }
+            if (builder._view !== view || builder.root !== rootElement) throw new Error('The sprite sheet preview was closed.');
         };
         const width = columnsOf(l.id, settings.frames) * size, height = l.rows * size, sheet = new Uint8ClampedArray(width * height * 4);
         try {
@@ -753,7 +789,8 @@
                 renderer.setRenderTarget(null);
                 renderer.render(view.scene, camera);
                 gl.readPixels(0, 0, size * k, size * k, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-                let px = grade(downsample(pixels, size * k, size * k, k, true));
+                let px = downsample(pixels, size * k, size * k, k, true);
+                if (!portrait) px = grade(px);
                 if (pixelArt) threshold(px);
                 if (settings.outline && !faceSpan) px = outline(px, size, size);
                 if (faceSpan && settings.background) px = onColor(px, settings.background);
@@ -765,18 +802,20 @@
         } finally {
             view.scene.remove(fill, rim);
             fill.dispose(); rim.dispose();
-            renderer.toneMappingExposure = saved.exposure;
-            renderer.setPixelRatio(saved.ratio);
-            renderer.setSize(saved.size.x, saved.size.y, false);
-            renderer.setClearColor(0x000000, saved.clear);
+            if (builder._view === view) {
+                renderer.toneMappingExposure = saved.exposure;
+                renderer.setPixelRatio(saved.ratio);
+                renderer.setSize(saved.size.x, saved.size.y, false);
+                renderer.setClearColor(0x000000, saved.clear);
+            }
             view.floor.visible = saved.floor; view.blob.visible = saved.blob;
             view.group.rotation.y = saved.yaw;
             view.mixer.stopAllAction();
             view.action = restore ? null : saved.action;
             canvas.style.visibility = saved.visibility;
             if (shrink) shrink();
+            builder._sheetExporting.drawing = false;
             if (restore) restore();
-            builder._syncPose();
         }
         if (progress) progress(total, total);
         return { width, height, data: sheet, frame: size, layout: l.id };
@@ -887,31 +926,17 @@
         return Number.isInteger(n) && n >= 16 && n <= 512 ? n : 144;
     }
 
-    /**
-     * An [NF] sheet plays its n frames only while the project has multi-frame
-     * sheets on (Reactor Features › Multi-Frame Character Sheets): switched on
-     * in the open Database as that page does it, so it is saved with the
-     * project and shows ticked there. Returns whether it was off and is on now.
-     */
-    function turnOnMultiFrames() {
-        const reactor = root.reactor, manager = reactor && reactor.databaseManager, features = root.ReactorFeatures;
-        const system = manager && manager.data && manager.data.system;
-        if (!system || !features || features.on('multiFrames', system)) return false;
-        const page = reactor.databaseEditorUI && reactor.databaseEditorUI.featuresEditor;
-        if (page && typeof page.apply === 'function') page.apply(system, 'multiFrames', true);
-        else if (features.set('multiFrames', true, system)) manager.mutationGeneration = (manager.mutationGeneration || 0) + 1;
-        return features.on('multiFrames', system);
-    }
-
     async function exportNow(builder, panel, state, preview) {
         const t = (text, params) => builder._t(text, params);
         const project = builder._project && builder._project();
+        const rootElement = builder.root, view = builder._view;
+        const current = () => builder.root === rootElement && builder._view === view && builder._project?.()?.path === project?.path;
         const status = panel.querySelector('.rr-c3d-export-status');
         if (!project) return;
         let name = safeName(builder.name);
         if (!name) {
             name = safeName(await root.RRDialog.prompt(t('Name this character:'), { title: t('Export Sprite Sheet'), value: t('Villager') }));
-            if (!name) return;
+            if (!name || !current()) return;
             builder.name = name;
             const input = builder.root.querySelector('.rr-c3d-name-input');
             if (input) input.value = name;
@@ -920,6 +945,7 @@
         const frames = framesOf(l.id, state.frames);
         const file = path.join(project.path, 'img', l.folder, fileName(l.id, name, frames));
         if (fs.existsSync(file) && !await root.RRDialog.confirm(t('Replace {file}?', { file: 'img/' + l.folder + '/' + path.basename(file) }), { title: t('Export Sprite Sheet'), ok: t('Replace'), danger: true })) return;
+        if (!current()) return;
         const bar = panel.querySelector('.rr-c3d-export-progress'), go = panel.querySelector('.rr-c3d-export-go');
         panel.dataset.busy = '1';
         builder.root.classList.add('is-exporting');
@@ -931,12 +957,12 @@
             const settings = { layout: l.id, frame: state.frame, frames, elevation: state.elevation, outline: state.outline, view: state.view, background: state.background || '', expressions: state.expressions, style: state.style, look: state.look };
             const sheet = await render(builder, settings, (done, total) => { bar.firstElementChild.style.width = Math.round(done / total * 100) + '%'; });
             const png = await toPng(sheet);
+            if (!current()) return;
             const atomic = root.RRWriteFileAtomicSync || ((io, target, data) => io.writeFileSync(target, data));
             fs.mkdirSync(path.dirname(file), { recursive: true });
             atomic(fs, file, png);
             const seconds = ((performance.now() - started) / 1000).toFixed(1);
-            status.textContent = t('Saved img/{folder}/{file} ({s} s).', { folder: l.folder, file: path.basename(file), s: seconds })
-                + (frames !== 3 && turnOnMultiFrames() ? ' ' + t('Multi-frame sheets turned on in Reactor Features.') : '');
+            status.textContent = t('Saved img/{folder}/{file} ({s} s).', { folder: l.folder, file: path.basename(file), s: seconds });
             status.dataset.kind = 'ok';
             const img = preview(panel);
             img.src = URL.createObjectURL(new Blob([png], { type: 'image/png' }));
@@ -948,14 +974,14 @@
             status.dataset.kind = 'error';
         } finally {
             delete panel.dataset.busy;
-            builder.root.classList.remove('is-exporting');
+            rootElement.classList.remove('is-exporting');
             bar.hidden = true; go.disabled = false;
         }
     }
 
     const api = {
         LAYOUTS, CLIPS, SV_MOTIONS, SV_CLIPS, FACE_PRESETS, YAW, SV_YAW, CARDINAL, DIAGONAL,
-        STYLES, LOOKS, STANDARD_HEIGHT, pixelsPerMeter, FRAME_CHOICES, frameTag, framesOf, columnsOf, turnOnMultiFrames, layout, plan, resolveClip, blockOrigin, cellMetrics, fit, fitFace, frustum, project,
+        STYLES, LOOKS, STANDARD_HEIGHT, pixelsPerMeter, FRAME_CHOICES, frameTag, framesOf, columnsOf, layout, plan, resolveClip, blockOrigin, cellMetrics, fit, fitFace, frustum, project,
         downsample, outline, grade, skinLike, threshold, quantize, chibiRecipe, headScale, headMeasure, blit, alphaBounds, fileName, safeName, measure, toPng, render, openPanel, expressionList
     };
     root.RRCharacterSpriteSheet = api;

@@ -763,7 +763,7 @@
                 <div class="rr-about-overview">
                     <img class="rr-about-logo" src="images/logo.png" alt="RPG Reactor" width="112" height="112" onerror="this.style.display='none'">
                     <div class="rr-about-summary">
-                        <h3 data-i18n="about.version">RPG Reactor v0.99.2</h3>
+                        <h3 data-i18n="about.version">RPG Reactor v0.99.4</h3>
                         <p data-i18n="about.description">An open-source, cross-platform RPG game engine built with NW.js, PixiJS v8, and Three.js</p>
                         <p class="rr-about-compatibility" data-i18n="about.compatibility">
                             Create amazing RPG games with a professional editor that runs on Windows, Mac, and Linux.
@@ -1100,24 +1100,30 @@
     <script src="src/forge/AnimationGenerator/AnimationGenerator.js"></script>
     <script src="src/utils/ColorPopover.js"></script>
     <script src="src/forge/Character3D/HumanTargets.js"></script>
+    <script src="src/forge/Character3D/FaceFieldData.js"></script>
+    <script src="src/forge/Character3D/HeadMeshData.js"></script>
     <script src="src/forge/Character3D/HumanBody.js"></script>
+    <script src="src/forge/Character3D/CharacterHeadMesh.js"></script>
     <script src="src/forge/Character3D/CharacterDrape.js"></script>
     <script src="src/forge/Character3D/CharacterOutfit.js"></script>
     <script src="src/forge/Character3D/CharacterFabric.js"></script>
     <script src="src/forge/Character3D/CharacterWear.js"></script>
+    <script src="src/forge/Props/PropPaint.js"></script>
+    <script src="src/forge/Character3D/CharacterMarks.js"></script>
     <script src="src/forge/Character3D/CharacterAtlas.js"></script>
     <script src="src/forge/Character3D/CharacterSimplify.js"></script>
-    <script src="src/forge/Character3D/CharacterOutfitTransfer.js"></script>
-    <script src="src/forge/Character3D/CharacterClothes.js"></script>
     <script src="src/forge/Character3D/ConstructionSurface.js"></script>
     <script src="src/forge/Character3D/ConstructionPatterns.js"></script>
     <script src="src/forge/Character3D/CharacterCyberGear.js"></script>
     <script src="src/forge/Character3D/CharacterProps.js"></script>
+    <script src="src/forge/Character3D/CharacterOutfitTransfer.js"></script>
+    <script src="src/forge/Character3D/CharacterClothes.js"></script>
     <script src="src/forge/Character3D/CharacterGarmentDetails.js"></script>
     <script src="src/forge/Character3D/CharacterReconConstruction.js"></script>
     <script src="src/forge/Character3D/CharacterPowerArmor.js"></script>
     <script src="src/forge/Character3D/CharacterWasteland.js"></script>
     <script src="src/forge/Character3D/CharacterCyberwear.js"></script>
+    <script src="src/forge/Character3D/CharacterFit.js"></script>
     <script src="src/forge/Character3D/CharacterWardrobe.js"></script>
     <script src="src/forge/Character3D/CharacterBodyArtMotifs.js"></script>
     <script src="src/forge/Character3D/CharacterBodyArt.js"></script>
@@ -1130,6 +1136,7 @@
     <script src="src/forge/Character3D/CreatureFlyers.js"></script>
     <script src="src/forge/Character3D/CreatureReptiles.js"></script>
     <script src="src/forge/Character3D/CreatureForms.js"></script>
+    <script src="src/forge/Character3D/CreatureMouth.js"></script>
     <script src="src/forge/Character3D/CreatureBody.js"></script>
     <script src="src/forge/Character3D/CharacterGlb.js"></script>
     <script src="src/forge/Character3D/CharacterShading.js"></script>
@@ -1148,7 +1155,6 @@
     <script src="src/forge/Character3D/CharacterBodyArtPanel.js"></script>
     <script src="src/forge/Character3D/CharacterSpriteSheet.js"></script>
     <script src="src/forge/Props/PropCloth.js"></script>
-    <script src="src/forge/Props/PropPaint.js"></script>
     <script src="src/forge/Props/PropMesh.js"></script>
     <script src="src/forge/Props/PropRandom.js"></script>
     <script src="src/forge/Props/PropCatalog.js"></script>
@@ -1158,9 +1164,12 @@
     <script src="src/forge/Props/SpanProp.js"></script>
     <script src="src/forge/Props/FramedProp.js"></script>
     <script src="src/forge/Props/PictureProp.js"></script>
-    <script src="src/forge/Props/AccessoryProp.js"></script>
-    <script src="src/forge/Props/SwordProp.js"></script>
     <script src="src/forge/Props/ContainerMesh.js"></script>
+    <script src="src/forge/Props/PropDisplayMotion.js"></script>
+    <script src="src/forge/Props/AccessoryProp.js"></script>
+    <script src="src/forge/Props/PropArmorInterior.js"></script>
+    <script src="src/forge/Props/GarmentProp.js"></script>
+    <script src="src/forge/Props/SwordProp.js"></script>
     <script src="src/forge/Props/HardSurface.js"></script>
     <script src="src/forge/Props/GunConstruction.js"></script>
     <script src="src/forge/Props/GunProp.js"></script>
@@ -1176,6 +1185,9 @@
     <script src="src/forge/Props/ContainerProp.js"></script>
     <script src="src/forge/Props/PropKeycaps.js"></script>
     <script src="src/forge/Props/FurnitureConstruction.js"></script>
+    <script src="src/forge/Props/FurnitureExpansion.js"></script>
+    <script src="src/forge/Props/FurnitureCraft.js"></script>
+    <script src="src/forge/Props/FurnitureJoinery.js"></script>
     <script src="src/forge/Props/FurnitureProp.js"></script>
     <script src="src/forge/Props/VehicleConstruction.js"></script>
     <script src="src/forge/Props/VehicleHardware.js"></script>
@@ -1184,6 +1196,10 @@
     <script src="src/forge/Props/VehiclePanels.js"></script>
     <script src="src/forge/Props/VehicleFinish.js"></script>
     <script src="src/forge/Props/VehicleRig.js"></script>
+    <script src="src/forge/Props/FlightCraft.js"></script>
+    <script src="src/forge/Props/VehicleExpansion.js"></script>
+    <script src="src/forge/Props/WastelandVehicle.js"></script>
+    <script src="src/forge/Props/MinivanCraft.js"></script>
     <script src="src/forge/Props/VehicleProp.js"></script>
     <script src="src/forge/Props/NatureKit.js"></script>
     <script src="src/forge/Props/NatureTexture.js"></script>
@@ -1192,6 +1208,8 @@
     <script src="src/forge/Props/RockConstruction.js"></script>
     <script src="src/forge/Props/AlienFlora.js"></script>
     <script src="src/forge/Props/NatureProp.js"></script>
+    <script src="src/forge/Props/SalvageCraft.js"></script>
+    <script src="src/forge/Props/SalvageProp.js"></script>
     <script src="src/forge/Props/PropBuilder.js"></script>
     <script src="src/forge/Props/PropSpriteSheet.js"></script>
     <script src="src/forge/SoundEffectGenerator/AudioExport.js"></script>
@@ -1448,11 +1466,14 @@
     <script src="src/event/commands/SpeakModel3DEditor.js"></script>
     <script src="src/event/commands/CallUserInterfaceEditor.js"></script>
     <script src="src/event/commands/QuestCommandEditor.js"></script>
+    <script src="src/event/commands/CharacterCommandEditor.js"></script>
     <script src="src/event/commands/VehicleCommandEditor.js"></script>
     <script src="src/event/commands/FightCommandEditor.js"></script>
     <script src="src/event/commands/FollowerCommandEditor.js"></script>
     <script src="src/database/DatabaseSystem1Editor.js"></script>
     <script src="src/database/DatabaseSystem2Editor.js"></script>
+    <script src="src/database/DatabaseOnlineEditor.js"></script>
+    <script src="src/database/DatabaseCharacterCreationEditor.js"></script>
     <script src="src/database/DatabaseFeaturesEditor.js"></script>
     <script src="src/database/DatabaseControlsEditor.js"></script>
     <script src="src/database/DatabaseCommonEventEditor.js"></script>

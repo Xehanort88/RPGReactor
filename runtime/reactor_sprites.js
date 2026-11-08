@@ -3122,7 +3122,20 @@ Sprite_Animation.SceneLayer = {
         const system = renderer.renderTarget, target = system.renderTarget;
         const gpu = target && typeof system.getGpuRenderTarget === "function" ? system.getGpuRenderTarget(target) : null;
         const vp = system.viewport;
+        // PIXI's textures off every unit before Effekseer draws: a sampler it leaves unset would read whatever is
+        // there, the texture being drawn into among them.
+        this.clearUnits(gl);
         return { framebuffer: gpu && gpu.framebuffer || null, viewport: [vp.x, vp.y, vp.width, vp.height], lent: false };
+    },
+    // The texture units emptied around a draw: PIXI binds at most 16 (its batcher's limit), Effekseer fewer.
+    UNITS: 16,
+    /** Every texture unit emptied, the first left active. */
+    clearUnits(gl) {
+        for (let unit = 0; unit < this.UNITS; unit++) {
+            gl.activeTexture(gl.TEXTURE0 + unit);
+            gl.bindTexture(gl.TEXTURE_2D, null);
+        }
+        gl.activeTexture(gl.TEXTURE0);
     },
     restore(gl, saved, renderer) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, saved.framebuffer);
@@ -3148,6 +3161,9 @@ Sprite_Animation.SceneLayer = {
             if (renderer[name] && typeof renderer[name].resetState === "function") renderer[name].resetState();
         }
         if (renderer.texture && Array.isArray(renderer.texture._boundTextures)) renderer.texture._boundTextures.fill(null);
+        // PIXI now takes every unit for empty, so the units are emptied too: a texture left bound that PIXI next
+        // draws into (a filter's) would otherwise stay bound under its draws, a feedback loop it cannot see to undo.
+        this.clearUnits(renderer.gl);
         const mask = renderer.colorMask ? renderer.colorMask._colorMaskCache : 15;
         renderer.gl.colorMask(!!(mask & 8), !!(mask & 4), !!(mask & 2), !!(mask & 1));
     },
@@ -3184,9 +3200,10 @@ Sprite_Animation.SceneLayer = {
     /**
      * Draw `sprites`' handles through `view`, into a buffer `scale` times
      * the target's pixels whose origin is the target viewport's (the HDR
-     * light), or into the target itself (scale 1, `inTarget`).
+     * light), or into the target itself (scale 1, `inTarget`); `capture`:
+     * the target is a texture, whose pixels distortion can copy.
      */
-    drawHandles(gl, renderer, view, sprites, scale, inTarget) {
+    drawHandles(gl, renderer, view, sprites, scale, inTarget, capture) {
         const context = this.context;
         const height = Graphics.height * view.ppu * scale;
         const side = Sprite_Animation.effekseerViewportSide(Graphics.height) * view.ppu * scale;
@@ -3199,8 +3216,10 @@ Sprite_Animation.SceneLayer = {
             const projection = Sprite_Animation.effekseerProjection(height, rect.side, sprite._mirror).slice();
             // A target stored upside down: the effect is drawn upside down into it (its winding with it).
             if (view.flipped) for (const i of [1, 5, 9, 13]) projection[i] = -projection[i];
-            // The scene beneath the effect, for its distortion layers: what this target holds now.
-            if (inTarget && context.captureBackground) context.captureBackground(rect.x, rect.y, rect.side, rect.side);
+            // The scene beneath the effect, for its distortion layers: what this target holds now. Only from a
+            // texture: the canvas has no alpha (Graphics: backgroundAlpha 1), and GL refuses to copy its RGB pixels
+            // into Effekseer's RGBA background.
+            if (capture && context.captureBackground) context.captureBackground(rect.x, rect.y, rect.side, rect.side);
             context.setProjectionMatrix(projection);
             context.setCameraMatrix(this.camera);
             gl.viewport(rect.x, rect.y, rect.side, rect.side);
@@ -3220,7 +3239,7 @@ Sprite_Animation.SceneLayer = {
             gl.bindVertexArray(null);
             this.withDepth(gl, renderer, saved);
             this.context._makeContextCurrent?.();
-            this.drawHandles(gl, renderer, view, [sprite], 1, true);
+            this.drawHandles(gl, renderer, view, [sprite], 1, true, !!saved.framebuffer);
         } catch (e) {
             this.warnOnce(e);
         } finally {
@@ -5094,8 +5113,9 @@ function Sprite_Timer() {
 Sprite_Timer.prototype = Object.create(Sprite.prototype);
 Sprite_Timer.prototype.constructor = Sprite_Timer;
 
-Sprite_Timer.prototype.initialize = function() {
+Sprite_Timer.prototype.initialize = function(timerId = 0) {
     Sprite.prototype.initialize.call(this);
+    this._rrTimerId = timerId;
     this._seconds = 0;
     this.createBitmap();
     this.update();
@@ -5129,8 +5149,9 @@ Sprite_Timer.prototype.update = function() {
 };
 
 Sprite_Timer.prototype.updateBitmap = function() {
-    if (this._seconds !== $gameTimer.seconds()) {
-        this._seconds = $gameTimer.seconds();
+    const timer = this._rrTimerId ? $gameTimer.rrTimer(this._rrTimerId) : $gameTimer;
+    if (this._seconds !== timer.seconds()) {
+        this._seconds = timer.seconds();
         this.redraw();
     }
 };
@@ -5151,11 +5172,13 @@ Sprite_Timer.prototype.timerText = function() {
 
 Sprite_Timer.prototype.updatePosition = function() {
     this.x = (Graphics.width - this.bitmap.width) / 2;
-    this.y = 0;
+    this.y = this._rrTimerId && $gameTimer.isWorking() && $gameTimer._rrVisible !== false ? this.bitmap.height : 0;
 };
 
 Sprite_Timer.prototype.updateVisibility = function() {
-    this.visible = $gameTimer.isWorking();
+    const timer = this._rrTimerId ? $gameTimer.rrTimer(this._rrTimerId) : $gameTimer;
+    this.visible = timer.isWorking() && timer._rrVisible !== false;
+    if (timer._rrLegacy && !timer._rrBattle && $gameParty.inBattle()) this.visible = false;
 };
 
 //-----------------------------------------------------------------------------
@@ -5310,6 +5333,10 @@ Spriteset_Base.prototype.pictureContainerRect = function() {
 Spriteset_Base.prototype.createTimer = function() {
     this._timerSprite = new Sprite_Timer();
     this.addChild(this._timerSprite);
+    if ($dataSystem.rrLegacyVariableLimit) {
+        this._rrTimer2Sprite = new Sprite_Timer(1);
+        this.addChild(this._rrTimer2Sprite);
+    }
 };
 
 Spriteset_Base.prototype.createOverallFilters = function() {
@@ -6354,14 +6381,6 @@ Spriteset_Map.prototype.updateReactor3D = function() {
         && !SceneManager.isFinalUpdateOfFrame()) {
         return;
     }
-    // The quality levels count this frame, and at the last level have the
-    // world drawn on every other one (the passes keep the picture between).
-    // A draw while the map still loads (updateReactor3DArrival) is not a frame of play: not counted.
-    const quality = Reactor3D.Quality;
-    if (!state.warming) {
-        quality.mapOpened($gameMap.mapId());
-        if (!quality.worldTick(performance.now())) return;
-    }
     // The Options window offers the setting once a 3D map has been drawn on this machine.
     if (!ConfigManager.reactor3dSeen) { ConfigManager.reactor3dSeen = true; ConfigManager.save(); }
 
@@ -6425,6 +6444,11 @@ Spriteset_Map.prototype.reactor3DKeepsLastPicture = function(state) {
 
 /** The passes of this frame's world, from the camera as it stands. */
 Spriteset_Map.prototype.drawReactor3D = function(state) {
+    // Count actual world pictures, including the refreshes between game updates.
+    if (!state.warming) {
+        Reactor3D.Quality.mapOpened($gameMap.mapId());
+        Reactor3D.Quality.worldTick(performance.now());
+    }
     // The flat copy of whatever the ground was built from, every frame: a
     // parallax plugin rebuilds its layers on its own schedule.
     this.suppressReactor3DGroundParallaxes(true);
@@ -6466,6 +6490,8 @@ Spriteset_Map.prototype.drawReactor3D = function(state) {
         this.updateReactor3DTexture(this._reactor3dLights, canvas);
         this.keepReactor3DLightsOnTop();
     }
+
+    if (!state.warming) Graphics.worldFrameCount = (Graphics.worldFrameCount || 0) + 1;
 
 };
 
@@ -7356,9 +7382,8 @@ Spriteset_Map.prototype.update = function() {
 //-----------------------------------------------------------------------------
 // Character sheets with their own frame count, named "Name[8F]" (as the 3D
 // Character Builder exports them) or "Name[F8]" (the VX Ace Victor Engine
-// Multi Frames convention). Only when System.json sets rrMultiFrames, which an
-// import from such a game or such an export writes: an MV or MZ project keeps
-// three frames whatever its files are called. An [NF] sheet has N frames per
+// Multi Frames convention). On by default; an explicit false rrMultiFrames
+// in System.json restores three-frame cutting. An [NF] sheet has N frames per
 // row, cycles 0..N-1 and rests on frame 0; with [8D] too, each of its eight
 // blocks is N frames wide.
 //-----------------------------------------------------------------------------

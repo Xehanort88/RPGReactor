@@ -4,18 +4,18 @@
 (function(root) {
     'use strict';
     const need=(name,file)=>root[name]||(typeof require==='function'?require(file):null);
-    const CM=need('RRContainerMesh','./ContainerMesh.js'),Paint=need('RRPropPaint','./PropPaint.js'),Construction=need('RRVehicleConstruction','./VehicleConstruction.js'),Bodywork=need('RRVehicleBodywork','./VehicleBodywork.js'),HS=need('RRHardSurface','./HardSurface.js'),Design=need('RRFlagDesign','./FlagDesign.js'),Finish=need('RRVehicleFinish','./VehicleFinish.js'),Rig=need('RRVehicleRig','./VehicleRig.js');
+    const CM=need('RRContainerMesh','./ContainerMesh.js'),Paint=need('RRPropPaint','./PropPaint.js'),Construction=need('RRVehicleConstruction','./VehicleConstruction.js'),Bodywork=need('RRVehicleBodywork','./VehicleBodywork.js'),HS=need('RRHardSurface','./HardSurface.js'),Design=need('RRFlagDesign','./FlagDesign.js'),Finish=need('RRVehicleFinish','./VehicleFinish.js'),Rig=need('RRVehicleRig','./VehicleRig.js'),Expansion=need('RRVehicleExpansion','./VehicleExpansion.js'),Salvage=need('RRWastelandVehicle','./WastelandVehicle.js'),Van=need('RRMinivanCraft','./MinivanCraft.js');
     const {add,sub,scale,norm,cross,dot}=CM.vec;
     const FORMS=[
         ['compact','Compact car',1.76,1.50,3.95],['sport','Sports coupe',1.98,1.18,4.50],
         ['truck','Utility truck',2.02,1.92,5.40],['rover','Armored rover',2.55,2.75,6.30],
         ['motorcycle','Motorcycle',.82,1.18,2.18],['hover','Hover transport',2.65,1.45,4.4],
-        ['shuttle','Shuttle',4.2,2.1,6.4],['drone','Survey drone',1.45,.65,1.45],['walker','Utility walker',2.7,4.2,1.9]
+        ['shuttle','Shuttle',4.2,2.1,6.4],['drone','Survey drone',1.45,.65,1.45],['walker','Utility walker',2.7,4.2,1.9],...Expansion.FORMS,...Salvage.FORMS,...Van.FORMS
     ];
     const BY_ID=new Map(FORMS.map(f=>[f[0],f]));
     const clamp=(v,a,b,d)=>Number.isFinite(+v)?Math.max(a,Math.min(b,+v)):d;
     const hex=(v,d)=>/^#[\da-f]{6}$/i.test(v)?v:d;
-    const GROUND=new Set(['compact','sport','truck','rover','motorcycle']),TREADS=['road','allTerrain','mud'];
+    const GROUND=new Set(['compact','sport','truck','rover','motorcycle','carriage','oxcart','wagon','minivan',...Salvage.IDS]),TREADS=['road','allTerrain','mud'];
     // Body styles: Rounded (smooth lofted coachwork), Faceted (few stations,
     // flat panels, chamfered creases) and Armored (bolted chamfered plates over
     // a darker under-frame). A recipe saved before styles existed has no
@@ -23,11 +23,16 @@
     // vehicles start from the per-form default below.
     const STYLES=['rounded','faceted','armored'],STYLE_DEFAULT={compact:'faceted',sport:'rounded',truck:'faceted',rover:'armored',motorcycle:'rounded',hover:'faceted',shuttle:'faceted',drone:'faceted',walker:'armored'};
     const DENSITY_DEFAULT={compact:.45,sport:.4,truck:.6,rover:.75,motorcycle:.5,hover:.6,shuttle:.65,drone:.6,walker:.7};
+    function dimensions(form){
+        if(form==='minivan')return {width:[1.90,2.40],height:[1.85,2.40],length:[5.25,6.20]};
+        if(Salvage.IDS.has(form)){const f=BY_ID.get(form);return {width:[f[2]*.90,f[2]*1.25],height:[f[3]*.90,f[3]*1.25],length:[f[4]*.90,f[4]*1.30]};}
+        return {width:[form==='airliner'?23:.5,form==='airliner'?40:Expansion.IDS.has(form)?24:8],height:[form==='airliner'?7:.35,Expansion.IDS.has(form)?40:7],length:[form==='airliner'?34:1,Expansion.IDS.has(form)?60:12]};
+    }
     function normalize(input={}) {
-        const form=BY_ID.has(input.form)?input.form:'compact',f=BY_ID.get(form),r=input;
-        return {kind:'vehicle',form,width:clamp(r.width,.5,8,f[2]),height:clamp(r.height,.35,7,f[3]),length:clamp(r.length,1,12,f[4]),
-            paint:hex(r.paint,form==='rover'?'#697460':form==='sport'||form==='motorcycle'?'#8c353b':form==='walker'?'#bd8d43':'#426c80'),secondary:hex(r.secondary,form==='rover'?'#475144':form==='walker'?'#48545e':form==='compact'||form==='sport'||form==='motorcycle'?'#303c43':'#b4bdba'),trim:hex(r.trim,'#252c32'),accent:hex(r.accent,'#d0a15c'),glass:hex(r.glass,'#172c36'),
-            interior:r.interior!==false,windowOpacity:clamp(r.windowOpacity,.2,.95,.62),seatColor:hex(r.seatColor,'#62717a'),finish:['enamel','powder','brushed','composite'].includes(r.finish)?r.finish:'enamel',wear:clamp(r.wear,0,1,['rover','walker','truck'].includes(form)?.35:.08),grime:clamp(r.grime,0,1,['rover','walker','truck'].includes(form)?.30:.06),surfaceSeed:Math.round(clamp(r.surfaceSeed,1,999999,701)),livery:['plain','stripe','rally','service'].includes(r.livery)?r.livery:['rover','walker','truck','hover','shuttle','drone'].includes(form)?'service':form==='sport'?'rally':'stripe',markings:typeof r.markings==='string'?r.markings.toUpperCase().replace(/[^A-Z0-9 .:/-]/g,'').slice(0,22):({compact:'R-17',sport:'24',truck:'FIELD SERVICE',rover:'RANGER 06',motorcycle:'R-17',hover:'UTILITY 17',shuttle:'EXPEDITION 07',drone:'SURVEY 06',walker:'WORK UNIT 06'}[form]),
+        const form=BY_ID.has(input.form)?input.form:'compact',f=BY_ID.get(form),r={...(Salvage.IDS.has(form)?Salvage.DEFAULTS:form==='minivan'?Van.DEFAULTS:{}),...input},limits=dimensions(form);
+        return {kind:'vehicle',form,width:clamp(r.width,...limits.width,f[2]),height:clamp(r.height,...limits.height,f[3]),length:clamp(r.length,...limits.length,f[4]),team:r.team!==false,sideDoorOpen:clamp(r.sideDoorOpen,0,1,0),tailgateOpen:clamp(r.tailgateOpen,0,1,0),salvageSeed:Math.round(clamp(r.salvageSeed,1,999999,1701)),corrosion:clamp(r.corrosion,0,1,0),cutaway:!!r.cutaway,canopyOpen:clamp(r.canopyOpen,0,1,0),
+            paint:hex(r.paint,Expansion.HISTORIC.has(form)?'#674331':form==='rover'?'#697460':form==='sport'||form==='motorcycle'?'#8c353b':form==='walker'?'#bd8d43':'#426c80'),secondary:hex(r.secondary,Expansion.HISTORIC.has(form)?'#a77b47':form==='rover'?'#475144':form==='walker'?'#48545e':form==='compact'||form==='sport'||form==='motorcycle'?'#303c43':'#b4bdba'),trim:hex(r.trim,'#252c32'),accent:hex(r.accent,'#d0a15c'),glass:hex(r.glass,'#172c36'),
+            interior:r.interior!==false,windowOpacity:clamp(r.windowOpacity,.2,.95,.62),seatColor:hex(r.seatColor,'#62717a'),finish:['enamel','powder','brushed','composite'].includes(r.finish)?r.finish:'enamel',wear:clamp(r.wear,0,1,['rover','walker','truck'].includes(form)?.35:.08),grime:clamp(r.grime,0,1,['rover','walker','truck'].includes(form)?.30:.06),surfaceSeed:Math.round(clamp(r.surfaceSeed,1,999999,701)),livery:['plain','stripe','rally','service'].includes(r.livery)?r.livery:['rover','walker','truck','hover','shuttle','drone'].includes(form)?'service':form==='sport'?'rally':'stripe',markings:typeof r.markings==='string'?r.markings.toUpperCase().replace(/[^A-Z0-9 .:/-]/g,'').slice(0,22):({compact:'R-17',sport:'24',truck:'FIELD SERVICE',rover:'RANGER 06',motorcycle:'R-17',hover:'UTILITY 17',shuttle:'EXPEDITION 07',drone:'SURVEY 06',walker:'WORK UNIT 06'}[form]||''),
             wheelSize:clamp(r.wheelSize,.75,1.3,1),wheelbase:clamp(r.wheelbase,.5,.72,(Bodywork.DESIGN[form]||{}).wheelbase||.62),clearance:clamp(r.clearance,0,1,.4),
             cabinHeight:clamp(r.cabinHeight,.7,1.3,1),cabinLength:clamp(r.cabinLength,.75,1.25,1),axles:Math.round(clamp(r.axles,2,3,form==='rover'?3:2)),
             armor:clamp(r.armor,0,1,form==='rover'?.8:.2),roughness:clamp(r.roughness,.2,.9,{sport:.24,compact:.30,motorcycle:.30,truck:.40,hover:.38,shuttle:.40,drone:.42}[form]??.52),
@@ -35,14 +40,14 @@
             roofRack:!!r.roofRack,bumper:r.bumper!==false,lights:r.lights!==false,details:r.details!==false,
             cargo:clamp(r.cargo,0,1,form==='truck'?.5:0),wingSpan:clamp(r.wingSpan,.7,1.4,1),engineSize:clamp(r.engineSize,.7,1.4,1),
             stance:clamp(r.stance,.75,1.3,1),aero:clamp(r.aero,0,1,form==='sport'?.65:0),fairing:['naked','half','full'].includes(r.fairing)?r.fairing:'half',flightFit:['transport','interceptor','cargo'].includes(r.flightFit)?r.flightFit:'transport',rotorGuard:['ring','cage','open'].includes(r.rotorGuard)?r.rotorGuard:'ring',tool:['claw','welder','none'].includes(r.tool)?r.tool:'claw',
-            bodyStyle:STYLES.includes(r.bodyStyle)?r.bodyStyle:'rounded',detailDensity:clamp(r.detailDensity,0,1,DENSITY_DEFAULT[form]),
+            bodyStyle:STYLES.includes(r.bodyStyle)?r.bodyStyle:'rounded',detailDensity:clamp(r.detailDensity,0,1,DENSITY_DEFAULT[form]??.65),
             // Insignia: emblems only (RRFlagDesign layers), painted on doors, flanks and fins. None by default.
             insignia:insigniaOf(r.insignia),
             // Which motion the Prop Builder plays (preview only; the game plays the saved rules).
             motion:['none','doors','drive','gear','fly'].includes(r.motion)?r.motion:'none'};
     }
     function insigniaOf(v){const d=Design.normalize({field:{layout:'solid',colors:['#000000']},layers:v&&Array.isArray(v.layers)?v.layers:[]});return{field:d.field,layers:d.layers};}
-    const fromPreset=form=>normalize({form,bodyStyle:STYLE_DEFAULT[BY_ID.has(form)?form:'compact']});
+    const fromPreset=form=>normalize({form,...(['scrapInterceptor','scrapBuggy','scrapBike'].includes(form)?{roofRack:false}:{}),motion:['jet','helicopter','airliner'].includes(form)?'fly':'none',...(form==='jet'?{paint:'#535e68',secondary:'#4a535c',trim:'#19232b',glass:'#486579',roughness:.40}:form==='helicopter'?{paint:'#394b53',secondary:'#5b6b70',trim:'#212d34',glass:'#527687'}:form==='starfighter'?{paint:'#495566',secondary:'#7e858c',trim:'#202734',accent:'#52caff'}:['starship','freighter'].includes(form)?{paint:'#667582',secondary:'#39434e',trim:'#19232d',accent:form==='starship'?'#63b5e8':'#b1905c',glass:'#537d8b'}:form==='airliner'?{paint:'#d5dce0',secondary:'#434e66',glass:'#577482'}:{}),bodyStyle:STYLE_DEFAULT[BY_ID.has(form)?form:'compact']||(Salvage.IDS.has(form)?'armored':'rounded')});
     /** A tandem rear bogie leaves a real access bay ahead of it. Door edges share wheel-clearance anchors. */
     function roadLayout(r){
         const W=r.width,H=r.height,L=r.length,span=L*r.wheelbase;
@@ -93,7 +98,7 @@
         const tube=(kind,points,radius=.018,name)=>put(kind,CM.sweep(points,radius,20,true),name);
         const sheet=(kind,points,thickness=.012,name)=>put(kind,panel(points,thickness),name);
         const bolt=(center,u=[0,0,1],v=[0,1,0])=>{if(r.details)put('metal',CM.revolveOn(CM.frame(center,u,v),0,0,[[0,0],[.014,0],[.014,.008],[0,.009]],8));};
-        const context={recipe:r,r,W,H,L,put,box,tube,sheet,bolt,wheels,bodywork:Bodywork,zones:new Map()};
+        const context={recipe:r,r,W,H,L,put,box,tube,sheet,bolt,wheels,bodywork:Bodywork,groups,zones:new Map()};
         const wheel=(x,z,R,width,name)=>{const w=Bodywork.wheel(context,x,z,R,width,name);wheels.push(w);return w.at;};
         const vent=(center,size,rows=6,back=false)=>{if(r.details)Bodywork.grille(context,CM.frame(center,[1,0,0],[0,back?-1:1,0]),size[0],size[1],size[2],rows,'Vehicle cooling grille');};
         const lamp=(center,size,back=false)=>{
@@ -260,12 +265,15 @@
         } else if(r.form==='walker') {
             Bodywork.walker({...context,glazing});
         }
+        context.mounts=mounts;Expansion.build(context);Salvage.build(context);Van.build(context);
         const construction=Construction.assemble(context);
-        const materials={seat:{color:r.seatColor,roughness:.88,metalness:0},secondary:{color:r.secondary,roughness:Math.min(.90,r.roughness+.08),metalness:.28},paint:{color:r.paint,roughness:r.roughness,metalness:.35},armor:{color:r.paint,roughness:Math.min(.92,r.roughness+.12),metalness:.45},
+        const materials={cabin:{color:'#c3c9cc',roughness:.86,metalness:0,doubleSided:true},wood:{color:r.secondary,roughness:.78,metalness:0},flightGlass:{color:r.glass,roughness:.10,metalness:.06,opacity:r.interior?r.windowOpacity:1,doubleSided:true},canvas:{color:'#d8c8a0',roughness:.96,metalness:0,doubleSided:true},seat:{color:r.seatColor,roughness:.88,metalness:0},secondary:{color:r.secondary,roughness:Math.min(.90,r.roughness+.08),metalness:.28},paint:{color:r.paint,roughness:r.roughness,metalness:.35},armor:{color:r.paint,roughness:Math.min(.92,r.roughness+.12),metalness:.45},
             accent:{color:r.accent,roughness:.42,metalness:.55},trim:{color:r.trim,roughness:.64,metalness:.20},dark:{color:'#11181d',roughness:.83},rubber:{color:'#202327',roughness:.92},metal:{color:'#a1abb0',roughness:.36,metalness:.78},
             glass:{color:r.glass,roughness:.17,metalness:.38},cargo:{color:r.accent,roughness:.82},light:{color:'#94a7a3',emissive:'#e2eeea',emissiveIntensity:.85,roughness:.25},frame:{color:'#2a3034',roughness:.62,metalness:.55},
             red:{color:'#932d23',emissive:'#c42e20',emissiveIntensity:.9,roughness:.27},liner:{color:'#101417',roughness:.9,doubleSided:true},chrome:{color:'#d3d9dc',roughness:.16,metalness:1},lens:{color:'#e6eef0',roughness:.03,metalness:.10,opacity:.18},redlens:{color:'#b0261c',roughness:.08,metalness:.10,opacity:.62,...(r.lights?{emissive:'#7a1710',emissiveIntensity:.35}:{})},glow:{color:r.accent,emissive:r.accent,emissiveIntensity:r.lights?1.4:0,roughness:.3}};
         const parts=[];
+        // Turbine blades are thin single cards: seen from both ends of the engine.
+        materials.fanBlade={...materials.metal,doubleSided:true};
         for(const [key,list]of groups){const [kind,name]=key.split('|'),mesh=CM.merge(list);if(!mesh.index.length)continue;CM.skin(mesh,0);parts.push({...mesh,...materials[kind],metalness:materials[kind].metalness??0,surfaceRole:kind,name:name===kind?BY_ID.get(r.form)[1]+' '+kind:name});}
         if(context.zones)for(const p of parts){const z=context.zones.get(p.name);if(z)p.zone=z;}
         for(const p of parts)CM.mapUv(p,(_,__,i)=>{const n=Array.from(p.normals.subarray(i*3,i*3+3),Math.abs),axis=n.indexOf(Math.max(...n)),axes=axis===0?[2,1]:axis===1?[0,2]:[0,1];return axes.map(k=>p.positions[i*3+k]*5);});
@@ -274,17 +282,21 @@
         for(const w of wheels)w.at[1]-=low;
         for(const seat of mounts.seats||[])for(const key of ['seat','handL','handR','footL','footR'])if(seat[key])seat[key].at[1]-=low;
         for(const c of mounts.controls||[])c.at[1]-=low;
+        if(['modern','wasteland'].includes(context.craft?.family)&&context.craft.cabin)for(const key of ['floor','hip','roof'])context.craft.cabin[key]-=low;
+        for(const seat of context.cabinSeats||[])seat.at[1]-=low;
         const textures={};Finish.fittings(parts,r);Finish.apply(parts,textures,r,cache,options);tint(parts,context.tints);Finish.decorate(parts,textures,r,cache,options.images||{});for(const p of parts)delete p.zone;
         const rigged=Rig.pieces(parts,r,context,wheels,low);// tags door, fan and gear pieces; their meshes stay as they were
         const finalParts=consolidate(parts,r,wheels,mounts);
+        if(Expansion.HISTORIC.has(r.form)){const Surface=need('RRConstructionSurface','../Character3D/ConstructionSurface.js');for(const p of finalParts)if(['secondary','paint'].includes(p.surfaceRole)){p.metalness=0;CM.mapUv(p,(_,__,v)=>{const n=Array.from(p.normals.subarray(v*3,v*3+3),Math.abs),a=n.indexOf(Math.max(...n)),axes=a===0?[2,1]:a===1?[0,2]:[0,1];return axes.map(k=>p.positions[v*3+k]*3);});delete p.texture;delete p.normalTexture;delete p.metallicRoughnessTexture;}Surface.apply(finalParts,textures,p=>['secondary','paint'].includes(p.surfaceRole)?'wood':null);}
+        const team=Expansion.animals(context,low);finalParts.push(...team.parts);Object.assign(textures,team.textures);
         const motion=Rig.finish(finalParts,rigged,r,wheels);
-        const sidecarExtra=GROUND.has(r.form)?{vehicle:{forward:'+z',wheels,...(mounts.seats?{seats:mounts.seats,controls:mounts.controls,...(r.form==='motorcycle'?{stand:{lean:0,side:'left'}}:{})}:{})}}:{};
+        const sidecarExtra=GROUND.has(r.form)?{vehicle:{forward:'+z',wheels,...(mounts.seats?{seats:mounts.seats,controls:mounts.controls,...(['motorcycle','scrapBike'].includes(r.form)?{stand:{lean:0,side:'left'}}:{})}:{})}}:{};
         // Doors, gear and fans: pivots and rules the game plays (Play Model Animation by name), editable on the 3D Models page.
         if(motion.rules.length)Object.assign(sidecarExtra,{parts:motion.regions,animations:motion.rules});
         // The bars' other parts (grips, perches, mirrors) turn with the bars about the steering head.
-        const steerAt=(mounts.controls||[]).find(c=>c.part==='Steering');if(r.form==='motorcycle'&&steerAt){const pv={};for(const p of finalParts)if(/^Steering /.test(p.name))pv[p.name]=steerAt.at.map(v=>Math.round(v*1e4)/1e4);if(Object.keys(pv).length)sidecarExtra.pivots=pv;}
+        const steerAt=(mounts.controls||[]).find(c=>c.part==='Steering');if(['motorcycle','scrapBike'].includes(r.form)&&steerAt){const pv={};for(const p of finalParts)if(/^Steering /.test(p.name))pv[p.name]=steerAt.at.map(v=>Math.round(v*1e4)/1e4);if(Object.keys(pv).length)sidecarExtra.pivots=pv;}
         const missing=r.insignia.layers.length?Design.pictures(r.insignia).find(n=>!(options.images||{})[n])||'':'';
-        return {kind:'vehicle',recipe:r,construction,parts:finalParts,bones:motion.bones,clips:[],previewClips:motion.preview(r.motion),motions:motion.clips.map(c=>c.name),textures,height:high-low,sidecarExtra,imageName:missing,imageMissing:!!missing};
+        return {kind:'vehicle',recipe:r,construction,craft:context.craft,passengerSeats:context.cabinSeats,triangles:finalParts.reduce((n,p)=>n+p.index.length/3,0),parts:finalParts,bones:motion.bones,clips:[],previewClips:motion.preview(r.motion),motions:motion.clips.map(c=>c.name),textures,height:high-low,sidecarExtra,imageName:missing,imageMissing:!!missing};
     }
     /** Per-vertex color factors after the coating: drilled holes, vent
      * bands and bright fasteners on dark rims. f(position) -> k or [r,g,b]. */
@@ -293,7 +305,7 @@
         for(const p of parts){const f=tints.get(p.name);if(!f||!p.colors)continue;for(let i=0;i<p.positions.length/3;i++){const v=f([p.positions[i*3],p.positions[i*3+1],p.positions[i*3+2]]);if(v===1)continue;for(let k=0;k<3;k++)p.colors[i*3+k]=Array.isArray(v)?v[k]:p.colors[i*3+k]*v;}}
     }
     // Parts the runtime, the finish or saved data address by name stay whole.
-    const KEEP=new Set(['Sculpted body shell','Access door','Formed wheel arches','Access step','Step supports','Vehicle markings','Vehicle lettering','Outboard cargo pods','Turbine casings']),KEEP_PATTERN=/divider|mullion|^Steering /i;
+    const KEEP=new Set(['Sculpted body shell','Access door','Formed wheel arches','Access step','Step supports','Vehicle markings','Vehicle lettering','Outboard cargo pods','Turbine casings']),KEEP_PATTERN=/^Minivan (sliding|liftgate)|divider|mullion|^Steering |^Flight access |^Docking hatch$|^Boarding steps|^Sliding cockpit canopy$|^Canopy |^Passenger seat|^Passenger cabin|^Full length cabin|^Panoramic cockpit glazing$|^Pilot side window$|^Rotorcraft cabin shell$|^Airliner pressure shell$|^Cockpit windscreen$|^Rotor mast$|^Intake turbine |^Strap-on booster housings$|^Stabilizer fins$|^Crew (hatch|ladder|boarding)/i;
     // A merged group takes this name when one of its members has it.
     const ADOPT=['Cabin seat upholstery','Cabin steering wheel','Tail lamp lens'];
     /** Draw-call consolidation: after the coating bake, parts that share one
@@ -320,42 +332,46 @@
         const r=normalize(input),next=Paint.random(seed),all=scope==='all';
         if(all||scope==='shape'){for(const k of ['width','height','length'])r[k]*=.88+next()*.24;r.cabinHeight=.8+next()*.4;r.cabinLength=.85+next()*.3;r.wheelbase=.52+next()*.16;r.wheelSize=.85+next()*.3;r.stance=.85+next()*.3;r.bodyStyle=STYLES[Math.floor(next()*3)];}
         if(all||scope==='colors'){r.paint=['#426c80','#8c353b','#697460','#b29d78','#aeb8b7','#4f515e'][Math.floor(next()*6)];r.secondary=['#303c43','#b4bdba','#c5ac87','#48545e'][Math.floor(next()*4)];r.accent=['#d0a15c','#82c4ca','#b66d3d'][Math.floor(next()*3)];r.roughness=.3+next()*.4;r.finish=['enamel','powder','brushed','composite'][Math.floor(next()*4)];}
-        if(all||scope==='details'){r.roofRack=next()>.55;r.bumper=next()>.2;r.cargo=next();r.armor=next();r.spokes=4+Math.floor(next()*7);r.tread=next();r.treadPattern=TREADS[Math.floor(next()*3)];r.engineSize=.85+next()*.4;r.wear=next()*.7;r.grime=next()*.6;r.surfaceSeed=1+Math.floor(next()*999998);r.livery=['plain','stripe','rally','service'][Math.floor(next()*4)];r.aero=next();r.fairing=['naked','half','full'][Math.floor(next()*3)];r.flightFit=['transport','interceptor','cargo'][Math.floor(next()*3)];r.rotorGuard=['ring','cage','open'][Math.floor(next()*3)];r.tool=['claw','welder','none'][Math.floor(next()*3)];r.detailDensity=.2+next()*.8;}
+        if(all||scope==='details'){r.roofRack=next()>.55;r.bumper=next()>.2;r.cargo=next();r.armor=next();r.spokes=4+Math.floor(next()*7);r.tread=next();r.treadPattern=TREADS[Math.floor(next()*3)];r.engineSize=.85+next()*.4;r.wear=next()*.7;r.grime=next()*.6;r.surfaceSeed=1+Math.floor(next()*999998);r.livery=['plain','stripe','rally','service'][Math.floor(next()*4)];r.aero=next();r.fairing=['naked','half','full'][Math.floor(next()*3)];r.flightFit=['transport','interceptor','cargo'][Math.floor(next()*3)];r.rotorGuard=['ring','cage','open'][Math.floor(next()*3)];r.tool=['claw','welder','none'][Math.floor(next()*3)];r.detailDensity=.2+next()*.8;if(Salvage.IDS.has(r.form)){r.salvageSeed=1+Math.floor(next()*999998);r.corrosion=.25+next()*.65;}}
         return normalize(r);
     }
-    const api={roadLayout,FORMS,GROUND,STYLES,STYLE_DEFAULT,normalize,fromPreset,build,random};root.RRVehicleProp=api;if(typeof module!=='undefined'&&module.exports)module.exports=api;
+    const api={roadLayout,dimensions,FORMS,GROUND,STYLES,STYLE_DEFAULT,normalize,fromPreset,build,random};root.RRVehicleProp=api;if(typeof module!=='undefined'&&module.exports)module.exports=api;
     const Model=need('RRPropModel','./PropModel.js'),Catalog=need('RRPropCatalog','./PropCatalog.js');
     Model.register({id:'vehicle',label:'Vehicles',normalize,build,random,randomScopes:[['all','Everything'],['shape','Shape'],['colors','Colors'],['details','Details']]});
     Catalog.category({id:'vehicles',label:'Vehicles',order:55});
-    for(const [id,label]of FORMS)Catalog.add({id:'vehicle-'+id,label,kind:'vehicle',category:'vehicles',icon:id==='motorcycle'?'motorcycle':id==='walker'?'walker':id==='drone'||id==='shuttle'||id==='hover'?'aircraft':'car',keywords:'vehicle transport '+id,start:()=>fromPreset(id),matches:r=>r.form===id});
+    for(const [id,label]of FORMS)Catalog.add({id:'vehicle-'+id,label,kind:'vehicle',category:'vehicles',genre:Salvage.IDS.has(id)?'wasteland':['carriage','oxcart','wagon'].includes(id)?'historical':['compact','sport','truck','motorcycle','jet','helicopter','airliner','minivan'].includes(id)?'modern':'scifi',icon:id==='motorcycle'?'motorcycle':id==='walker'?'walker':id==='drone'||id==='shuttle'||id==='hover'?'aircraft':'car',keywords:'vehicle transport '+id+(Salvage.IDS.has(id)?' post-apocalyptic apocalypse salvage scrap improvised raider survivor convoy':''),start:()=>fromPreset(id),matches:r=>r.form===id});
     Catalog.ui('vehicle',{placeholder:'Vehicles',tabs:[['shape','Shape'],['look','Look'],['details','Details']],panel(tab){
-        const f=this.recipe.form,ground=GROUND.has(f),car=ground&&f!=='motorcycle',slider=(path,label,range,step=.01)=>this._slider({path,label,range,step});
+        const f=this.recipe.form,ground=GROUND.has(f),heritage=Expansion.HISTORIC.has(f),salvaged=Salvage.IDS.has(f),van=f==='minivan',custom=salvaged||van,car=ground&&!['motorcycle','scrapBike'].includes(f)&&!heritage&&!custom,slider=(path,label,range,step=.01)=>this._slider({path,label,range,step});
         if(tab==='shape'){
-            let out=this._select('bodyStyle','Body style',[['rounded','Rounded'],['faceted','Faceted'],['armored','Armored']])+this._section('Dimensions')+slider('width','Width',[.5,8])+slider('height','Height',[.35,7])+slider('length','Length',[1,12]);
+            let out=(Expansion.IDS.has(f)||custom?'':this._select('bodyStyle','Body style',[['rounded','Rounded'],['faceted','Faceted'],['armored','Armored']]))+this._section('Dimensions')+slider('width','Width',dimensions(f).width)+slider('height','Height',dimensions(f).height)+slider('length','Length',dimensions(f).length);
             if(ground)out+=slider('wheelSize','Wheel size',[.75,1.3]);
             if(car)out+=slider('wheelbase','Wheelbase',[.5,.72])+slider('axles','Axles',[2,3],1)+slider('clearance','Ground clearance',[0,1]);
             if(car||f==='hover'||f==='shuttle')out+=slider('cabinHeight','Cabin height',[.7,1.3]);
             if(car)out+=slider('cabinLength','Cabin length',[.75,1.25]);
-            if(['hover','shuttle','drone'].includes(f))out+=slider('engineSize','Engine size',[.7,1.4]);
+            if(['hover','shuttle','drone','jet','helicopter','starfighter','starship','freighter','airliner'].includes(f))out+=slider('engineSize','Engine size',[.7,1.4]);
             if(['hover','shuttle'].includes(f))out+=slider('wingSpan','Wing span',[.7,1.4]);
+            if(['jet','helicopter','airliner'].includes(f))out+=slider('wingSpan',f==='helicopter'?'Rotor span':'Wing span',[.7,1.4]);
             if(f==='walker')out+=slider('stance','Stance width',[.75,1.3]);
             return out;
         }
-        if(tab==='look')return (car||['hover','shuttle','walker'].includes(f)?this._check('interior','Cabin interior')+(this.recipe.interior?slider('windowOpacity','Window opacity',[.2,.95])+this._color('seatColor','Seat upholstery'):''):'')+this._select('finish','Paint finish',[['enamel','Enamel'],['powder','Powder coat'],['brushed','Brushed alloy'],['composite','Woven composite']])+this._select('livery','Paint scheme',[['plain','Plain'],['stripe','Coach stripe'],['rally','Rally'],['service','Service markings']])+`<label class="rr-c3d-row"><span class="rr-c3d-label">${this._t('Custom marking')}</span><input type="text" class="rr-input rr-prop-text" data-path="markings" maxlength="22" value="${this.recipe.markings}" spellcheck="false"></label>`+slider('wear','Paint wear',[0,1])+slider('grime','Grime',[0,1])+slider('surfaceSeed','Surface variation',[1,999999],1)+this._color('paint','Body color')+this._color('secondary','Secondary body color')+this._color('trim','Trim')+this._color('accent','Accent')+this._color('glass','Glass')+slider('roughness','Roughness',[.2,.9])
+        if(tab==='look')return (car||custom||['hover','shuttle','walker'].includes(f)||Expansion.IDS.has(f)&&!heritage&&f!=='rocket'?this._check('interior','Cabin interior')+(this.recipe.interior?slider('windowOpacity','Window opacity',[.2,.95])+this._color('seatColor','Seat upholstery'):''):'')+this._select('finish','Paint finish',[['enamel','Enamel'],['powder','Powder coat'],['brushed','Brushed alloy'],['composite','Woven composite']])+this._select('livery','Paint scheme',[['plain','Plain'],['stripe','Coach stripe'],['rally','Rally'],['service','Service markings']])+`<label class="rr-c3d-row"><span class="rr-c3d-label">${this._t('Custom marking')}</span><input type="text" class="rr-input rr-prop-text" data-path="markings" maxlength="22" value="${this.recipe.markings}" spellcheck="false"></label>`+slider('wear','Paint wear',[0,1])+slider('grime','Grime',[0,1])+slider('surfaceSeed','Surface variation',[1,999999],1)+this._color('paint','Body color')+this._color('secondary','Secondary body color')+this._color('trim','Trim')+this._color('accent','Accent')+this._color('glass','Glass')+slider('roughness','Roughness',[.2,.9])
             // Insignia: the Design page's emblems-only list (shapes, or a project picture), painted on doors, flanks and fins.
             +(this._designPanel?this._designPanel('insignia',{field:false}):'');
-        let out=this._check('details','Details')+(this.recipe.details?slider('detailDensity','Detail density',[0,1]):'')+this._check('lights','Lights');
-        if(ground)out+=slider('spokes','Wheel spokes',[4,10],1)+slider('tread','Tire tread',[0,1])+this._select('treadPattern','Tread pattern',[['road','Road'],['allTerrain','All-terrain'],['mud','Mud']]);
-        if(car)out+=this._check('roofRack','Roof rack')+this._check('bumper','Bumpers');
-        if(f==='truck'||f==='hover'||f==='shuttle')out+=slider('cargo','Cargo load',[0,1]);
-        if(f==='rover'||f==='walker')out+=slider('armor','Armor thickness',[0,1]);
+        let out=(van?this._check('cutaway','Cabin cutaway')+slider('sideDoorOpen','Sliding doors',[0,1])+slider('tailgateOpen','Rear liftgate',[0,1]):'')+(f==='airliner'?this._check('cutaway','Cabin cutaway'):'')+(['jet','starfighter'].includes(f)?slider('canopyOpen','Canopy opening',[0,1]):'')+(heritage?this._check('team','Draft animals'):'')+this._check('details','Details')+(this.recipe.details&&!custom&&!Expansion.IDS.has(f)?slider('detailDensity','Detail density',[0,1]):'')+(heritage?'':this._check('lights','Lights'));
+        if(ground&&!heritage)out+=slider('spokes','Wheel spokes',[4,10],1)+slider('tread','Tire tread',[0,1])+this._select('treadPattern','Tread pattern',[['road','Road'],['allTerrain','All-terrain'],['mud','Mud']]);
+        if(car||custom&&!['scrapBike','scrapBuggy'].includes(f))out+=this._check('roofRack','Roof rack');
+        if(car||salvaged&&f!=='scrapBike')out+=this._check('bumper','Bumpers');
+        if(van||salvaged&&(!['scrapBike','scrapBuggy','scrapInterceptor','warBus','scrapTanker'].includes(f)||this.recipe.roofRack)||f==='truck'||f==='hover'||f==='shuttle')out+=slider('cargo','Cargo load',[0,1]);
+        if(salvaged&&f!=='scrapBike'||f==='rover'||f==='walker')out+=slider('armor',salvaged?'Protective fittings':'Armor thickness',[0,1]);
+        if(salvaged)out+=slider('corrosion','Rust coverage',[0,1])+(!['scrapBike','scrapBuggy'].includes(f)?slider('salvageSeed','Patchwork variation',[1,999999],1):'');
         if(['compact','sport'].includes(f))out+=slider('aero','Rear wing height',[0,1]);
         if(f==='motorcycle')out+=this._select('fairing','Fairing',[['naked','Naked'],['half','Half fairing'],['full','Full fairing']]);
         if(['hover','shuttle'].includes(f))out+=this._select('flightFit','Flight equipment',[['transport','Transport'],['interceptor','Interceptor'],['cargo','Cargo hauler']]);
         if(f==='drone')out+=this._select('rotorGuard','Rotor protection',[['ring','Duct ring'],['cage','Safety cage'],['open','Open rotor']]);
-        if(f==='walker')out+=this._select('tool','Tool',[['claw','Claw'],['welder','Welder'],['none','None']]);
+        if(['jet','helicopter','airliner'].includes(f))out+=slider('wingSpan',f==='helicopter'?'Rotor span':'Wing span',[.7,1.4]);
+            if(f==='walker')out+=this._select('tool','Tool',[['claw','Claw'],['welder','Welder'],['none','None']]);
         // Preview of what moves (the saved model plays its rules in game: Doors open/close, Gear up/down, fans and wheels).
-        const motions=[['none','Parked (still)'],...(car?[['doors','Doors swinging open']]:[]),...(ground?[['drive','Wheels rolling']]:[]),...(['hover','shuttle'].includes(f)?[['gear','Landing gear folding']]:[]),...(['hover','drone'].includes(f)?[['fly','Fans and rotors spinning']]:[])];
+        const motions=[['none','Parked (still)'],...(car?[['doors','Doors swinging open']]:[]),...(ground?[['drive','Wheels rolling']]:[]),...(['hover','shuttle'].includes(f)?[['gear','Landing gear folding']]:[]),...(['hover','drone','helicopter','jet','airliner'].includes(f)?[['fly','Fans and rotors spinning']]:[])];
         if(motions.length>1)out+=this._select('motion','Vehicle motion preview',motions);
         return out;
     },act(act,b){if(this._designAct)this._designAct(act,b);},reset:r=>fromPreset(r.form),moves:()=>false});

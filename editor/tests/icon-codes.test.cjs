@@ -155,12 +155,12 @@ test('the <select> shim paints option labels instead of assigning raw text', () 
     // skill-type and damage-element selects, and the [SV] Magic Skills rows.
     const source = read('src/utils/SelectThemingShim.js');
 
-    assert.match(source, /const paintLabel = \(target, text\) => \{/);
+    assert.match(source, /const paintLabel = \(target, text, symbol\) => \{/);
     assert.match(source, /codes\.paint\(target, text\)/);
-    assert.match(source, /paintLabel\(item, opt\.textContent\)/, 'popup rows');
-    assert.match(source, /paintLabel\(triggerEl\.querySelector\('\.rr-shim-label'\), opt\.textContent\)/,
+    assert.match(source, /paintLabel\(item, opt\.textContent, opt\.dataset\.rrSymbol\)/, 'popup rows');
+    assert.match(source, /paintLabel\(triggerEl\.querySelector\('\.rr-shim-label'\), opt\.textContent, opt\.dataset\.rrSymbol\)/,
         'the trigger after a pick');
-    assert.match(source, /paintLabel\(label, getCurrentLabel\(selectEl\)\)/, 'and on refresh');
+    assert.match(source, /paintLabel\(label, getCurrentLabel\(selectEl\), selectEl\.options\[selectEl\.selectedIndex\]\?\.dataset\.rrSymbol\)/, 'and on refresh');
     assert.doesNotMatch(source, /item\.textContent = opt\.textContent/);
     assert.doesNotMatch(source, /trigger(El)?\.firstChild\.nodeValue/,
         'the label is a span now, not the trigger\'s first text node');
@@ -170,8 +170,8 @@ test('the <select> shim paints option labels instead of assigning raw text', () 
     // carrying an explanation is searchable by that too, so an author who knows
     // what they want but not what it is called can still find it.
     assert.match(source, /item\.dataset\.optText = searchText\(/);
-    assert.match(source, /searchText\(`\$\{opt\.textContent\} \$\{hint\}`\)/,
-        'the searchable text covers the label and its explanation');
+    assert.match(source, /searchText\(`\$\{opt\.textContent\} \$\{hint\} \$\{category\}`\)/,
+        'the searchable text covers the label, its explanation and its category');
     assert.match(source, /codes \? codes\.strip\(text\) : text/);
 });
 

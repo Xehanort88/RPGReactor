@@ -38,9 +38,12 @@
     F.HEIGHT_BONUS = 0.1;
     F.HEIGHT_LIMIT = 0.3;
     // Height pays for a weapon that shoots (reach of 2 or more): one more tile of reach for every two levels the
-    // shooter stands above its target, up to three; and from two levels up a shot goes over half cover.
+    // shooter stands above its target, up to three; and from two levels up a shot goes over half cover. A project
+    // sets its own rule (System.json `reactorBattle.heightReach: { levels, most }`), a weapon, skill or item its own
+    // (`rrBattle.heightReach`, the Database's Combat card): `most` 0 is no more reach at all.
     F.HEIGHT_REACH_LEVELS = 2;
     F.HEIGHT_REACH_MAX = 3;
+    F.HEIGHT_REACH_LIMITS = { levels: [1, 10], most: [0, 10] };
     F.HEIGHT_OVER_COVER = 2;
     // A blow struck from beside its target (reach 1) lands only when the two stand within this many levels.
     F.MELEE_HEIGHT = 2;
@@ -82,7 +85,7 @@
     F.FAST_FORWARD = "shift";
     // The battle's own actions (ReactorControls.setTactical: `reactorControls.tacticalKeys` / `tacticalButtons`), and
     // the ordinary action each is read from where those bindings are not in force.
-    F.KEYS = { viewLeft: "pageup", viewRight: "pagedown", level: "control", unit: "tab", threat: "threat" };
+    F.KEYS = { viewLeft: "pageup", viewRight: "pagedown", level: "control", unit: "tab", threat: "threat", grapple: "grapple" };
     F.key = function(name) {
         const controls = root.ReactorControls;
         if (controls && controls.isTactical && controls.isTactical()) return name;
@@ -95,10 +98,25 @@
         return tactics.max >= 2 || Math.abs(from - to) <= F.MELEE_HEIGHT;
     };
 
+    /** A stored height rule, `{ levels, most }` held to F.HEIGHT_REACH_LIMITS, or null when it is not one. */
+    F.readHeightReach = function(value) {
+        if (!value || typeof value !== "object") return null;
+        const levels = Math.trunc(Number(value.levels)), most = Math.trunc(Number(value.most)), limits = F.HEIGHT_REACH_LIMITS;
+        if (!Number.isFinite(levels) || !Number.isFinite(most)) return null;
+        return { levels: clamp(levels, limits.levels[0], limits.levels[1]), most: clamp(most, limits.most[0], limits.most[1]) };
+    };
+
+    /** How height adds to an action's reach: its own rule (F.tactics), else the project's, else every two levels a tile, up to three. */
+    F.heightReach = function(tactics) {
+        return (tactics && tactics.heightReach) || F.readHeightReach(typeof F.systemSettings === "function" ? F.systemSettings().heightReach : null)
+            || { levels: F.HEIGHT_REACH_LEVELS, most: F.HEIGHT_REACH_MAX };
+    };
+
     /** The furthest an action reaches from `from` down (or up) to ground at `to`. */
     F.reachAt = function(tactics, from, to) {
-        if (tactics.max < 2 || !(from - to >= F.HEIGHT_REACH_LEVELS)) return tactics.max;
-        return tactics.max + Math.min(F.HEIGHT_REACH_MAX, Math.floor((from - to) / F.HEIGHT_REACH_LEVELS));
+        const height = F.heightReach(tactics);
+        if (tactics.max < 2 || !height.most || !(from - to >= height.levels)) return tactics.max;
+        return tactics.max + Math.min(height.most, Math.floor((from - to) / height.levels));
     };
     // A step into a bush (2D) or into water a unit wades (3D).
     F.ROUGH_COST = 2;
@@ -216,6 +234,8 @@
         if (jump !== null) { out.jump = jump; found = true; }
         const ai = typeof own.ai === "string" ? own.ai.toLowerCase() : "";
         if (ai && F.AI_PRESETS.includes(ai)) { out.ai = ai; found = true; }
+        const height = F.readHeightReach(own.heightReach);
+        if (height) { out.heightReach = height; found = true; }
         return found ? out : null;
     };
 
@@ -281,6 +301,9 @@
         // Nothing reaches or spreads further than MAX_REACH tiles, whatever a note or a record says: the cells are counted one by one.
         const top = F.MAX_REACH;
         const value = { min: Math.min(range.min, top), max: Math.min(range.max, top), area: { shape: area.shape, size: Math.min(area.size, top) }, los: !!los };
+        // How height adds to the reach: the action's own rule, else its weapon's; without either, the project's (F.heightReach).
+        const height = (tags && tags.heightReach) || (weaponTags && weaponTags.heightReach) || null;
+        if (height) value.heightReach = height;
         if (!kept) tagsOf(item);
         tagCache.get(item).tactics = { weapon, weaponNote: weapon ? weapon.note : "", weaponOwn: weapon ? weapon.rrBattle || null : null, weaponLike, value };
         return value;
@@ -353,7 +376,7 @@
             const n = value === null || value === "" || typeof value === "boolean" ? NaN : Number(value);
             return Number.isFinite(n) ? clamp(n, low, high) : fallback;
         };
-        return {
+        const spec = {
             range: num(own.range, D.range, 1, 30),
             height: num(own.height, D.height, 1, 50),
             uses: Math.floor(num(own.uses, D.uses, 0, 99)),
@@ -361,6 +384,18 @@
             cost: F.GRAPPLE_COSTS.includes(own.cost) ? own.cost : D.cost,
             moveCost: num(own.moveCost, D.moveCost, 0, 30)
         };
+        // A sound effect for each beat the record names: the shot, the hook biting, the pull.
+        const sounds = F.grappleSounds(own.sounds);
+        if (Object.keys(sounds).length) spec.sounds = sounds;
+        return spec;
+    };
+    F.grappleSounds = function(value) {
+        const out = {};
+        if (value && typeof value === "object") for (const key of ["fire", "bite", "pull"]) {
+            const se = value[key];
+            if (se && typeof se === "object" && typeof se.name === "string" && se.name) out[key] = { name: se.name, volume: Number.isFinite(Number(se.volume)) ? Number(se.volume) : 90, pitch: Number.isFinite(Number(se.pitch)) ? Number(se.pitch) : 100, pan: Number.isFinite(Number(se.pan)) ? Number(se.pan) : 0 };
+        }
+        return out;
     };
 
     /** The grapple a unit wears (the furthest reaching of its equipment's), whether or not it may use it now; null without one or on a vehicle. */
@@ -1922,8 +1957,13 @@
     G.FLOOD_SLICE = 16;
 
     /** Begin a flood: the buffers are cleared and the unit's own cell goes in. False when the unit has no place on the map. */
+    // Bounds of cells actually reached, retained across slices of one flood.
+    // Movement points are a cost, not a distance: a cheap grapple can land far away.
+    const reachedBounds = { x0: 0, y0: 0, x1: -1, y1: -1 };
+    G.reachedBounds = () => reachedBounds;
     G.floodStart = function(fight, unit, budget) {
         ensureGrid();
+        reachedBounds.x0 = gw; reachedBounds.y0 = gh; reachedBounds.x1 = reachedBounds.y1 = -1;
         flooding.open = false; flooding.reached = 0;
         const character = fight.character(unit);
         if (!character || !$gameMap.isValid(character.x, character.y)) return false;
@@ -1997,10 +2037,14 @@
             // (A cost that is not the node's own is an older way there: a way that kills, given up for one that does not.)
             if (cost !== gCost[node]) continue;
             reached++;
-            // A fall that leaves the unit with no HP ends its way.
-            if (gLoss[node] > 0 && gLoss[node] >= flooding.hp) continue;
             const cell = (node - node % LEVELS) / LEVELS;
             const x = cell % gw, y = (cell - x) / gw, height = gHeight[node];
+            if (x < reachedBounds.x0) reachedBounds.x0 = x;
+            if (y < reachedBounds.y0) reachedBounds.y0 = y;
+            if (x > reachedBounds.x1) reachedBounds.x1 = x;
+            if (y > reachedBounds.y1) reachedBounds.y1 = y;
+            // A fall that leaves the unit with no HP ends its way.
+            if (gLoss[node] > 0 && gLoss[node] >= flooding.hp) continue;
             const facedAs = turns ? gFace[node] : 0, faced = facedAs * 4;
             // Whether the cell it is on is a place to stand: asked only when a way on leads to one that is not.
             let grounded = -1;
@@ -2463,7 +2507,7 @@
     const reachedOut = [];
     // Lists a HUD reads every frame, rebuilt only when what they show changed. Never saved.
     const cache = { serial: -1, floodUnit: 0, floodBudget: -1, floodHash: 0, moveUnit: 0, moveBudget: -1, moveHash: 0, move: EMPTY,
-        rangeKey: "", range: EMPTY, rev: -1, area: EMPTY, path: EMPTY, targets: EMPTY, order: EMPTY, orderRev: -1, infos: new Map(), action: null, actionKey: "" };
+        rangeKey: "", range: EMPTY, previewKey: "", preview: EMPTY, previewFriend: false, rev: -1, area: EMPTY, path: EMPTY, targets: EMPTY, order: EMPTY, orderRev: -1, infos: new Map(), action: null, actionKey: "" };
     const previewOut = { hit: 1, critical: 0, damageMin: 0, damageMax: 0, heals: false, defeats: false, cover: 0, flank: "front", height: 0 };
 
     /** A tactical battle is running (here or on a map the party left it on). */
@@ -2736,6 +2780,9 @@
     const updateAct = Game_Fight.prototype.updateAct;
     Game_Fight.prototype.updateAct = function() {
         if (!this.isTactical()) return updateAct.call(this);
+        // A grapple's beats are heard and told as the battle plays them, drawn or not (F.Rope.beats).
+        const P = root.ReactorPhysics;
+        if (P && P.grappleHook && F.Rope) F.Rope.beats(this, P);
         const act = this._act;
         if (!act) { this._phase = "queue"; return; }
         if (act.stage === "pick") {
@@ -2764,6 +2811,13 @@
             case "move":
             case "target":
                 F.Input.update(this);
+                break;
+            case "command":
+                // The menu up: the view's keys still turn it (the Skill and Item lists page on them instead).
+                if (typeof Input !== "undefined" && this.awaitsPlayer()) {
+                    if (Input.isTriggered(F.key("viewLeft"))) F.View.rotate(-1);
+                    else if (Input.isTriggered(F.key("viewRight"))) F.View.rotate(1);
+                }
                 break;
             case "walk":
                 this.updateWalk(unit, character);
@@ -2837,6 +2891,7 @@
     Game_Fight.prototype.startWalk = function(unit, character, steps) {
         const act = this._act;
         act.path = steps;
+        delete act.grappleOnly; delete act.grappleFrom;
         // A grapple on the way is counted now; one that takes the action leaves nothing to do on arriving.
         act.spent = this.noteGrapple(unit, steps);
         act.through = character.isThrough();
@@ -3495,22 +3550,72 @@
         const act = this._act, unit = this.unit(act.unitId), character = this.character(unit);
         if (!character) return EMPTY;
         const hash = this.positionsHash();
-        if (cache.moveUnit === unit.id && cache.moveBudget === act.steps && cache.moveHash === hash) return cache.move;
+        if (cache.moveUnit === unit.id && cache.moveBudget === act.steps && cache.moveHash === hash && cache.moveGrapple === !!act.grappleOnly) return cache.move;
+        const cells = this.stopCells(unit, act.steps, !!act.grappleOnly);
+        cache.moveUnit = unit.id; cache.moveBudget = act.steps; cache.moveHash = hash; cache.moveGrapple = !!act.grappleOnly; cache.move = cells;
+        return cells;
+    };
+
+    /** Every place a unit could stop on with `steps` to spend, `{ x, y, cost, h, grapple }`; `grappleOnly`: those it reaches by its grapple. */
+    Game_Fight.prototype.stopCells = function(unit, steps, grappleOnly) {
+        const character = this.character(unit);
+        if (!character) return EMPTY;
+        const act = { steps };
         this.ensureFlood(unit, act.steps);
         const cells = [];
-        const reach = Math.ceil(act.steps);
-        for (let y = character.y - reach; y <= character.y + reach; y++) {
-            for (let x = character.x - reach; x <= character.x + reach; x++) {
+        const bounds = G.reachedBounds();
+        for (let y = bounds.y0; y <= bounds.y1; y++) {
+            for (let x = bounds.x0; x <= bounds.x1; x++) {
                 // Every level of the cell the unit can stop on: the ground under an eave and the eave are two cells here.
                 const levels = G.reachedAt(x, y, reachedOut);
                 for (let i = 0; i < levels; i++) {
                     const h = reachedOut[i * 2], cost = reachedOut[i * 2 + 1];
-                    if (cost <= act.steps && G.canStopAt(x, y, h)) cells.push(G.grappledAt(x, y, h) ? { x, y, cost, h, grapple: true } : { x, y, cost, h });
+                    if (!(cost <= act.steps) || !G.canStopAt(x, y, h)) continue;
+                    const grapple = G.grappledAt(x, y, h);
+                    if (grapple) cells.push({ x, y, cost, h, grapple: true });
+                    else if (!grappleOnly) cells.push({ x, y, cost, h });
                 }
             }
         }
-        cache.moveUnit = unit.id; cache.moveBudget = act.steps; cache.moveHash = hash; cache.move = cells;
         return cells;
+    };
+
+    /**
+     * Grapple, as a command: offered while the unit has not moved, wears a grapple it may use now (F.grappleFor) and
+     * has an edge in its reach. The move range then lists only those edges, the cursor on the nearest (which lifts the
+     * battle's cut to its level, so the roof shows), the unit key steps through them, and Cancel goes back to the menu.
+     */
+    Game_Fight.prototype.canGrapple = function(unit) {
+        const act = this._act;
+        if (!unit || !act || act.moved || act.locked || !this.isPlayerUnit(unit) || !F.grappleFor(this, unit)) return false;
+        return this.stopCells(unit, act.steps, true).length > 0;
+    };
+
+    Game_Fight.prototype.commandGrapple = function() {
+        if (!this.playerStage("command") || !this.awaitsPlayer()) return false;
+        return this.enterGrapple("command");
+    };
+
+    /** The move range as only the grapple's edges, from the menu (`from` "command") or the grapple key in a move ("move"). */
+    Game_Fight.prototype.enterGrapple = function(from) {
+        const act = this._act, unit = this.unit(act.unitId), character = this.character(unit);
+        if (!this.canGrapple(unit)) return false;
+        act.stage = "move";
+        act.grappleOnly = true;
+        act.grappleFrom = from;
+        let best = null, least = Infinity;
+        for (const cell of this.moveCells()) { const d = Math.hypot(cell.x - character.x, cell.y - character.y) + cell.cost * 0.01; if (d < least) { least = d; best = cell; } }
+        // The view between the unit and the edge, both in sight: the view looks at the ground, and a place up on a roof
+        // shows where the ground does a tile and a half further on for every level it stands higher.
+        if (best) {
+            this.setCursor(best.x, best.y, best.h);
+            const view = this.tac().view, look = view && view.own ? View.direction(view.yaw) : null, rise = (best.h - G.heightOf(character)) * 1.414;
+            const ex = best.x + (look ? look.dx * rise : 0), ey = best.y + (look ? look.dz * rise : 0);
+            this.focusOn((character.x + ex) / 2, (character.y + ey) / 2);
+        }
+        F.Input.used();
+        this.touch();
+        return true;
     };
 
     /** The pending action as a Game_Action (one kept while it is aimed). */
@@ -3531,6 +3636,38 @@
     Game_Fight.prototype.pendingItem = function() {
         const action = this.isTactical() ? this.pendingAction() : null;
         return action ? action.item() : null;
+    };
+
+    /**
+     * The action highlighted in the unit's menu or its lists (`kind` "skill" or "item", its id; nothing: none):
+     * its reach shows on the field before it is chosen, whether or not anyone stands in it, so a greyed Attack
+     * still says how far it would shoot from here.
+     */
+    Game_Fight.prototype.setPreview = function(kind, id, via) {
+        const act = this._act;
+        if (!act) return;
+        const key = kind && id ? kind + ":" + id + ":" + (via || "") : "";
+        if ((act.previewKey || "") === key) return;
+        act.previewKey = key;
+        act.preview = key ? { kind, id, via } : null;
+        this.touch();
+    };
+
+    /** The cells the highlighted action reaches from where the unit stands (`setPreview`), while its menu or a list is up. */
+    Game_Fight.prototype.previewCells = function() {
+        const act = this._act;
+        if (!act || !act.preview || !(this.playerStage("command") || this.playerStage("skill") || this.playerStage("item"))) return EMPTY;
+        const unit = this.unit(act.unitId), character = unit ? this.character(unit) : null, battler = unit ? this.actingBattler(unit, act.preview.via) : null;
+        const item = act.preview.kind === "skill" ? $dataSkills[act.preview.id] : $dataItems[act.preview.id];
+        if (!character || !battler || !item) return EMPTY;
+        const key = act.unitId + ":" + act.previewKey + ":" + character.x + "," + character.y + "," + G.heightOf(character) + ":" + this.positionsHash();
+        if (cache.previewKey === key) return cache.preview;
+        const action = new Game_Action(battler);
+        if (act.preview.kind === "skill") action.setSkill(item.id); else action.setItem(item.id);
+        cache.preview = this.reachCells(unit, action, character.x, character.y, G.heightOf(character));
+        cache.previewFriend = !action.isForOpponent();
+        cache.previewKey = key;
+        return cache.preview;
     };
 
     Game_Fight.prototype.rangeCells = function() {
@@ -3569,7 +3706,7 @@
         if (shape === "self" || shape === "all") return [{ x: ux, y: uy }];
         const cells = [];
         const f = F.footprint(unit), x0 = ux + f.ox, y0 = uy + f.oy, x1 = x0 + f.w - 1, y1 = y0 + f.h - 1;
-        const deep = G.is3D(), far = tactics.max + (deep && tactics.max >= 2 ? F.HEIGHT_REACH_MAX : 0);
+        const deep = G.is3D(), far = tactics.max + (deep && tactics.max >= 2 ? F.heightReach(tactics).most : 0);
         for (let y = y0 - far; y <= y1 + far; y++) {
             for (let x = x0 - far; x <= x1 + far; x++) {
                 const fx = clamp(x, x0, x1), fy = clamp(y, y0, y1);
@@ -3758,6 +3895,8 @@
         const level = Number.isFinite(h) ? h : this.cursorLevel(x, y, cursor.on && Number.isFinite(cursor.h) ? cursor.h : undefined);
         if (cursor.on && cursor.x === x && cursor.y === y && (!Number.isFinite(cursor.h) ? !Number.isFinite(level) : Math.abs(cursor.h - level) < 0.01)) return true;
         cursor.x = x; cursor.y = y; cursor.h = level; cursor.on = true;
+        // Put there by the pointer (F.Input): the view does not chase it (View.showCursor, the roof's framing).
+        if (F.Input && F.Input._pointing) cursor.pointed = true; else delete cursor.pointed;
         this.touch();
         return true;
     };
@@ -3954,8 +4093,11 @@
         { key: "tipTurn", state: "unit", keys: ["viewLeft", "viewRight"], when: () => View.active() },
         { key: "tipZoom", state: "unit", keys: [], when: () => View.active() && Controls.device !== "pad" },
         { key: "tipAuto", state: "unit", keys: [], when: fight => fight.canAuto() },
-        { key: "tipMove", state: "move", keys: ["ok"], click: "orClick" },
-        { key: "tipStay", state: "move", keys: ["ok"] },
+        { key: "tipMove", state: "move", keys: ["ok"], click: "orClick", when: fight => !fight._act.grappleOnly },
+        { key: "tipStay", state: "move", keys: ["ok"], when: fight => !fight._act.grappleOnly },
+        // Where the grapple reaches shows in the move range: said, since nothing else names it.
+        { key: "tipGrappleMove", state: "move", keys: ["grapple"], when: fight => !fight._act.grappleOnly && fight.moveCells().some(cell => cell.grapple) },
+        { key: "tipGrapple", state: "move", keys: ["skip"], when: fight => !!fight._act.grappleOnly },
         // Where to stand is chosen here: what every enemy reaches is worth seeing before it. Once it is shown the
         // tip has nothing left to offer.
         { key: "tipThreat", state: "move", keys: ["threat"], when: fight => !fight.showsThreat() },
@@ -4177,6 +4319,11 @@
     Game_Fight.prototype.commandMoveTo = function(x, y, h, sure) {
         if (!this.playerStage("move") || !this.awaitsPlayer()) return false;
         const act = this._act, unit = this.unit(act.unitId), character = this.character(unit);
+        if (act.grappleOnly) {
+            const cell = this.moveCells().find(c => c.x === x && c.y === y && (!Number.isFinite(h) || Math.abs(c.h - h) < G.LEVEL_GAP));
+            if (!cell) return false;
+            h = cell.h;
+        }
         // Without a level the cursor's is meant when it is on that cell, else the cheapest the unit can stop on.
         if (!Number.isFinite(h)) {
             const cursor = this.cursor();
@@ -4484,6 +4631,10 @@
         } else if (act.stage === "skill" || act.stage === "item") {
             act.stage = "command";
             delete act.pick;
+        } else if (act.stage === "move" && act.grappleOnly) {
+            // Back where it came from: the menu, or the whole move range.
+            act.stage = act.grappleFrom === "move" ? "move" : "command";
+            delete act.grappleOnly; delete act.grappleFrom;
         } else if (act.stage === "command") {
             if (act.moved) return this.commandUndoMove();
             act.stage = "move";
@@ -5224,6 +5375,8 @@
     const subjects = [];
     const openBox = [0, 0, 0, 0];
     View.QUARTERS = [45, 135, 225, 315];
+    /** The battle's floor while the cursor is up on a roof: high enough that nothing is cut. */
+    View.ROOF_LEVEL = 10000;
     // The opening looks at the party and at the enemies within this many tiles of it, never fewer than the nearest.
     View.OPENING_REACH = 14;
 
@@ -5461,6 +5614,9 @@
         if (key === view.seenKey) return false;
         view.seenKey = key;
         if (!Number.isFinite(cursor.h) || !View.onRoof(cursor.x, cursor.y, cursor.h)) return false;
+        // A pointer on a roof turns nothing: the view turning under it put another cell under it, and the view jumped
+        // back and forth as the pointer crossed the roof. The keys' cursor still brings its roof into view.
+        if (cursor.pointed) return false;
         // Never against the player's own turning: for two seconds after it the view stays as it was put.
         if (Number.isFinite(view.turnedAt) && frameNow() - view.turnedAt < 120 && frameNow() >= view.turnedAt) return false;
         const yaw = View.quarterFor(cursor.x, cursor.y, cursor.h, view.yaw);
@@ -5562,7 +5718,8 @@
         if (live && view && view.own && Reactor3D.viewGroundAt) {
             const cursor = tac.cursor, walker = act && act.unitId ? fight.character(fight.unit(act.unitId)) : null;
             const follows = !visiting && walker && (act.stage === "walk" || act.stage === "ai" || act.stage === "aim" || act.stage === "perform");
-            const onCursor = !visiting && !follows && cursor.on && Math.abs(cursor.x - fx) < 0.75 && Math.abs(cursor.y - fy) < 0.75;
+            // (Not the pointer's cursor: framed at its roof, the view slid a tile and a half a level under the pointer.)
+            const onCursor = !visiting && !follows && cursor.on && !cursor.pointed && Math.abs(cursor.x - fx) < 0.75 && Math.abs(cursor.y - fy) < 0.75;
             const there = onCursor ? fight.unitAt(cursor.x, cursor.y, null, cursor.h) : null;
             // The cursor on a roof cell nobody stands on yet is framed at that roof too.
             const height = visiting ? (Number.isFinite(visit.h) ? visit.h : null)
@@ -5658,10 +5815,9 @@
         // it the unit could walk (the marks up there).
         high = low;
         const pointer = fight.cursor();
-        if (pointer && Number.isFinite(pointer.h) && pointer.h > high + 0.75) {
-            high = pointer.h;
-            for (let i = 0; i < marks.count; i++) if (Number.isFinite(marks.h[i]) && marks.h[i] > high) high = marks.h[i];
-        }
+        // With the cursor up on a roof nothing is cut: the roofs are what is looked at. Following the cursor's own height
+        // (or the way to it) the cut rose and fell with every cell the pointer crossed on a roof's slope.
+        if (pointer && Number.isFinite(pointer.h) && pointer.h > high + 0.75) high = View.ROOF_LEVEL;
         if (!(x1 > x0)) { box[0] = box[1] = box[2] = box[3] = 0; return true; }
         box[0] = x0 - 0.25; box[1] = y0 - 0.25; box[2] = x1 + 0.25; box[3] = y1 + 0.25;
         shared.rrFightLevel.value[0] = low;
@@ -5671,20 +5827,17 @@
     };
 
     //-------------------------------------------------------------------------
-    // What the view opens. Nothing the player must see hides behind something
-    // built: while the tactical camera looks, what stands between it and a
-    // unit, the cursor, or a place the unit in hand can go to or strike is
-    // opened, and opened cleanly.
+    // Building interiors open only around the controlled unit's actual body
+    // inside a room. Cursor destinations, other units and nearby houses do
+    // not reveal interiors. Roofs remain available for movement and grappling.
     //  - A building loses the storey above the floor in question, whole (its
     //    roof, the floors over it). Its walls that stand between the camera
-    //    and its own rooms are cut down to a foot, and so is a wall where it
-    //    hides someone standing behind it.
-    //  - A low cover (a stall's awning, a porch roof) comes off whole.
+    //    and its own occupied room are cut down to a foot.
     //  - Scenery (a tree, a prop) is cut off above its foot.
     // What is cut is cut at a level and capped; the rest stays solid: nothing
     // is thinned and nothing is seen through. An opening comes and goes over
-    // a few frames and stays a while after it was last needed, so a pointer
-    // crossing tiles does not make it flicker. A unit, what it holds, its
+    // a few frames. Scenery holds briefly; interiors close when the unit
+    // leaves or selection changes. A unit, what it holds, its
     // ring and its bar are never cut. All of it is worked out when the marks,
     // a unit's tile, the view's quarter or (by a few tiles) its place change;
     // between those a frame costs a few comparisons.
@@ -6018,7 +6171,7 @@
         };
     };
 
-    /** Who and what must be seen, into `openSubjects`: every unit, the cursor, and the places the unit in hand can go to or strike. */
+    /** Subjects for scenery visibility; these never authorize opening a building. */
     function collectSubjects(fight) {
         const S = openSubjects, most = Math.min(S.x.length, View.OPEN_SUBJECTS);
         S.n = 0;
@@ -6057,6 +6210,37 @@
         return hits;
     }
 
+    /** The controlled unit actually inside a room, never its cursor or destination. */
+    View.interiorSubject = function(fight, grid) {
+        const unit = fight.activeUnit();
+        if (!unit || !fight.isPlayerUnit(unit) || !fight.isAlive(unit)) return null;
+        const c = fight.character(unit);
+        if (!c) return null;
+        const x = (Number.isFinite(c._realX) ? c._realX : c.x) + 0.5;
+        const y = (Number.isFinite(c._realY) ? c._realY : c.y) + 0.5;
+        const h = G.heightOf(c) + (Number(c._reactorAir) || 0);
+        const cx = Math.floor(x), cy = Math.floor(y);
+        if (cx < 0 || cy < 0 || cx >= grid.w || cy >= grid.h) return null;
+        const at = cy * grid.w + cx, base = Reactor3D.pieceBaseAt($dataMap, cx, cy);
+        const stack = grid.index.cells.get(cy * 65536 + cx);
+        // A roof above the body, rather than the roof the unit is standing on.
+        if (!stack || !stack.some(p => p.kind !== "doorway" && p.kind !== "ladder" && base + p.z >= h + 2.6)) return null;
+        if (builtAt(grid, cx, cy, x, h + 1.6, y, Infinity)) return null;
+        const cluster = clusterAt(grid, at);
+        if (!cluster) return null;
+        // Eaves and porches are outside. A doorway may be open, so three
+        // enclosing sides suffice; the actor must already be past its threshold.
+        let sides = 0;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            for (let step = 1; step < 40; step++) {
+                const px = cx + dx * step, py = cy + dy * step;
+                if (px < cluster.x0 || px > cluster.x1 || py < cluster.y0 || py > cluster.y1) break;
+                if (builtAt(grid, px, py, px + 0.5, h + 1.6, py + 0.5, Infinity) || doorAt(grid, px, py, h)) { sides++; break; }
+            }
+        }
+        return sides >= 3 ? { x, y, h, cluster } : null;
+    };
+
     /**
      * Works out what is in the way now and what each opening is: called when something changed, never per frame.
      * A building in the way is opened for the lowest floor asked about, but never under someone who stands in
@@ -6068,32 +6252,34 @@
         const stamp = ++cut.stamp, needed = openNeeded;
         needed.length = 0;
         collectSubjects(fight);
-        const S = openSubjects;
-        if (grid) {
+        const interior = grid && View.interiorSubject(fight, grid);
+        if (interior) {
             const note = (hits, floor, least) => {
                 for (let i = 0; i < hits.length; i += 3) {
                     if (hits[i + 1] < least) continue;
                     const cluster = grid.clusters[hits[i]];
+                    if (cluster !== interior.cluster) continue;
                     if (cluster.stamp !== stamp) { cluster.stamp = stamp; cluster.stand = -1e9; cluster.floorMin = Infinity; cluster.hits.length = 0; }
                     if (cluster.wanted !== stamp) { cluster.wanted = stamp; needed.push(cluster); }
                     if (floor < cluster.floorMin) cluster.floorMin = floor;
                     if (cluster.hits.length < 900) cluster.hits.push(hits[i + 2], hits[i + 1], floor);
                 }
             };
-            for (let i = 0; i < S.n; i++) {
-                const x = S.x[i], y = S.y[i], h = S.h[i], kind = S.kind[i];
-                // Whoever is in or on a building: its rooms are what is looked into, and a unit or the cursor holds its floor.
+            {
+                const { x, y, h } = interior;
+                // The occupied storey follows the body, including its height on stairs.
                 const cx = Math.floor(x), cy = Math.floor(y), at = cx >= 0 && cy >= 0 && cx < grid.w && cy < grid.h ? cy * grid.w + cx : -1;
                 if (at >= 0 && grid.top[at] > -1e8) {
                     const own = clusterAt(grid, at);
                     if (own.stamp !== stamp) { own.stamp = stamp; own.stand = -1e9; own.floorMin = Infinity; own.hits.length = 0; }
                     own.inside = stamp;
-                    if ((kind === 1 || kind === 2) && h > own.stand) own.stand = h;
+                    if (h > own.stand) own.stand = h;
                 }
                 // A unit by its chest and its head, and by its feet where what is in the way stands as high as its chest (what
                 // it is seen over, a rim, a bench, a wall cut to its foot, hides nobody); a place by where a unit's chest would be.
                 note(hitsFor(grid, x, y, h, 1.5), h, -1e9);
-                if (S.tall[i] > 0) { note(hitsFor(grid, x, y, h, S.tall[i]), h, -1e9); note(hitsFor(grid, x, y, h, 0.3), h, h + 1.6); }
+                note(hitsFor(grid, x, y, h, 2.6), h, -1e9);
+                note(hitsFor(grid, x, y, h, 0.3), h, h + 1.6);
             }
         }
         const view = fight._tac && fight._tac.view, look = view ? View.direction(view.yaw) : null;
@@ -6174,6 +6360,12 @@
         let moving = changed;
         for (const cluster of cut.open) {
             if (cluster.wanted !== stamp) {
+                if (!interior || cluster !== interior.cluster) {
+                    cluster.asked = false;
+                    cluster.goal = 0;
+                    if (cluster.e !== cluster.goal) moving = true;
+                    continue;
+                }
                 // Needed until this look (nothing had changed since the last one): its time runs from now.
                 if (cluster.asked) { cluster.asked = false; cluster.last = frame; }
                 if (frame - cluster.last >= View.OPEN_HOLD || frame < cluster.last) cluster.goal = 0;
@@ -6505,6 +6697,9 @@
         else if (own && camera) {
             const eye = camera.getWorldPosition(cut.eye || (cut.eye = new THREE.Vector3()));
             const moved = Math.abs(eye.x - cut.ex) + Math.abs(eye.y - cut.ey) + Math.abs(eye.z - cut.ez) > View.OPEN_EYE;
+            const unit = $gameFight.activeUnit(), c = unit && $gameFight.character(unit);
+            const occupant = c ? unit.id + ":" + Math.floor((c._realX ?? c.x) + 0.5) + ":" + Math.floor((c._realY ?? c.y) + 0.5) + ":" + Math.round((G.heightOf(c) + (Number(c._reactorAir) || 0)) * 4) : "none";
+            if (occupant !== cut.occupant) { cut.occupant = occupant; changed = true; }
             // On the beat while units walk; at once when the marks change; when an opening's time is up; when the camera has moved.
             if (changed || frame >= cut.due || frame < cut.last || (moved && frame - cut.last >= 4) || (frame % 12 === 0 && !$gameFight.awaitsPlayer())) {
                 if (moved) { cut.ex = eye.x; cut.ey = eye.y; cut.ez = eye.z; cut.memo.clear(); }
@@ -6527,7 +6722,16 @@
             }
             const changed = keep || cut.rev !== -1 ? View.cutRegion($gameFight, keep) : false;
             if (keep || cut.open.length || cut.props.size || cut.scene !== this) View.updateOpenings(this, camera, own, keep, changed);
-            if (!own) return updateCutaway.call(this, camera, mapData, character, others);
+            if (!own) {
+                // Tactical battles that keep the map camera still follow the
+                // controlled unit, rather than opening the leader's house.
+                if ($gameFight.isTactical() && $gameFight.isHere()) {
+                    const unit = $gameFight.activeUnit();
+                    character = unit && $gameFight.isPlayerUnit(unit) && $gameFight.isAlive(unit) ? $gameFight.character(unit) : null;
+                    others = null;
+                }
+                return updateCutaway.call(this, camera, mapData, character, others);
+            }
             // The battle's openings are the whole cut: the map's own corridor to the player and its see-through pass rest.
             const result = updateCutaway.call(this, camera, mapData, null, null);
             if (this._cutState && this._cutState !== "none") {
@@ -6778,8 +6982,6 @@
             const moving = $gameFight, stage = moving._act;
             if (direction.y < -1e-6 && stage && stage.unitId && moving.playerStage("move")) {
                 moving.ensureFlood(moving.unit(stage.unitId), stage.steps);
-                const shared = Reactor3D.cutawayUniforms ? Reactor3D.cutawayUniforms() : null;
-                const box = shared ? shared.rrFightBox.value : null, opened = shared && View.active() && box[2] > box[0] ? shared.rrFightLevel.value[1] : Infinity;
                 let first = false, fx = 0, fy = 0, fh = 0, before = origin.y;
                 for (let t = 0; t < 600; t += 0.15) {
                     const px = origin.x + direction.x * t, pz = origin.z + direction.z * t, py = origin.y + direction.y * t;
@@ -6792,8 +6994,11 @@
                             // Over the level a moment ago and at or under it now: the ray crossed it here.
                             if (!(reachedOut[i * 2 + 1] <= stage.steps) || !(py <= level + 0.05 && before > level + 0.05)) continue;
                             if (!G.canStopAt(cx, cy, level)) continue;
-                            // Over the battle's ground, what stands higher than the cut is not drawn: the pointer goes through it.
-                            const cut = level > opened && cx + 0.5 >= box[0] && cx + 0.5 <= box[2] && cy + 0.5 >= box[1] && cy + 0.5 <= box[3];
+                            const hook = G.grappledAt(cx, cy, level);
+                            if (stage.grappleOnly && !hook) continue;
+                            // Pick through only a roof this building's opening actually removes.
+                            // Grapple edges remain selectable from inside the occupied room.
+                            const cut = !hook && View.active() && level > View.openAt(cx, cy);
                             if (!cut) { picked.x = cx; picked.y = cy; picked.h = level; return picked; }
                             if (!first) { first = true; fx = cx; fy = cy; fh = level; }
                         }
@@ -6801,6 +7006,15 @@
                     before = py;
                 }
                 if (first) { picked.x = fx; picked.y = fy; picked.h = fh; return picked; }
+                // Choosing where to grapple: the edge nearest the ray where it passes that edge's height, within a tile and a half.
+                if (stage.grappleOnly) {
+                    let best = null, least = 1.5;
+                    for (const cell of moving.moveCells()) {
+                        const t = (cell.h - origin.y) / direction.y, gap = Math.hypot(origin.x + direction.x * t - cell.x - 0.5, origin.z + direction.z * t - cell.y - 0.5);
+                        if (t > 0 && gap < least) { least = gap; best = cell; }
+                    }
+                    if (best) { picked.x = best.x; picked.y = best.y; picked.h = best.h; return picked; }
+                }
             }
             // The flat pick knows the cells' own levels. The ray is walked from the camera to the first ground it
             // meets: a hill, or a floor, a bridge or a step no higher than the floor the battle stands on. What
@@ -6898,7 +7112,8 @@
                 if (cell) {
                     // A unit the pointer is on is pointed at where it stands (`cell.unit`: its own level, so the one meant
                     // of two on a cell); a unit on the ground cell met likewise; otherwise the level the ray met.
-                    fight.setCursor(cell.x, cell.y, !cell.unit && fight.unitAt(cell.x, cell.y) && act.stage !== "move" ? undefined : cell.h);
+                    In._pointing = true;
+                    try { fight.setCursor(cell.x, cell.y, !cell.unit && fight.unitAt(cell.x, cell.y) && act.stage !== "move" ? undefined : cell.h); } finally { In._pointing = false; }
                     // The player points somewhere: the view stops showing whoever it went to.
                     View.endVisit();
                     if (pressed && (mouse || (wasOn && wasX === cell.x && wasY === cell.y))) { In.confirm(fight); return; }
@@ -6906,12 +7121,18 @@
             }
             if (touch.isCancelled()) { In.cancel(fight); return; }
         }
+        // The grapple key: the move range becomes only the edges the grapple reaches (again: the whole range).
+        if (act.stage === "move" && Input.isTriggered(F.key("grapple"))) {
+            if (act.grappleOnly) { delete act.grappleOnly; delete act.grappleFrom; fight.touch(); sound("playCancel"); }
+            else sound(fight.enterGrapple("move") ? "playOk" : "playBuzzer");
+            return;
+        }
         // Control: the cursor to the cell's next level (the roof over a room, the bridge over a path).
         if (Input.isTriggered(F.key("level")) && cursor.on && fight.cycleCursorLevel(1)) { sound("playCursor"); return; }
         if (Input.isTriggered("ok")) In.confirm(fight);
         else if (Input.isTriggered("cancel")) In.cancel(fight);
         else if (Input.isTriggered(F.key("skip"))) {
-            if (act.stage === "move") { if (fight.commandNextUnit) sound(fight.commandNextUnit() ? "playCursor" : "playBuzzer"); }
+            if (act.stage === "move" && !act.grappleOnly) { if (fight.commandNextUnit) sound(fight.commandNextUnit() ? "playCursor" : "playBuzzer"); }
             else In.cycle(fight, 1);
         }
     };
@@ -6949,6 +7170,8 @@
         let cells = EMPTY;
         if (act.stage === "pick") {
             cells = fight.pendingUnits().map(unit => fight.character(unit));
+        } else if (act.stage === "move" && act.grappleOnly) {
+            cells = fight.moveCells();
         } else if (act.stage === "target") {
             const unit = fight.unit(act.unitId), character = fight.character(unit), action = fight.pendingAction();
             const tactics = F.tactics(action.subject(), action.item());
@@ -6986,7 +7209,7 @@
     const markH = M.h = new Float32Array(M.CAPACITY);
     // The way to the cursor, tile by tile from the unit's own, for the squares laid along it; and what the move costs.
     M.WAY_MAX = 64;
-    M.wayCount = 0; M.wayCost = 0; M.wayLoss = 0; M.wayLethal = false;
+    M.wayCount = 0; M.wayCost = 0; M.wayLoss = 0; M.wayLethal = false; M.wayGrapple = false;
     const wayX = M.wayX = new Int16Array(M.WAY_MAX), wayY = M.wayY = new Int16Array(M.WAY_MAX), wayH = M.wayH = new Float32Array(M.WAY_MAX);
 
     /** A mark's place in the grid: its cell, and the level of it its height names (the first without one). */
@@ -7026,7 +7249,7 @@
     /** Every cell to mark and its kind, the strongest winning where two overlap; the cursor last. */
     M.collect = function(fight) {
         M.count = 0;
-        M.wayCount = 0; M.wayCost = 0; M.wayLoss = 0; M.wayLethal = false;
+        M.wayCount = 0; M.wayCost = 0; M.wayLoss = 0; M.wayLethal = false; M.wayGrapple = false;
         if (!fight || !fight.isTactical() || !fight.isHere() || fight._ending || !fight._act || !fight._act.player) return;
         ensureGrid();
         const act = fight._act, K = M.KINDS;
@@ -7044,6 +7267,10 @@
             range = fight.rangeCells(); area = fight.areaCells();
             const action = fight.pendingAction();
             if (action && !action.isForOpponent()) rangeKind = K.friend;
+        } else if (act.stage === "command" || act.stage === "skill" || act.stage === "item") {
+            // The highlighted action's reach, before it is chosen (Game_Fight.previewCells).
+            range = fight.previewCells();
+            if (cache.previewFriend) rangeKind = K.friend;
         }
         // Cells with a height (a 3D map's) are told apart by level; the area follows the range's level on its cells.
         markLevels = G.is3D() ? (M.levels || (M.levels = new Map())) : null;
@@ -7062,6 +7289,9 @@
             M.wayCost = fight.pathCost();
             M.wayLoss = fight.pathLoss();
             M.wayLethal = fight.pathLethal();
+            // A way that ends by a grapple says so under its cost.
+            const end = fight.cursor();
+            M.wayGrapple = !!(end && end.on && Number.isFinite(end.h) && G.grappledAt(end.x, end.y, end.h));
             for (const step of path) {
                 if (M.wayCount >= M.WAY_MAX) break;
                 wayX[M.wayCount] = step.x; wayY[M.wayCount] = step.y; wayH[M.wayCount] = Number.isFinite(step.h) ? step.h : NaN;
@@ -7433,15 +7663,17 @@
      * (`loss`, the same number taken on landing); a fall that leaves the unit with no HP says so under that
      * (`lethal`: the battle word `fallLethal`). A picture per label, made the first time it shows.
      */
-    function costBitmap(cost, loss, lethal) {
+    function costBitmap(cost, loss, lethal, grapple) {
         if (!way.labels) way.labels = new Map();
         const text = String(Math.round(cost * 10) / 10), hurt = loss > 0 ? "-" + Math.round(loss) + " " + (typeof TextManager !== "undefined" && TextManager.hpA ? TextManager.hpA : "HP") : "";
         const fatal = hurt && lethal ? F.term("fallLethal") : "";
-        const key = text + "|" + hurt + "|" + fatal;
+        // Ending by a grapple: its name under the cost, in the edges' teal (the line under any HP lost).
+        const hook = grapple ? F.term("grapple") : "";
+        const key = text + "|" + hurt + "|" + fatal + "|" + hook;
         let bitmap = way.labels.get(key);
         if (bitmap) return bitmap;
-        const wide = fatal ? 200 : hurt ? 132 : 56;
-        bitmap = new Bitmap(wide, fatal ? 90 : hurt ? 62 : 34);
+        const wide = fatal ? 200 : hurt || hook ? 132 : 56, lines = 1 + (hurt ? 1 : 0) + (fatal ? 1 : 0) + (hook ? 1 : 0);
+        bitmap = new Bitmap(wide, 34 + (lines - 1) * 28);
         if (typeof $gameSystem !== "undefined" && $gameSystem && $gameSystem.mainFontFace) bitmap.fontFace = $gameSystem.mainFontFace();
         bitmap.fontSize = 24; bitmap.fontBold = true;
         bitmap.textColor = "#ffffff"; bitmap.outlineColor = "rgba(6,14,32,0.95)"; bitmap.outlineWidth = 5;
@@ -7455,6 +7687,11 @@
             bitmap.fontSize = 22;
             bitmap.textColor = "#ff2a1e"; bitmap.outlineColor = "rgba(40,0,0,0.95)"; bitmap.outlineWidth = 6;
             bitmap.drawText(fatal, 0, 58, wide, 30, "center");
+        }
+        if (hook) {
+            bitmap.fontSize = 22;
+            bitmap.textColor = "#46e0c8"; bitmap.outlineColor = "rgba(6,14,32,0.95)"; bitmap.outlineWidth = 5;
+            bitmap.drawText(hook, 0, 30 + (hurt ? 28 : 0) + (fatal ? 28 : 0), wide, 30, "center");
         }
         way.labels.set(key, bitmap);
         return bitmap;
@@ -7473,12 +7710,12 @@
             spriteset.addChild(way.label);
         }
         const label = way.label, last = M.wayCount - 1;
-        const shownKey = M.wayCost + "|" + M.wayLoss + "|" + M.wayLethal;
-        // (The cost stands where it always does; the HP lost hangs under it.)
+        const shownKey = M.wayCost + "|" + M.wayLoss + "|" + M.wayLethal + "|" + M.wayGrapple;
+        // (The cost stands where it always does; the HP lost, and a grapple, hang under it.)
         if (way.shown !== shownKey) {
             way.shown = shownKey;
-            label.bitmap = costBitmap(M.wayCost, M.wayLoss, M.wayLethal);
-            label.anchor.y = M.wayLoss > 0 ? 34 / label.bitmap.height : 1;
+            label.bitmap = costBitmap(M.wayCost, M.wayLoss, M.wayLethal, M.wayGrapple);
+            label.anchor.y = M.wayLoss > 0 || M.wayGrapple ? 34 / label.bitmap.height : 1;
         }
         // Past the destination, the way the unit arrives: never over the square before it (a grapple's way comes from afar).
         const ox = Math.sign(wayX[last] - wayX[last - 1]), oy = Math.sign(wayY[last] - wayY[last - 1]);
@@ -7826,6 +8063,55 @@
         U.layer.visible = used > 0;
     };
 
+    /** The selected action's hit chance beside the valid hovered target. */
+    U.placeForecast = function(spriteset, on) {
+        const fight = typeof $gameFight !== "undefined" ? $gameFight : null;
+        const hud = root.ReactorFightHud;
+        const target = on && !M.hidden && fight && fight.playerStage("target") ? fight.focusedUnit() : null;
+        let view = U.forecast;
+        if (!target || !U.layer) { if (view) view.sprite.visible = false; return; }
+        if (!view || view.sprite.parent !== U.layer) {
+            if (view && view.bitmap.destroy) view.bitmap.destroy();
+            const bitmap = new Bitmap(160, 38), sprite = new Sprite(bitmap);
+            sprite.anchor.x = 0.5; sprite.anchor.y = 1;
+            U.layer.addChild(sprite);
+            view = U.forecast = { sprite, bitmap, revision: -1, serial: -1, unitId: 0, text: "" };
+        }
+        const rev = fight.tac().rev;
+        if (view.revision !== rev || view.serial !== fight._serial || view.unitId !== target.id) {
+            view.revision = rev; view.serial = fight._serial; view.unitId = target.id;
+            const targets = fight.targetsAtCursor();
+            const valid = targets.some(unit => unit.id === target.id);
+            const preview = valid ? fight.preview(target) : null;
+            const text = preview ? (hud ? hud.label(null, "hit") : "Hit") + " " + (hud ? hud.percent(preview.hit) : Math.round(Math.max(0, Math.min(1, preview.hit)) * 100) + "%") : "";
+            if (text !== view.text) {
+                view.text = text;
+                const b = view.bitmap;
+                b.clear();
+                if (text) {
+                    b.fillRect(0, 0, 160, 38, "#d8bd70"); b.fillRect(1, 1, 158, 36, "rgba(10,14,22,0.94)");
+                    b.fontSize = 20; b.fontBold = true; b.textColor = "#fff4c9"; b.outlineColor = "#000000"; b.outlineWidth = 3;
+                    b.drawText(text, 6, 0, 148, 38, "center");
+                }
+            }
+        }
+        const c = fight.character(target), live = spriteset._reactor3d, camera = live && live.camera;
+        if (!view.text || !c) { view.sprite.visible = false; return; }
+        let x, y;
+        if (camera) {
+            const tall = F.Stage && F.Stage.heightOf ? F.Stage.heightOf(c) : 2;
+            const point = Reactor3D.projectToScreen(camera, c._realX + 0.5, G.heightOf(c) + (Number(c._reactorAir) || 0) + tall + 0.65, c._realY + 0.5, U.forecastPoint || (U.forecastPoint = {}));
+            x = point.x; y = point.y;
+        } else {
+            x = $gameMap.adjustX(c._realX + 0.5) * $gameMap.tileWidth();
+            y = $gameMap.adjustY(c._realY + 1) * $gameMap.tileHeight() - 64;
+        }
+        view.sprite.visible = x >= 0 && y >= 0 && x <= Graphics.width && y <= Graphics.height;
+        view.sprite.x = Math.round(Math.max(84, Math.min(Graphics.width - 84, x)));
+        view.sprite.y = Math.round(Math.max(40, y));
+        if (view.sprite.visible) U.layer.visible = true;
+    };
+
     /** Each frame, after the marks: who is marked is read (no more than that), rings are laid again when it changed, bars are placed. */
     U.update = function(spriteset) {
         const fight = typeof $gameFight !== "undefined" ? $gameFight : null;
@@ -7846,6 +8132,7 @@
             U.groundLayer.y = Math.round($gameMap.adjustY(0) * $gameMap.tileHeight());
         }
         U.placeBars(spriteset, on);
+        U.placeForecast(spriteset, on);
         U.shown = on;
     };
 
@@ -7995,32 +8282,88 @@
     // A thin bright cylinder in the map's scene; nothing is made per frame.
 
     const Rope = F.Rope = { lines: [], scene: null, hook: { x: 0, y: 0, z: 0, out: 0 } };
-    // As thick as a cord close up, and never thinner on the screen than a line of a pixel or two from far off.
-    Rope.WIDTH = 0.045;
-    Rope.THIN = 0.0024;
-    Rope.COLOR = 0xd8dee6;
+    // A cord: as thick as one close up (tiles), never thinner on the screen than a pixel or so from far off, in a
+    // braided line's dull color, lit as the map is (it was a white, unlit rod as thick as an arm from the battle's view).
+    Rope.WIDTH = 0.04;
+    Rope.THIN = 0.0012;
+    Rope.COLOR = 0xc9b893;
+    /** Points along the line, and how far it sags at its most slack (a share of its span). */
+    Rope.SEGMENTS = 20;
+    Rope.SIDES = 5;
+    Rope.SAG = 0.16;
 
     Rope.update = function(spriteset) {
         const live = spriteset._reactor3d || null, scene = live && live.scene;
         const fight = typeof $gameFight !== "undefined" ? $gameFight : null, P = root.ReactorPhysics;
         let used = 0;
+        const fired = Rope.fired || (Rope.fired = new Set()), still = new Set();
         if (scene && scene.modelsGroup && typeof THREE !== "undefined" && fight && fight.isActive() && P && P.grappleHook) {
-            if (Rope.scene !== scene) { Rope.lines.length = 0; Rope.scene = scene; }
+            if (Rope.scene !== scene) { Rope.lines.length = 0; Rope.heads.length = 0; Rope.scene = scene; }
             for (const unit of fight._units) {
                 const character = unit.gone ? null : fight.character(unit), hook = character ? P.grappleHook(character, Rope.hook) : null;
                 if (!hook) continue;
                 const line = Rope.lines[used] || (Rope.lines[used] = Rope.make(scene));
+                const head = Rope.heads[used] || (Rope.heads[used] = Rope.makeHead(scene));
                 if (!line.parent) scene.modelsGroup().add(line);
-                Rope.place(line, character, hook);
+                if (!head.parent) scene.modelsGroup().add(head);
+                const loaded = Rope.place(line, character, hook, head);
+                // A grappler's own harpoon leaves its barrel while it is out on the line.
+                if (loaded) { loaded.visible = false; fired.add(loaded); still.add(loaded); }
                 used++;
             }
         }
         for (let i = used; i < Rope.lines.length; i++) Rope.lines[i].visible = false;
+        for (let i = used; i < Rope.heads.length; i++) if (Rope.heads[i]) Rope.heads[i].visible = false;
+        // Wound back: the harpoon is in the barrel again.
+        for (const mesh of fired) if (!still.has(mesh)) { mesh.visible = true; fired.delete(mesh); }
     };
 
-    Rope.make = function(scene) {
-        const T = THREE, shared = Rope.shared || (Rope.shared = { geometry: new T.CylinderGeometry(0.5, 0.5, 1, 6).rotateX(Math.PI / 2), material: null });
-        if (!shared.material) { shared.material = new T.MeshBasicMaterial({ color: Rope.COLOR, fog: false }); shared.material.toneMapped = false; }
+    /**
+     * Each grappler's beats as they come: the aim, the shot ("fly"), the hook biting ("tight"), the pull, the climb
+     * over (a mantle) and the end ("done"). Each plays the grapple's sound for it (`rrGrapple.sounds`: fire, bite,
+     * pull) and is told on the runtime feed as `fightGrappleBeat`, which the cinematic camera films.
+     */
+    Rope.beats = function(fight, P) {
+        const hook = Rope.beatHook || (Rope.beatHook = {});
+        for (const unit of fight._units) {
+            const character = unit.gone ? null : fight.character(unit);
+            if (!character) continue;
+            const g = character._reactorGrapple, was = character._rrGrappleBeat || null;
+            let beat = g ? P.grappleHook(character, hook).phase : was && was !== "done" && character._reactorMantle ? "climb" : was && was !== "done" ? "done" : null;
+            if (beat === was) continue;
+            character._rrGrappleBeat = beat === "done" ? null : beat;
+            if (g) character._rrGrappleAt = { start: { x: g.sx, y: g.sy, h: g.from }, hook: { x: g.hx, y: g.hy, h: g.lip }, top: { x: g.x, y: g.y, h: g.to }, hang: { x: g.bx, y: g.by, h: g.hang } };
+            const spec = typeof F.grappleOf === "function" ? F.grappleOf(fight, unit) : null, sounds = spec && spec.sounds ? spec.sounds : {};
+            const se = beat === "fly" ? sounds.fire : beat === "tight" ? sounds.bite : beat === "pull" ? sounds.pull : null;
+            if (se && typeof AudioManager !== "undefined") AudioManager.playSe(se);
+            const at = character._rrGrappleAt;
+            if (at && typeof F.feed === "function" && F.feed()) ReactorEvents.emit("fightGrappleBeat", { unitId: unit.id, phase: beat, start: at.start, hook: at.hook, top: at.top, hang: at.hang });
+            if (beat === "done") character._rrGrappleAt = null;
+        }
+    };
+
+    // The harpoon on the line's end: a steel shaft and a four-faced head, made once and shared, stretched to the
+    // length of the wearer's own (or a hand's length without a grappler) and turned along the line.
+    Rope.heads = [];
+    Rope.HEAD_LENGTH = 0.28;
+    Rope.makeHead = function(scene) {
+        const T = THREE, shared = Rope.headShared || (Rope.headShared = {});
+        if (!shared.geometry) {
+            const shaft = new T.CylinderGeometry(0.022, 0.022, 0.72, 6).translate(0, -0.36 + 0.08, 0);
+            const point = new T.ConeGeometry(0.075, 0.28, 4).translate(0, 0.08 + 0.14, 0);
+            const flukes = new T.ConeGeometry(0.06, 0.12, 3).rotateX(Math.PI).translate(0, 0.1, 0);
+            const parts = [shaft, point, flukes].map(g => g.toNonIndexed());
+            const count = parts.reduce((n, g) => n + g.attributes.position.count, 0), position = new Float32Array(count * 3);
+            let at = 0;
+            for (const g of parts) { position.set(g.attributes.position.array, at); at += g.attributes.position.array.length; }
+            const geometry = new T.BufferGeometry();
+            geometry.setAttribute("position", new T.BufferAttribute(position, 3));
+            // Along +z, the point first, so lookAt turns it to the edge; one unit long.
+            geometry.rotateX(Math.PI / 2);
+            geometry.computeVertexNormals();
+            shared.geometry = geometry;
+            shared.material = new T.MeshStandardMaterial({ color: 0x9aa3ab, metalness: 0.9, roughness: 0.3 });
+        }
         const mesh = new T.Mesh(shared.geometry, shared.material);
         mesh.frustumCulled = false;
         mesh.visible = false;
@@ -8028,27 +8371,134 @@
         return mesh;
     };
 
-    /** From the right hand (the chest without a rigged model) to the hook, as much of the line as is out. */
-    Rope.place = function(line, character, hook) {
+    /**
+     * A wearer's grappler (the Character Builder's 'Grapple spike' part): the mesh, and which of its vertices are the
+     * point and the tail, found once from its shape (the two ends of the shaft; the point is the end the barbs crowd).
+     */
+    Rope.grapplerOf = function(holder) {
+        if (!holder || !holder.object) return null;
+        if (holder._reactorGrappler !== undefined) return holder._reactorGrappler;
+        let mesh = null;
+        // By its name: the mesh's own (a skinned character file), or the part's a flattened file keeps (a worn prop).
+        const named = child => /^grapple[\s_]?spike/i.test(child.name || "") || (child.userData && Array.isArray(child.userData.parts) && child.userData.parts.some(part => /^grapple[\s_]?spike/i.test(part && part.name || "")));
+        holder.object.traverse(child => { if (!mesh && child.isMesh && named(child)) mesh = child; });
+        let found = null;
+        const P = mesh && mesh.geometry && mesh.geometry.attributes.position;
+        if (P && P.count > 4) {
+            const v = new THREE.Vector3(), w = new THREE.Vector3(), c = new THREE.Vector3();
+            for (let i = 0; i < P.count; i++) c.add(v.fromBufferAttribute(P, i));
+            c.multiplyScalar(1 / P.count);
+            const farthest = from => { let best = 0, index = 0; for (let i = 0; i < P.count; i++) { const d = v.fromBufferAttribute(P, i).distanceToSquared(from); if (d > best) { best = d; index = i; } } return index; };
+            const a = farthest(c), b = farthest(w.fromBufferAttribute(P, a));
+            const ends = [a, b].map(i => new THREE.Vector3().fromBufferAttribute(P, i)), span = ends[0].distanceTo(ends[1]);
+            const crowd = end => { let n = 0; for (let i = 0; i < P.count; i++) if (v.fromBufferAttribute(P, i).distanceTo(end) < span * 0.25) n++; return n; };
+            const pointFirst = crowd(ends[0]) >= crowd(ends[1]);
+            found = { mesh, tip: pointFirst ? a : b, tail: pointFirst ? b : a };
+        }
+        holder._reactorGrappler = found;
+        return found;
+    };
+
+    /**
+     * The line from a grappler's muzzle (a hand without one: the right hand, or the chest without a rigged model)
+     * to the hook, as much of it as is out, and the harpoon on its end. Returns the wearer's loaded harpoon mesh,
+     * to be hidden while the shot is out, or null.
+     */
+    Rope.place = function(line, character, hook, head) {
         const S = F.Stage, View = root.ReactorBattleRoomView, holder = S && S.holderOf ? S.holderOf(character) : null;
-        let hand = null;
-        try { hand = holder && View && View.attachmentWorld ? View.attachmentWorld(holder, "rightHand") : null; } catch (error) { hand = null; }
         const from = Rope.from || (Rope.from = new THREE.Vector3()), to = Rope.to || (Rope.to = new THREE.Vector3());
-        if (hand) from.set(hand.x, hand.y, hand.z);
-        else {
-            const tall = S && S.heightOf ? S.heightOf(character) : 3, ground = S && S.groundOf ? S.groundOf(character) : 0;
-            from.set(character._realX + 0.5, ground + tall * 0.75, character._realY + 0.5);
+        const grappler = Rope.grapplerOf(holder);
+        let length = Rope.HEAD_LENGTH;
+        if (grappler) {
+            // The muzzle: a fifth of the harpoon back from its point, where it sits loaded.
+            const tip = Rope.tip || (Rope.tip = new THREE.Vector3()), tail = Rope.tail || (Rope.tail = new THREE.Vector3());
+            grappler.mesh.getVertexPosition(grappler.tip, tip); grappler.mesh.localToWorld(tip);
+            grappler.mesh.getVertexPosition(grappler.tail, tail); grappler.mesh.localToWorld(tail);
+            length = tip.distanceTo(tail);
+            from.lerpVectors(tip, tail, 0.21);
+        } else {
+            let hand = null;
+            try { hand = holder && View && View.attachmentWorld ? View.attachmentWorld(holder, "rightHand") : null; } catch (error) { hand = null; }
+            if (hand) from.set(hand.x, hand.y, hand.z);
+            else {
+                const tall = S && S.heightOf ? S.heightOf(character) : 3, ground = S && S.groundOf ? S.groundOf(character) : 0;
+                from.set(character._realX + 0.5, ground + tall * 0.75, character._realY + 0.5);
+            }
         }
         to.set(hook.x, hook.z, hook.y);
         if (hook.out < 1) to.lerpVectors(from, to, hook.out);
-        const length = from.distanceTo(to);
-        if (!(length > 0.05)) { line.visible = false; return; }
-        line.position.lerpVectors(from, to, 0.5);
-        line.lookAt(to);
+        const span = from.distanceTo(to);
+        if (!(span > 0.05)) { line.visible = false; if (head) head.visible = false; return null; }
         const R = Reactor3D, camera = R.viewport && R.viewport() && R.viewport().camera ? R.viewport().camera() : null;
-        const width = camera ? Math.max(Rope.WIDTH, camera.position.distanceTo(line.position) * Rope.THIN) : Rope.WIDTH;
-        line.scale.set(width, width, length);
+        const mid = Rope.mid || (Rope.mid = new THREE.Vector3());
+        mid.lerpVectors(from, to, 0.5);
+        const width = camera ? Math.max(Rope.WIDTH, camera.position.distanceTo(mid) * Rope.THIN) : Rope.WIDTH;
+        Rope.shape(line, from, to, (Number.isFinite(hook.slack) ? hook.slack : 0) * Rope.SAG * span, width / 2);
         line.visible = true;
+        if (head) {
+            // The harpoon rides the line's end, its point at the end, turned along the line.
+            head.position.copy(to);
+            head.lookAt(to.x * 2 - from.x, to.y * 2 - from.y, to.z * 2 - from.z);
+            head.scale.setScalar(Math.max(length, 0.05));
+            head.visible = true;
+        }
+        return grappler ? grappler.mesh : null;
+    };
+
+    Rope.make = function(scene) {
+        const T = THREE, shared = Rope.shared || (Rope.shared = { material: null });
+        if (!shared.material) {
+            shared.material = new T.MeshStandardMaterial({ color: Rope.COLOR, roughness: 0.92, metalness: 0 });
+            shared.material.__reactorModel = true;
+            shared.material.userData.baseColor = shared.material.color.clone();
+            if (Reactor3D.litMaterial) Reactor3D.litMaterial(shared.material);
+        }
+        // Its own tube, laid each frame along the line (Rope.shape): rings of SIDES round SEGMENTS + 1 points.
+        const rings = Rope.SEGMENTS + 1, sides = Rope.SIDES, geometry = new T.BufferGeometry();
+        geometry.setAttribute("position", new T.BufferAttribute(new Float32Array(rings * sides * 3), 3));
+        geometry.setAttribute("normal", new T.BufferAttribute(new Float32Array(rings * sides * 3), 3));
+        const index = [];
+        for (let r = 0; r < rings - 1; r++) for (let k = 0; k < sides; k++) {
+            const a = r * sides + k, b = r * sides + (k + 1) % sides, c = a + sides, d = b + sides;
+            index.push(a, c, b, b, c, d);
+        }
+        geometry.setIndex(index);
+        const mesh = new T.Mesh(geometry, shared.material);
+        mesh.frustumCulled = false;
+        mesh.visible = false;
+        scene.modelsGroup().add(mesh);
+        return mesh;
+    };
+
+    /**
+     * The line's tube from `from` to `to`, hanging `sag` (tiles) at its middle as a slack line does (the drop is
+     * fullest midway and none at the ends), `radius` thick.
+     */
+    Rope.shape = function(mesh, from, to, sag, radius) {
+        const rings = Rope.SEGMENTS + 1, sides = Rope.SIDES, P = mesh.geometry.attributes.position, N = mesh.geometry.attributes.normal;
+        const pos = P.array, nrm = N.array, at = Rope._at || (Rope._at = []);
+        for (let r = 0; r < rings; r++) {
+            const u = r / (rings - 1), drop = sag * 4 * u * (1 - u);
+            at[r * 3] = from.x + (to.x - from.x) * u; at[r * 3 + 1] = from.y + (to.y - from.y) * u - drop; at[r * 3 + 2] = from.z + (to.z - from.z) * u;
+        }
+        for (let r = 0; r < rings; r++) {
+            const a = Math.max(0, r - 1), b = Math.min(rings - 1, r + 1);
+            let tx = at[b * 3] - at[a * 3], ty = at[b * 3 + 1] - at[a * 3 + 1], tz = at[b * 3 + 2] - at[a * 3 + 2];
+            const tl = Math.hypot(tx, ty, tz) || 1; tx /= tl; ty /= tl; tz /= tl;
+            // Across the line: level where it can be, else along x.
+            let nx = -tz, ny = 0, nz = tx, nl = Math.hypot(nx, nz);
+            if (nl < 1e-4) { nx = 1; nz = 0; nl = 1; }
+            nx /= nl; nz /= nl;
+            const bx = ty * nz - tz * ny, by = tz * nx - tx * nz, bz = tx * ny - ty * nx;
+            for (let k = 0; k < sides; k++) {
+                const t = k / sides * Math.PI * 2, c = Math.cos(t), sn = Math.sin(t), o = (r * sides + k) * 3;
+                const ox = nx * c + bx * sn, oy = ny * c + by * sn, oz = nz * c + bz * sn;
+                pos[o] = at[r * 3] + ox * radius; pos[o + 1] = at[r * 3 + 1] + oy * radius; pos[o + 2] = at[r * 3 + 2] + oz * radius;
+                nrm[o] = ox; nrm[o + 1] = oy; nrm[o + 2] = oz;
+            }
+        }
+        P.needsUpdate = true; N.needsUpdate = true;
+        mesh.position.set(0, 0, 0); mesh.quaternion.identity(); mesh.scale.set(1, 1, 1);
     };
 
     if (typeof Spriteset_Map !== "undefined") {
@@ -8091,6 +8541,8 @@
             this.addCommand(TextManager.item, "item", $gameParty.items().some(item => battler.canUse(item)));
             // On a vehicle: getting off; beside one: getting on.
             for (const entry of typeof fight.mountCommands === "function" ? fight.mountCommands(unit) : []) this.addCommand(entry.name, entry.symbol, entry.enabled);
+            // A grapple worn and ready, with an edge in reach, before the unit has moved.
+            if (fight.canGrapple(unit)) this.addCommand(F.term("grapple"), "grapple");
             if (fight.canOverwatch(fight.activeUnit())) this.addCommand(F.term("overwatch"), "overwatch");
             this.addCommand(F.term("wait"), "wait");
             if (fight._turns === "team") this.addCommand(F.term("endTurn"), "endTurn");
@@ -8160,6 +8612,7 @@
             const relist = done => { if (done) { command._fightShown = false; command._fightUnit = 0; } else command.activate(); };
             command.setHandler("mount", () => relist(fight().commandMount()));
             command.setHandler("dismount", () => relist(fight().commandDismount()));
+            command.setHandler("grapple", () => { if (!fight().commandGrapple()) command.activate(); });
             command.setHandler("wait", () => fight().commandWait());
             // End Turn asks first when units that could still act would lose their turn.
             command.setHandler("endTurn", () => W.askEndTurn(scene));
@@ -8225,6 +8678,20 @@
                 skills.select(Math.max(0, Math.min(skills.index(), skills.maxItems() - 1)));
             });
             syncWindow(items, stage === "item", true, () => { items.refresh(); items.select(Math.max(0, Math.min(items.index(), items.maxItems() - 1))); });
+            // What the cursor is on shows its reach on the field: Attack in the menu (greyed or not), a skill, an item.
+            if (menu) {
+                let kind = "", id = 0, via;
+                if (stage === "command" && command.currentSymbol() === "attack") {
+                    const battler = fight.battler(fight.activeUnit());
+                    if (battler && battler.canAttack()) { kind = "skill"; id = battler.attackSkillId(); }
+                } else if (stage === "skill" && skills.item()) {
+                    kind = "skill"; id = skills.item().id;
+                    via = skills._rrVias && skills._rrVias[skills.index()] === "vehicle" ? "vehicle" : undefined;
+                } else if (stage === "item" && items.item()) {
+                    kind = "item"; id = items.item().id;
+                }
+                fight.setPreview(kind, id, via);
+            }
         };
     }
 

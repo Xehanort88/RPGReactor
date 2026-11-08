@@ -7,7 +7,7 @@ const test = require('node:test');
 const source = fs.readFileSync(path.join(__dirname, '../src/forge/Character3D/Character3DBuilder.js'), 'utf8');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 function builder(extra = {}) {
-    const scope = { window: { innerWidth: 1000, innerHeight: 800 }, console, setTimeout, clearTimeout,
+    const scope = { window: { innerWidth: 1000, innerHeight: 800 }, console, performance, setTimeout, clearTimeout,
         CSS: { escape: s => s }, ...extra };
     vm.runInNewContext(source, scope);
     const b = Object.create(scope.window.Character3DBuilder.prototype);
@@ -176,7 +176,7 @@ test('first startup preloads only the selected transferred outfits and ignores u
     const transfer = { BUILT_IN: ['selected', 'unused'], registerProject() {}, onPicture(callback) { arrival = callback; return () => {}; },
         async preload(keys) { requests.push(Array.from(keys)); } };
     const b = builder({ window: { THREE: {}, RRCharacterOutfitTransfer: transfer }, RRCharacterOutfitTransfer: transfer,
-        RRCharacterWardrobe: { BY_ID: new Map([['uniform', { transfer: 'selected' }]]) } });
+        RRCharacterWardrobe: { BY_ID: new Map([['uniform', { transfer: 'selected' }]]) },RRHumanBody:{async prepareAuthoring(){}} });
     mount(b, []);
     b.recipe = { outfit: [{ id: 'uniform' }, { id: 'uniform' }] };
     b.eyeSource = {}; b._queueRebuild = () => { rebuilt++; };
