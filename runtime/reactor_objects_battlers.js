@@ -2974,11 +2974,20 @@ Game_Enemy.prototype.rrEquipOn = function() {
     return typeof ReactorFeatures !== "undefined" && ReactorFeatures.on("enemyEquipment");
 };
 
+// Where an enemy's rows come from the first time they are read: the rows
+// authored on its database entry. A plugin that equips enemies from somewhere
+// else replaces this one method and returns { etypeId, kind, itemId } rows;
+// rrEquipRows copies them, so the list returned here is never changed.
+Game_Enemy.prototype.rrEquipSource = function() {
+    const enemy = this.enemy();
+    return enemy && Array.isArray(enemy.rrEquipment) ? enemy.rrEquipment : [];
+};
+
 Game_Enemy.prototype.rrEquipRows = function() {
     const held = this._rrEquips;
     if (held && held.enemyId === this._enemyId) return held.slots;
-    const enemy = this.enemy();
-    const rows = enemy && Array.isArray(enemy.rrEquipment) ? enemy.rrEquipment : [];
+    const source = this.rrEquipSource();
+    const rows = Array.isArray(source) ? source : [];
     const slots = rows.filter(Boolean).map(row => ({
         etypeId: Number(row.etypeId) || 0,
         kind: Number(row.kind) || 0,
@@ -3520,10 +3529,20 @@ Game_Enemy.prototype.selectAllActions = function(actionList) {
     }
 };
 
+// The action patterns this enemy chooses from: the ones authored on its
+// database entry. Every battle mode reads them through here, so a plugin that
+// gives an enemy other patterns replaces this one method. Return a list of
+// { skillId, rating, conditionType, conditionParam1, conditionParam2 } and
+// leave the database entry's own list as it is.
+Game_Enemy.prototype.rrActionPatterns = function() {
+    const enemy = this.enemy();
+    return enemy && Array.isArray(enemy.actions) ? enemy.actions : [];
+};
+
 Game_Enemy.prototype.makeActions = function() {
     Game_Battler.prototype.makeActions.call(this);
     if (this.numActions() > 0) {
-        const actionList = this.enemy().actions.filter(a =>
+        const actionList = this.rrActionPatterns().filter(a =>
             this.isActionValid(a)
         );
         if (actionList.length > 0) {
