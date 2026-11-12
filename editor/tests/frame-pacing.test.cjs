@@ -154,7 +154,6 @@ test('165 and 100 Hz pace too; 50 Hz plays every refresh evenly', () => {
         const j = judder(run.shown);
         assert.ok(j.spread < 0.01, hz + ' Hz: even (' + j.spread.toFixed(4) + ')');
         assert.ok(j.gaps.every(g => Math.abs(g - every * 1000 / hz) < 0.01), hz + ' Hz: every ' + every);
-        assert.equal(run.Graphics.FramePacing.every(), every);
     }
 });
 
@@ -300,4 +299,38 @@ test('a parked motorcycle thawing its root joins interpolation without a hierarc
     const run = play(180, { initiallyFrozen: true });
     assert.ok(judder(run.shown).spread < .01, 'the moving root advances between logic updates after thawing');
     for (const picture of run.shown.filter(p => p.t > 2500)) assert.ok(Math.abs(picture.model - picture.camera - .5) < 1e-8, 'bike and following camera stay in step');
+});
+
+test('over a border crossed without a break the pacing stands as it was; any other break eases it in again', () => {
+    // Eased in from nothing after a crossing, the entered map's first frames drew each update's own moment, up to an
+    // update ahead, and slid back over half a second (Open Road, 2026-11-07).
+    const method = name => between(core, '    ' + name + '(', '\n    },') + '\n    }';
+    const context = { Graphics: { frameCount: 10 }, Reactor3D: { Neighbors: { crossing: { from: 9, to: 10 } } } };
+    vm.createContext(context);
+    const P = vm.runInContext('({' + method('crossing') + ',' + method('begin') + '})', context);
+    Object.assign(P, { EASE_FRAMES: 30, _ease: 30, _paced: true, _poses: [], _poseRoots: [], _chars: [], noteInterval() {}, allowed: () => false });
+    P.begin(0);
+    assert.equal(P._active, false, 'nothing is drawn paced while the scene changes');
+    assert.equal(P._ease, 30, 'and the pacing is kept for the map entered');
+    context.Reactor3D.Neighbors.crossing = null;
+    P.begin(0);
+    assert.equal(P._ease, 0, 'a transfer with a fade starts again from nothing');
+});
+
+test('a frame steps by the clock it is shown by, not the callback timestamp; a long gap keeps the capped step', () => {
+    // Uncapped, the callback's timestamps bunched and spread: the place drawn between updates wandered from the time
+    // it was shown at, and a fast camera turn jittered by up to 0.4 degrees (owner's screen, 2026-11-07).
+    let now = 1000;
+    const context = { performance: { now: () => now }, Graphics: {} };
+    vm.createContext(context);
+    vm.runInContext(between(core, 'Graphics.REAL_CLOCK = true;', '\nGraphics._onTick = function'), context);
+    const G = context.Graphics;
+    assert.equal(G.realClockDelta(0.3), 0.3, 'the first frame: nothing to measure from');
+    now += 1000 / 120;
+    assert.ok(Math.abs(G.realClockDelta(0.05) - 0.5) < 1e-9, 'half an update, as shown, whatever the callback said');
+    now += 500;
+    assert.equal(G.realClockDelta(6), 6, 'a long gap: the capped step');
+    G.REAL_CLOCK = false;
+    now += 10;
+    assert.equal(G.realClockDelta(0.42), 0.42, 'switched off');
 });

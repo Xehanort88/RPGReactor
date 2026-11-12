@@ -41,6 +41,9 @@ class MapEditor3D {
 
     constructor(projectController) {
         this.projectController = projectController;
+        // A window closed or reloaded while the view is coming up is not a graphics crash: the mark a crash leaves
+        // (rrMap3DStage) is taken back, or the next session would keep every 3D map flat with its box cleared.
+        if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('beforeunload', () => this._clearStage());
         // A cell is the project's tile size in pixels, which MZ lets a project
         // choose; tilePixels() reads it and the prototype holds the default.
         this.enabled = false;
@@ -699,8 +702,13 @@ class MapEditor3D {
             if (release && this._ownCanvas) release.dropRenderer(renderer);
             else {
                 release?.untrack(renderer);
+                // The view's own colour and depth target first: on a context shared with the 2D view the renderer's
+                // dispose frees no render targets, and each 3D off and on left a canvas-sized one behind.
+                try { this._mainTarget?.dispose(); } catch (_) {}
                 try { renderer.dispose(); } catch (_) {}
             }
+            // Either way it is not the next renderer's to draw into.
+            this._mainTarget = null;
         }
         if (this.inputSurface?.parentNode) {
             this.inputSurface.parentNode.removeChild(this.inputSurface);
@@ -3796,9 +3804,16 @@ class MapEditor3D {
             this.syncUnitRings();
             // The diff: only what actually changed is torn down and rebuilt.
             // Deleting one event must not blink every model on the map.
-            const fresh = new Map();
+            const fresh = new Map(), current = new Map();
             for (const event of MapEditor3D.previewEvents(mapData)) {
-                if (event) fresh.set(event.id, this._eventIdentity(event, mapData));
+                if (event) { fresh.set(event.id, this._eventIdentity(event, mapData)); current.set(event.id, event); }
+            }
+            // An undo puts copies of the events back: every object kept below is pointed at the map's event of its
+            // id, or a drag, a double-click or the menu would change a copy the map no longer holds.
+            for (const child of this.eventGroup.children) {
+                const held = child.userData.event, now = held ? current.get(held.id) : null;
+                if (!now || now === held) continue;
+                child.traverse(part => { if (part.userData && part.userData.event === held) part.userData.event = now; });
             }
             const affected = new Set();
             for (const [id, identity] of this._eventSnapshot) {
@@ -3834,8 +3849,15 @@ class MapEditor3D {
             this.pickables = this.pickables.filter(mesh => !doomed.has(mesh));
             this.billboards = this.billboards.filter(mesh => !doomed.has(mesh));
             this.labels = this.labels.filter(mesh => !doomed.has(mesh));
+            // Taken as the view's now, before the wait below: a second refresh started while the pictures load
+            // diffs against this one, not the old one, and does not build the same added events again.
+            this._eventSnapshot = fresh;
             if (added.length) {
+                const generation = this._rebuildGeneration, scene = this.mapScene, group = this.eventGroup;
                 const sheets = await this.loadCharacterSheets(mapData);
+                // Rebuilt or another map opened while the pictures loaded: that build has its own events; these would
+                // be doubled, or the old map's put in the new scene.
+                if (generation !== this._rebuildGeneration || scene !== this.mapScene || group !== this.eventGroup || mapData !== this.currentMap()) return;
                 for (const id of added) {
                     const event = (MapEditor3D.previewEvents(mapData)).find(entry => entry && entry.id === id);
                     if (event) this._buildOneEvent(event, sheets, mapData, this._rebuildGeneration);
@@ -3844,7 +3866,6 @@ class MapEditor3D {
                 this.faceCamera();
                 this.updateLabelVisibility();
             }
-            this._eventSnapshot = fresh;
             if (reselect !== null && fresh.has(reselect)) this.selectEventById(reselect);
             this.syncEventArrows();
             // A rebuilt event whose window is open is lit again.
@@ -5019,6 +5040,19 @@ class MapEditor3D {
             this.riverGhost.group.parent?.remove(this.riverGhost.group);
             this.riverGhost = null;
         }
+        // The selection's outline and band, the shape handles, the event arrows and the model placement ghost were
+        // put in this scene once: kept past it, they went on being drawn into a scene no longer shown.
+        for (const key of ['selectionOutline', 'selectionBand', 'gridLevel']) {
+            const mesh = this[key];
+            if (!mesh) continue;
+            mesh.geometry?.dispose?.();
+            mesh.material?.dispose?.();
+            mesh.parent?.remove(mesh);
+            this[key] = null;
+        }
+        if (this.shapeGizmo && typeof RRShapeGizmo3D !== 'undefined') { RRShapeGizmo3D.dispose(this.shapeGizmo); this.shapeGizmo = null; }
+        if (this.eventArrows && typeof RRAxisArrows3D !== 'undefined') { RRAxisArrows3D.dispose(this.eventArrows); this.eventArrows = null; }
+        this.hidePlacementGhost(true);
         if (this.mapScene) {
             // The maps past the border are not this scene's to destroy: they stand in the next one.
             globalThis.RRMapNeighborView?.hold(this);
@@ -5598,6 +5632,9 @@ class MapEditor3D {
         if (this.projectController?.mediaSurfacePreviewManager?.authoring) return false;
         const editor = this.mapEditor();
         if (!editor || !this.currentMap()) return false;
+        // Another tool holds the map (Build, Events, Lighting…: claimMapTool turns the 2D editor off): a tile still
+        // chosen in the palette does not paint under it, as it does not in 2D.
+        if (editor.enabled === false) return false;
         const palette = editor.tilesetPaletteViewer;
         return !!(editor.mapStamp || editor.shadowPenMode
             || (palette && palette.selectedTiles && palette.selectedTiles.length));
@@ -5693,6 +5730,7 @@ class MapEditor3D {
             if (!this._eventDragSaved) { this._eventDragSaved = true; this.eventManager()?.saveState?.(); }
             if (Reactor3D.setEventZ) Reactor3D.setEventZ(mapData, event.id, z);
             this._eventDragMoved = true;
+            this._eventDragEvent = event;
             this.placeEvent(state.mesh);
             this.syncEventArrows();
             return;
@@ -5740,6 +5778,7 @@ class MapEditor3D {
         event.x = tile.x;
         event.y = tile.y;
         this._eventDragMoved = true;
+        this._eventDragEvent = event;
         this.placeEvent(mesh);
         manager?.selectTile?.(tile.x, tile.y);
     }
@@ -5753,12 +5792,15 @@ class MapEditor3D {
      */
     finishEventDrag() {
         if (this.canvas) this.canvas.style.cursor = 'default';
-        const moved = this._eventDragMoved, vehicle = this._eventDragVehicle;
+        const moved = this._eventDragMoved, vehicle = this._eventDragVehicle, dragged = this._eventDragEvent;
         this._eventDragSaved = false;
         this._eventDragMoved = false;
         this._eventDragVehicle = false;
+        this._eventDragEvent = null;
         if (vehicle) this.eventManager()?.saveVehicleStarts?.();
         if (moved) this.eventManager()?.renderEvents?.();
+        // The event window open on it shows where it is now, as after a 2D drag: its OK would put the old place back.
+        if (moved && dragged) this.eventManager()?.eventEditor?.followMapMove?.(dragged);
     }
 
     /** Select the event under the pointer, or an empty tile for event creation. */

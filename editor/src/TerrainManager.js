@@ -464,13 +464,6 @@ class TerrainManager {
         return true;
     }
 
-    /** Give the sheet the 3D view found under the pointer the look set in the panel. */
-    styleRegion(region) {
-        const map = this.currentMap(), elevation = this.elevation();
-        if (!map || !elevation || !region) return false;
-        return this.drain(() => elevation.styleWaterRegion(map, region, this.waterLook));
-    }
-
     /** Remove the sheet the 3D view found under the pointer (so a sheet standing high over the ground still goes). */
     drainRegion(region) {
         const map = this.currentMap(), elevation = this.elevation();
@@ -1398,7 +1391,8 @@ class TerrainManager {
         const text = JSON.stringify({ biomes: list }, null, 2) + '\n';
         try {
             const write = typeof window !== 'undefined' && window.RRWriteFileAtomicSync;
-            if (write) write(file, text); else require('fs').writeFileSync(file, text);
+            // RRWriteFileAtomicSync(fs, file, data, options): the fs module comes first.
+            if (write) write(require('fs'), file, text, 'utf8'); else require('fs').writeFileSync(file, text);
         } catch (error) { console.warn('data/Biomes.json could not be written.', error); return false; }
         this._biomesRead = { file, list };
         return true;
@@ -1724,9 +1718,9 @@ class TerrainManager {
     }
 
     // Ctrl+Z / Ctrl+Y and the toolbar's Undo and Redo reach these through the editor's one undo shortcut (UIManager) while the tool is up.
-    // A stroke still being drawn closes first: it is the step undone.
-    undo() { if (this._groundSnapshot) this.editGroundType({}, 'commit'); this._settleMapSettings(); if (this._stroke || this._foliageStroke || this._groundStroke) this.endStroke(); this._swap(this.undoStack, this.redoStack); }
-    redo() { if (this._groundSnapshot) this.editGroundType({}, 'commit'); this._settleMapSettings(); if (this._stroke || this._foliageStroke || this._groundStroke) this.endStroke(); this._swap(this.redoStack, this.undoStack); }
+    // A stroke still being drawn closes first: it is the step undone. So does anything still gathering (a water look too).
+    undo() { this._settleGathered(); if (this._stroke || this._foliageStroke || this._groundStroke) this.endStroke(); this._swap(this.undoStack, this.redoStack); }
+    redo() { this._settleGathered(); if (this._stroke || this._foliageStroke || this._groundStroke) this.endStroke(); this._swap(this.redoStack, this.undoStack); }
     canUndo() { return this.undoStack.length > 0; }
     canRedo() { return this.redoStack.length > 0; }
     syncHistoryButtons() {

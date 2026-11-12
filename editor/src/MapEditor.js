@@ -23,7 +23,6 @@ class MapEditor {
         this.lastPaintedTile = { x: -1, y: -1, quadrant: -1 }; // PERFORMANCE: Track last painted tile to avoid redundant paints
         this.layerMode = 'auto'; // auto, or layer number (0-3)
         this.enabled = true; // Whether map editor is enabled (disabled during event mode)
-        this.pendingAutotileUpdates = []; // Accumulate autotile updates during drag, process on mouseup
         this.preserveAutotileShape = false; // Shift-paint without reconnecting autotile shapes
         this.mapStamp = null; // Six-layer map rectangle sampled with right-drag
         this.mapSampleDrag = null;
@@ -107,7 +106,7 @@ class MapEditor {
      * The shadow a wall casts, and the cell it falls on.
      *
      * RPG Maker fills the *left half* of the cell immediately east of a wall —
-     * quadrant bits 0x01 (bottom-left) and 0x04 (top-left). Read off the
+     * quadrant bits 0x01 (top-left) and 0x04 (bottom-left). Read off the
      * authored maps rather than guessed: of 39,104 shadow cells across the
      * bundled projects, 85.6% carry exactly this pattern, and much the
      * commonest thing beside a shadow is a wall immediately west of it.
@@ -384,12 +383,25 @@ class MapEditor {
 
             this.clearMapStamp();
             position.tileId = tileId;
+            // From another tile sheet's tab (B to G) the palette goes to tab A
+            // the way a click on the tab does: the tab strip and the layer to
+            // return to follow. It clears the selection, so it comes first.
+            if (typeof palette.selectLayer === 'function' && palette.currentLayer !== 'A'
+                && !['R', 'O', 'M', 'T', 'P'].includes(palette.currentLayer)) {
+                palette.selectLayer('A');
+            }
             palette.selectedTiles = [position];
             palette.currentLayer = 'A';
             if (this.shadowPenMode) this.setShadowPenMode(false);
             if (this.eraserMode) this.setEraserMode(false);
             this.setTool('pencil', { preserveMapStamp: true });
             if (typeof palette.renderCurrentLayer === 'function') palette.renderCurrentLayer();
+            // The picked kind is framed and named like one clicked in the palette.
+            if (typeof palette.drawSelectionOverlay === 'function') {
+                palette.drawSelectionOverlay(position.x, position.y, 1, 1, position.layer);
+                palette._selection = { width: 1, height: 1, count: 1, layer: position.layer };
+                palette.renderSelectionInfo?.();
+            }
             return true;
         }
         return false;
@@ -679,7 +691,8 @@ class MapEditor {
         // The 3D object tab does not touch `map.data` at all, so the ordinary
         // snapshot would record a change that never happened and miss the one
         // that did.
-        if (this.tilesetPaletteViewer?.currentLayer === 'O') {
+        // A stroke that does write tiles from that tab (the shadow pen, a copied area stamped) takes the tile snapshot.
+        if (this.tilesetPaletteViewer?.currentLayer === 'O' && !this.shadowPenMode && !this.mapStamp) {
             this.beginObject3DState();
             return;
         }
@@ -952,10 +965,10 @@ class MapEditor {
 
         // Restore previous state
         const previousData = this.undoStack.pop();
+        const replacedData = this.tilemapManager.currentMap.data;
         this.tilemapManager.currentMap.data = previousData;
 
-        // Re-render the map without yanking the view back to the origin
-        this.tilemapManager.renderMap({ preserveScroll: true });
+        this.redrawTilesChangedFrom(replacedData);
 
         // Refresh region overlay if visible
         if (this.regionManager && this.regionManager.enabled) {
@@ -1011,10 +1024,10 @@ class MapEditor {
 
         // Restore next state
         const nextData = this.redoStack.pop();
+        const replacedData = this.tilemapManager.currentMap.data;
         this.tilemapManager.currentMap.data = nextData;
 
-        // Re-render the map without yanking the view back to the origin
-        this.tilemapManager.renderMap({ preserveScroll: true });
+        this.redrawTilesChangedFrom(replacedData);
 
         // Refresh region overlay if visible
         if (this.regionManager && this.regionManager.enabled) {
@@ -1024,6 +1037,32 @@ class MapEditor {
         // Notify about undo state change
         this.notifyUndoStateChange();
         this.notifyMapEdited();
+    }
+
+    /**
+     * After an undo or a redo swapped the map's tiles: redraw the cells that
+     * differ from `before` (the array just replaced). Rebuilding the whole map
+     * for one pencil dab restarted the water and the parallax's scrolling.
+     * The view stays where it is either way.
+     */
+    redrawTilesChangedFrom(before) {
+        const tilemap = this.tilemapManager;
+        const { width, height, data } = tilemap.currentMap;
+        const layerSize = width * height;
+        if (typeof tilemap.updateTiles !== 'function' || !before || before.length !== data.length || data.length < layerSize * 5) {
+            tilemap.renderMap({ preserveScroll: true });
+            return;
+        }
+        // Planes 0 to 3 are tiles and 4 the shadows; 5 is regions, drawn by their own overlay.
+        const changed = [];
+        for (let layer = 0; layer < 5; layer++) {
+            const base = layer * layerSize;
+            for (let i = 0; i < layerSize; i++) {
+                if (before[base + i] !== data[base + i]) changed.push({ x: i % width, y: (i - i % width) / width, layer });
+            }
+        }
+        // A very large difference goes back to a whole redraw inside updateTiles.
+        if (changed.length > 0) tilemap.updateTiles(changed);
     }
 
     canUndo() {
@@ -1341,51 +1380,6 @@ class MapEditor {
             selectedTiles.every(tile => ['A1', 'A2', 'A3', 'A4'].includes(tile.layer || currentLayer));
     }
 
-    // Update autotiles surrounding a painted area (not the painted tiles themselves)
-    // painted Positions: Array of {x, y} positions that were painted
-    updateSurroundingAutotiles(paintedPositions) {
-        const paintedSet = new Set(paintedPositions.map(p => `${p.x},${p.y}`));
-        const neighborsToUpdate = new Set();
-
-        for (const pos of paintedPositions) {
-            const neighbors = [
-                { x: pos.x, y: pos.y - 1 },
-                { x: pos.x + 1, y: pos.y - 1 },
-                { x: pos.x + 1, y: pos.y },
-                { x: pos.x + 1, y: pos.y + 1 },
-                { x: pos.x, y: pos.y + 1 },
-                { x: pos.x - 1, y: pos.y + 1 },
-                { x: pos.x - 1, y: pos.y },
-                { x: pos.x - 1, y: pos.y - 1 }
-            ];
-
-            for (const n of neighbors) {
-                const key = `${n.x},${n.y}`;
-                if (!paintedSet.has(key)) {
-                    neighborsToUpdate.add(key);
-                }
-            }
-        }
-
-        for (const key of neighborsToUpdate) {
-            const [x, y] = key.split(',').map(Number);
-            this.updateNeighboringAutotiles(x, y);
-        }
-    }
-
-    // Process accumulated autotile updates after drag completes
-    processPendingAutotileUpdates() {
-        if (this.pendingAutotileUpdates.length === 0) return;
-
-        // Update all accumulated autotiles at once
-        for (const autotile of this.pendingAutotileUpdates) {
-            this.updateNeighboringAutotiles(autotile.x, autotile.y);
-        }
-
-        // Clear the accumulator for next operation
-        this.pendingAutotileUpdates = [];
-    }
-
     // Paint a single tile at position
     paintTile(x, y) {
         if (!this.tilemapManager.currentMap) return;
@@ -1465,7 +1459,7 @@ class MapEditor {
         // same tile as every other.
         if (currentLayer === 'O') {
             if (this.object3DManager && this.object3DManager.paintCell(x, y)) {
-                this.object3DManager.refresh();
+                this.object3DManager.refreshSoon();
             }
             return;
         }
@@ -2350,13 +2344,33 @@ class MapEditor {
     fillArea(startX, startY) {
         if (!this.tilemapManager.currentMap) return;
 
-        if (this.eraserMode) {
+        const { width, height, data } = this.tilemapManager.currentMap;
+        const currentLayer = this.tilesetPaletteViewer.currentLayer;
+
+        // The eraser takes what the tab shows, as the pencil does: the region on R, the grouping on O. Erasing the
+        // map tiles under the overlay instead (with no undo step for them on O) was never what was meant.
+        if (this.eraserMode && currentLayer === 'O') {
+            const manager = this.object3DManager;
+            if (!manager) return;
+            const target = manager.readCell(startX, startY).id;
+            const cells = new Set(), stack = [{ x: startX, y: startY }];
+            let x0 = startX, x1 = startX, y0 = startY, y1 = startY;
+            while (stack.length) {
+                const cell = stack.pop();
+                if (cell.x < 0 || cell.y < 0 || cell.x >= width || cell.y >= height) continue;
+                const key = cell.y * width + cell.x;
+                if (cells.has(key) || manager.readCell(cell.x, cell.y).id !== target) continue;
+                cells.add(key);
+                x0 = Math.min(x0, cell.x); x1 = Math.max(x1, cell.x); y0 = Math.min(y0, cell.y); y1 = Math.max(y1, cell.y);
+                stack.push({ x: cell.x + 1, y: cell.y }, { x: cell.x - 1, y: cell.y }, { x: cell.x, y: cell.y + 1 }, { x: cell.x, y: cell.y - 1 });
+            }
+            this.eraseObject3DArea(x0, x1, y0, y1, (x, y) => cells.has(y * width + x));
+            return;
+        }
+        if (this.eraserMode && currentLayer !== 'R') {
             this.eraseFillArea(startX, startY);
             return;
         }
-
-        const { width, height, data } = this.tilemapManager.currentMap;
-        const currentLayer = this.tilesetPaletteViewer.currentLayer;
 
         /*
          * Filling by object number, which is how a building gets grouped in
@@ -2391,13 +2405,13 @@ class MapEditor {
         // Region fill (z5): flood by region value; the tile path below would
         // default the 'R' tab to layer 0 and fill tiles instead.
         if (currentLayer === 'R') {
-            if (!this.regionManager || !this.regionManager.selectedTiles ||
-                this.regionManager.selectedTiles.length === 0) {
+            if (!this.eraserMode && (!this.regionManager || !this.regionManager.selectedTiles ||
+                this.regionManager.selectedTiles.length === 0)) {
                 return;
             }
             const layerSize = width * height;
             const targetRegion = data[5 * layerSize + startY * width + startX];
-            const fillRegion = this.regionManager.selectedRegion;
+            const fillRegion = this.eraserMode ? 0 : this.regionManager.selectedRegion;
             if (targetRegion === fillRegion) return;
             const stack = [{ x: startX, y: startY }];
             const filled = [];
@@ -2413,7 +2427,7 @@ class MapEditor {
                 stack.push({ x, y: y + 1 });
                 stack.push({ x, y: y - 1 });
             }
-            if (this.regionManager.enabled) {
+            if (this.regionManager?.enabled) {
                 this.regionManager.updateRegionCells(filled);
             }
             return;
@@ -3581,7 +3595,10 @@ class MapEditor {
         // Shift B-E tile layers: layer 2 → layer 1, layer 3 → layer 2
         // Layer 0 is preserved (contains autotiles A1-A5)
         // The oldest B-E tile on layer 1 is discarded to make room
-        data[1 * layerSize + basePos] = data[2 * layerSize + basePos];
+        // Only as far as it must: with layer 2 free, layer 1 is kept; an A tile on layer 1 (a decoration autotile,
+        // which this editor and MZ maps put there) is never pushed out: the older B-E tile on layer 2 goes instead.
+        const z1 = data[1 * layerSize + basePos], z2 = data[2 * layerSize + basePos];
+        if (z2 !== 0 && !(z1 >= 1536)) data[1 * layerSize + basePos] = z2;
         data[2 * layerSize + basePos] = data[3 * layerSize + basePos];
 
         // Place new tile on layer 3 (topmost B-E layer)
@@ -4277,17 +4294,6 @@ class MapEditor {
         return { tileId: baseTileId + shape, shape: shape };
     }
 
-
-    // Helper to describe pattern
-    patternToString(pattern) {
-        const parts = [];
-        if (pattern & 1) parts.push('T');
-        if (pattern & 2) parts.push('R');
-        if (pattern & 4) parts.push('B');
-        if (pattern & 8) parts.push('L');
-        return parts.length ? parts.join('+') : 'NONE';
-    }
-
     // Check if a tile at position (x,y) is the same autotile kind as baseTileId
     // checkLayer: if provided, only check this specific layer (0-3). If null, check the specific layer being edited.
     isSameKindTile(baseTileId, x, y, previewPattern = null, checkLayer = null, allowRoofMatch = false) {
@@ -4552,65 +4558,6 @@ class MapEditor {
         return false;
     }
 
-    // Convert 8-direction neighbor checks to autotile shape number (RPG Maker MZ algorithm)
-    getAutotileShapeNumber(checks) {
-        const [top, right, bottom, left, topLeft, topRight, bottomLeft, bottomRight] = checks;
-
-        // RPG Maker uses a lookup table based on neighbor configuration
-        // This is the exact mapping from RPG Maker's algorithm
-        const tl = top && left ? (topLeft ? 0 : 1) : (top ? 2 : (left ? 8 : 10));
-        const tr = top && right ? (topRight ? 1 : 0) : (top ? 3 : (right ? 9 : 11));
-        const bl = bottom && left ? (bottomLeft ? 0 : 2) : (bottom ? 4 : (left ? 12 : 14));
-        const br = bottom && right ? (bottomRight ? 1 : 3) : (bottom ? 5 : (right ? 13 : 15));
-
-        // Combine the 4 corner values to get the final shape
-        // This generates shapes 0-47 based on the lookup table pattern
-        const shapeTable = [
-            // Top-left values: 0, 1, 2, 8, 10
-            // Top-right values: 0, 1, 3, 9, 11
-            // Bottom-left values: 0, 2, 4, 12, 14
-            // Bottom-right values: 0, 1, 3, 5, 13, 15
-        ];
-
-        //Simplified version: Calculate based on pattern
-        if (!top && !right && !bottom && !left) return 10; // Island
-        if (top && right && bottom && left) {
-            // All 4 directions filled - check corners
-            if (topLeft && topRight && bottomLeft && bottomRight) return 47; // Fully surrounded
-            if (!topLeft && topRight && bottomLeft && bottomRight) return 38;
-            if (topLeft && !topRight && bottomLeft && bottomRight) return 34;
-            if (topLeft && topRight && !bottomLeft && bottomRight) return 20;
-            if (topLeft && topRight && bottomLeft && !bottomRight) return 18;
-            if (!topLeft && !topRight && bottomLeft && bottomRight) return 36;
-            if (topLeft && topRight && !bottomLeft && !bottomRight) return 18;
-            if (!topLeft && !topRight && !bottomLeft && bottomRight) return 26;
-            if (!topLeft && !topRight && bottomLeft && !bottomRight) return 30;
-            if (!topLeft && topRight && !bottomLeft && !bottomRight) return 24;
-            if (topLeft && !topRight && !bottomLeft && !bottomRight) return 32;
-            if (!topLeft && topRight && !bottomLeft && bottomRight) return 22;
-            if (topLeft && !topRight && bottomLeft && !bottomRight) return 28;
-            return 15; // All sides but no corners
-        }
-
-        // Edge and corner cases
-        if (top && right && bottom && !left) return 2;
-        if (top && right && !bottom && left) return 0;
-        if (top && !right && bottom && left) return 13;
-        if (!top && right && bottom && left) return 14;
-        if (top && right && !bottom && !left) return 1;
-        if (top && !right && bottom && !left) return 4;
-        if (top && !right && !bottom && left) return 6;
-        if (!top && right && bottom && !left) return 8;
-        if (!top && right && !bottom && left) return 11;
-        if (!top && !right && bottom && left) return 12;
-        if (top && !right && !bottom && !left) return 3;
-        if (!top && right && !bottom && !left) return 5;
-        if (!top && !right && bottom && !left) return 7;
-        if (!top && !right && !bottom && left) return 9;
-
-        return 10; // Default to island
-    }
-
     // Update neighboring autotiles when a tile is placed
     updateNeighboringAutotiles(centerX, centerY) {
         if (!this.tilemapManager.currentMap) return;
@@ -4660,42 +4607,6 @@ class MapEditor {
             }
         }
         if (changed.length > 0) this.tilemapManager.updateTiles(changed);
-    }
-
-    // Recalculate all autotile shapes with layer-aware logic (fixes RMMZ maps on load)
-    recalculateAllAutotileShapes() {
-        if (!this.tilemapManager.currentMap) return;
-
-        const { width, height, data } = this.tilemapManager.currentMap;
-        const layerSize = width * height;
-        let updatedCount = 0;
-
-        // Process each layer
-        for (let layer = 0; layer < 4; layer++) {
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < width; x++) {
-                    const index = layer * layerSize + y * width + x;
-                    const tileId = data[index];
-
-                    // Check if this is an autotile (A1-A4)
-                    if (tileId >= 2048 && tileId < 8192) {
-                        const baseTileId = Math.floor((tileId - 2048) / 48) * 48 + 2048;
-                        const result = this.calculateAutotileShape(baseTileId, x, y, null, layer);
-                        const newTileId = result.tileId;
-
-                        if (newTileId !== tileId) {
-                            data[index] = newTileId;
-                            updatedCount++;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (updatedCount > 0) {
-            // Trigger a full re-render
-            this.tilemapManager.renderMap();
-        }
     }
 
     // Clean up

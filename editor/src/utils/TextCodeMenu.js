@@ -141,11 +141,13 @@
         'Shows the Page Down button\'s assist text from CoreEngine.': '显示 CoreEngine 中「Page Down」按键的辅助文字。',
     };
 
+    // The reference sentences Reactor writes for each code are translated like any label; a plugin's own help
+    // (read from the project) has no entry and stays as its author wrote it.
+    // The community-reviewed Simplified Chinese wording above comes first.
     const referenceDetail = detail => {
         const source = detail || '';
-        return root.I18n?.currentLanguage() === 'zh-Hans'
-            ? (TEXT_DETAIL_ZH[source] || source)
-            : source;
+        if (root.I18n?.currentLanguage() === 'zh-Hans' && TEXT_DETAIL_ZH[source]) return TEXT_DETAIL_ZH[source];
+        return root.I18n && typeof root.I18n.tText === 'function' ? root.I18n.tText(source) : source;
     };
 
     // ------------------------------------------------------------ insertion
@@ -304,13 +306,16 @@
     async function paste(field) {
         rememberCaret(field);
         let text = '';
+        // The field's own window and document: in a pop-out (the Database, the Event Editor) the main window's
+        // clipboard and execCommand act on the main document, where the field is not, and did nothing.
+        const doc = field.ownerDocument || document, view = doc.defaultView || window;
         try {
-            text = await navigator.clipboard.readText();
+            text = await view.navigator.clipboard.readText();
         } catch (error) {
             // Clipboard permission is not always granted in an app window;
             // execCommand still works on the focused field.
             field.focus();
-            document.execCommand('paste');
+            doc.execCommand('paste');
             return;
         }
         if (text) insertAtCaret(field, text, null, true);
@@ -318,12 +323,12 @@
 
     function copySelection(field) {
         field.focus();
-        document.execCommand('copy');
+        (field.ownerDocument || document).execCommand('copy');
     }
 
     function cutSelection(field) {
         field.focus();
-        document.execCommand('cut');
+        (field.ownerDocument || document).execCommand('cut');
         field.dispatchEvent(new Event('input', { bubbles: true }));
     }
 

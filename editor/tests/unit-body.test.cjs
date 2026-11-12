@@ -394,8 +394,14 @@ test('a collision test reads the body it kept: nothing is measured again until t
     assert.deepEqual(counts, { spec: 0, foot: 0 }, '400 tests in a frame: no model looked up, no footprint measured');
     w.tick();
     player.isCollidedWithEvents(3, 2);
-    assert.equal(counts.spec, 31, 'a new frame: each event\'s model is looked at once');
+    assert.equal(counts.spec, 0, 'a new frame: a far event\'s reach is trusted (BODY_FAR_FRAMES), its model not looked at');
+    for (let i = 0; i < R.BODY_FAR_FRAMES; i++) w.tick();
+    player.isCollidedWithEvents(3, 2);
+    assert.equal(counts.spec, 31, 'past the trusted frames: each event\'s model is looked at once');
     assert.equal(counts.foot, 0, 'and none is measured: nothing changed');
+    // The kept body itself, with the far test asking every frame as it did.
+    const trusted = R.BODY_FAR_FRAMES;
+    R.BODY_FAR_FRAMES = 0;
     // A new facing is measured once, and so is each turn's swing; after that both are kept.
     w.at(1).setDirection(4);
     player.isCollidedWithEvents(3, 2);
@@ -405,6 +411,7 @@ test('a collision test reads the body it kept: nothing is measured again until t
     const before = counts.foot;
     for (let i = 0; i < 6; i++) { w.at(1).setDirection(i % 2 ? 2 : 4); player.isCollidedWithEvents(3, 2); w.at(10).canPass(2, 13, 8); }
     assert.equal(counts.foot, before, 'facings and swings seen before are kept');
+    R.BODY_FAR_FRAMES = trusted;
     // Thirty units of one model and facing share one shape.
     assert.equal(R.eventBody(w.at(10)), R.eventBody(w.at(39)));
     // What is kept beside an event never reaches a save.
@@ -706,4 +713,30 @@ test('the map objects ask the body rule, and say so where a plugin would look', 
     assert.equal(w.$gamePlayer.isCollidedWithEvents(8, 8), true);
     assert.equal(w.$gamePlayer.isCollidedWithEvents(9, 8), false);
     assert.equal(w.$gameMap.event(1).pos(8, 8), true);
+});
+
+test('a one-tile event is stopped by an event below the characters, as in MZ; the player is not', () => {
+    // MZ's Game_Event.isCollidedWithEvents: any event that is not Through (a wandering NPC never steps onto a
+    // Quick Event transfer); only the player ignores events below and above the characters.
+    const w = world({ events: [event(1, 5, 5), event(2, 5, 6, { pages: [page({ priorityType: 0 })] }), event(3, 6, 5, { pages: [page({ through: true })] })] });
+    const npc = w.at(1), player = w.$gamePlayer;
+    player.locate(2, 2);
+    w.tick();
+    assert.equal(npc.canPass(5, 5, 2), false, 'not onto the event below the characters');
+    assert.equal(npc.canPass(5, 5, 6), true, 'onto a Through event');
+    player.locate(5, 7);
+    w.tick();
+    assert.equal(player.canPass(5, 7, 8), true, 'the player walks onto it');
+});
+
+test('an event below the characters stops a one-tile walker on its own tile only, not over its model\'s footprint', () => {
+    // MZ has no footprints: a below-characters event is in the way on its tile. A floor-level model (a rug, a dock)
+    // laid wide must not wall off wandering NPCs.
+    const w = world({ events: [unit(3, 15, 11, 1, { pages: [page({ priorityType: 0 })] }), event(4, 15, 14), event(5, 14, 11)] });
+    const R = w.Reactor3D, floor = w.at(3);
+    w.$gamePlayer.locate(2, 2);
+    w.tick();
+    assert.equal(R._bodyCovers(floor, 15, 12, R._bodyRead()), true, 'the model covers the tile below its own');
+    assert.equal(w.at(4).isCollidedWithEvents(15, 12), false, 'a walker steps onto its footprint');
+    assert.equal(w.at(5).isCollidedWithEvents(15, 11), true, 'but not onto the event\'s own tile');
 });

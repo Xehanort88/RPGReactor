@@ -140,6 +140,12 @@
         // Only a line with a text code can change without a new revision (a variable, a name, another text).
         this._hasCodes = t.lines.some(line => String(line).includes("\\"));
     };
+    // The text's bitmap is this sprite's own: it goes with the sprite when the scene ends (as Sprite_Timer's
+    // does), not when the garbage collector gets to it.
+    Sprite_RRText.prototype.destroy = function(options) {
+        if (this.bitmap) this.bitmap.destroy();
+        Sprite.prototype.destroy.call(this, options);
+    };
     Sprite_RRText.prototype.update = function() {
         Sprite.prototype.update.call(this);
         const t = $gameScreen.rrText(this._textId);
@@ -238,7 +244,6 @@
     function setTween(p, key, target, ms, easing) {
         const frames = msToFrames(ms);
         const tw = p._rrTweens || (p._rrTweens = {});
-        if (!(frames > 0)) { p["_" + key] = target; p[TARGET[key]] = target; delete tw[key]; return; }
         tw[key] = { start: p["_" + key], target, whole: frames, left: frames, easing: easingType(easing) };
     }
     function ease(t, type) {   // MZ's calcEasing, exponent 2
@@ -645,7 +650,9 @@
     Spriteset_Base.prototype._rrParticleHolder = function(layer) {
         const n = this._tilemap ? spriteLayer(layer) : 0;
         let holder = this._rrParticleHolders[n];
-        if (holder && holder.parent && (n < 9 || holder.parent === SceneManager._scene)) return holder;
+        // Layers 9 and up sit in the top layer, which stays in this spriteset's own scene: already there, nothing to do
+        // (this runs once per live particle per frame; re-adding and sorting each time cost thousands of sorts a frame).
+        if (holder && holder.parent && (n < 9 || (holder.parent === this._rrTop && this._rrTop.parent && this._rrTop.parent === this.parent))) return holder;
         holder = holder || (this._rrParticleHolders[n] = new Sprite());
         if (!this._tilemap) { this.addChild(holder); return holder; }
         const slot = layerZ(n);

@@ -24,6 +24,9 @@ Game_RemotePlayer.prototype.initialize = function(slot) {
     this.modelId = "";
     this.modelSpec = null;
     this.asleep = false;
+    this.fight = "";
+    this.inside = false;
+    this.vehicle = null;
     this._samples = [];
     this._lateness = [];
     this._delay = ReactorOnline.pollMs() * 2;
@@ -48,8 +51,21 @@ Game_RemotePlayer.prototype.setAsleep = function(entry) {
     this.asleep = true;
     this.setLook(entry.actor || 1, (entry.name || "") + " (asleep)");
     this.locate(entry.x, entry.y);
+    // On the floor they slept on: a roof's sleeper was drawn in the room under it.
+    if (Number.isFinite(entry.g)) this._reactorGround = entry.g;
     this._direction = entry.d || 2;
     this._reactorPosePitch = 1;
+};
+
+/** Riding and fighting, as this player's game reports them. Inside a closed vehicle there is no body to draw. */
+Game_RemotePlayer.prototype.setState = function(ride, fight) {
+    this.fight = String(fight || "");
+    const name = ride?.name || "";
+    if (name === (this.vehicle?.modelSpec.name || "")) { this.inside = !!ride?.inside; return; }
+    this.inside = !!ride?.inside;
+    this.vehicle = null;
+    const spec = name && typeof Reactor3D !== "undefined" && Reactor3D.normalizeModelSpec ? Reactor3D.normalizeModelSpec(ride) : null;
+    if (spec) { this.vehicle = new Game_RemoteVehicle(this, spec); this.vehicle.follow(); }
 };
 
 /** Whom this player shows: an actor of the project every player already has. */
@@ -84,14 +100,17 @@ Game_RemotePlayer.prototype.addSample = function(sample) {
     const lateness = this._lateness;
     lateness.push(sample.arrived - sample.sent);
     if (lateness.length > 30) lateness.shift();
+    // The least and the spread are worked out here, where they change: the walk reads both every frame.
+    const sorted = lateness.slice().sort((a, b) => a - b);
+    this._least = sorted[0];
+    this._spread = sorted[Math.floor((sorted.length - 1) * 0.9)] - sorted[0];
 };
 
 /** How far behind to play: enough that a report is nearly always here before it is needed. */
 Game_RemotePlayer.prototype.targetDelay = function() {
-    const sorted = this._lateness.slice().sort((a, b) => a - b), poll = ReactorOnline.pollMs();
-    if (sorted.length < 2) return poll * 2;
-    const spread = sorted[Math.floor((sorted.length - 1) * 0.9)] - sorted[0];
-    return Math.min(ReactorOnline.MAX_DELAY_MS, Math.max(poll * 2, spread + poll * 0.5));
+    const poll = ReactorOnline.pollMs();
+    if (this._lateness.length < 2) return poll * 2;
+    return Math.min(ReactorOnline.MAX_DELAY_MS, Math.max(poll * 2, this._spread + poll * 0.5));
 };
 
 /** Replays this player's walk a moment behind them, then eases the shown body onto it. */
@@ -104,7 +123,7 @@ Game_RemotePlayer.prototype.advance = function(now) {
     // The delay drifts instead of jumping, so the walk's speed never visibly changes.
     const target = this.targetDelay(), drift = elapsed * 0.25;
     this._delay += Math.max(-drift, Math.min(drift, target - this._delay));
-    const offset = Math.min(...this._lateness);
+    const offset = this._least;
     const at = now - offset - this._delay;
     while (samples.length > 2 && samples[1].sent <= at) samples.shift();
     const from = samples[0], to = samples[1] || from;
@@ -137,6 +156,31 @@ Game_RemotePlayer.prototype.advance = function(now) {
     this._rrDashing = to.dashing;
     this._stopCount = moving ? 0 : this._stopCount + 1;
     this.updateAnimation();
+    this.vehicle?.follow();
+};
+
+/** What another player is riding: only a model following them, since the vehicle itself is on their game alone. */
+function Game_RemoteVehicle() {
+    this.initialize(...arguments);
+}
+
+Game_RemoteVehicle.prototype = Object.create(Game_Character.prototype);
+Game_RemoteVehicle.prototype.constructor = Game_RemoteVehicle;
+
+Game_RemoteVehicle.prototype.initialize = function(rider, spec) {
+    Game_Character.prototype.initialize.call(this);
+    this.rider = rider;
+    this.modelSpec = spec;
+    this.setThrough(true);
+};
+
+Game_RemoteVehicle.prototype.follow = function() {
+    const rider = this.rider;
+    this._realX = rider._realX;
+    this._realY = rider._realY;
+    this._x = rider._x;
+    this._y = rider._y;
+    this._direction = rider._direction;
 };
 
 /**
@@ -192,6 +236,8 @@ const ReactorOnlineSocket = {
         } else if (message.t === "world") {
             ReactorWorldState.known = message.count;
             ReactorWorldState.apply(message.world);
+        } else if (message.t === "bf") {
+            ReactorOnlineBattle.receive(message.m, message.from);
         } else if (message.t === "chat") {
             ReactorOnlineChat.onCount(message.count);
         } else if (message.t === "fix") {
@@ -245,8 +291,14 @@ const ReactorOnline = {
     SNAPSHOT_RECORD: 11,
     PEER_GONE_MS: 2000,
     NOTE_MS: 5000,
+    FIRST_SAVE_MS: 10000,
     SLEEPER_MS: 15000,
+    // The nearest sleepers, one to a tile: a pile on one spot shows as one body.
+    SLEEPERS_SHOWN: 64,
+    WHO_MS: 3000,
     CHUNK_BYTES: 1024 * 1024,
+    REQUEST_MS: 15000,
+    TRANSFER_MS: 120000,
 
     state: "off",
     slot: -1,
@@ -271,7 +323,10 @@ const ReactorOnline = {
 
     url() {
         const config = this.config();
-        const address = String(config.address || "").trim().replace(/\/+$/, "");
+        let address = String(config.address || "").trim().replace(/\/+$/, "");
+        // (An address typed without its scheme: a build that did not also deploy the server never had it added, and
+        // the game asked for a path beside its own page.)
+        if (address && !/^[a-z][a-z0-9+.-]*:\/\//i.test(address)) address = "https://" + address;
         return config.url || (address ? address + "/" + this.API_PATH : this.API_PATH);
     },
 
@@ -287,7 +342,9 @@ const ReactorOnline = {
 
     /** Called as a map scene starts; a game past its title with a server behind it signs in. */
     start() {
-        if (this._running || !this.config() || !this.gameStarted) return;
+        // Removed by the owner, or signed in on another device: that stands until a game is started or loaded again.
+        // (Every map scene's start came back here and joined again, taking the other device's place in turn.)
+        if (this._running || !this.config() || !this.gameStarted || this._removed) return;
         this._running = true;
         this.setState("connecting");
         if (!this._listening) {
@@ -302,11 +359,18 @@ const ReactorOnline = {
         return this.url() + "?" + query;
     },
 
+    /** A fetch that ends: one that has not answered and delivered its body in `ms` is given up, so nothing waits on it for ever. */
+    ask(url, options, ms) {
+        const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(ms || this.REQUEST_MS) : undefined;
+        return fetch(url, signal ? Object.assign({ signal }, options) : options);
+    },
+
     async join() {
         const leader = $gameParty.leader();
         const model = ReactorCharacters.current()?.id || "";
         const answer = await this.post("join", { session: this.account?.session }, { n: leader ? leader.name() : "", c: leader ? leader.actorId() : 0, h: model });
         this.slot = answer.slot;
+        this.myName = answer.name || (leader ? leader.name() : "");
         this.nonce = answer.nonce;
         this.token = answer.token;
         ReactorOnlineChat.start(answer.chat);
@@ -328,10 +392,16 @@ const ReactorOnline = {
                 if (this.slot < 0) await this.join();
                 this.send();
                 ReactorWorldState.flush();
+                this.shareState();
+                ReactorOnlineParty.keepUp();
+                ReactorOnlineParty.followOn();
+                ReactorOnlineBattle.keepUp();
                 this.keepUp();
                 if (performance.now() >= (this._nextSleepers || 0)) { this._nextSleepers = performance.now() + this.SLEEPER_MS; this.fetchSleepers(); }
                 wait = this.state === "lost" ? 1000 : this.pollMs();
             } catch (error) {
+                // A join the server forbids (banned) is an answer, not a fault to retry every two seconds.
+                if (this.slot < 0 && error && error.status === 403) { this.removed(error.message); return; }
                 this.setState("lost", error && error.message);
                 wait = 2000;
             }
@@ -340,8 +410,14 @@ const ReactorOnline = {
 
     removed(message) {
         this._running = false;
+        this._removed = true;
+        // A shared battle hears nothing more once the loop has stopped: it ends here, or it would wait for good.
+        try { if (ReactorOnlineBattle.role) ReactorOnlineBattle.onLost(); } catch (error) { console.warn("A shared battle could not be ended.", error); }
         this.peers.clear();
+        this.sleepers.clear();
         ReactorOnlineVoice.turnOff();
+        ReactorWorldState.stop();
+        ReactorOnlineParty.stop();
         this.slot = -1;
         ReactorOnlineSocket.close();
         this.setState("removed", message);
@@ -376,7 +452,8 @@ const ReactorOnline = {
             peer.addSample({ sent: view.getUint32(at + 7, true), arrived, x: view.getUint16(at + 2, true) / 32, y: view.getUint16(at + 4, true) / 32,
                 direction: flags & 15, moving: !!(flags & 16), dashing: !!(flags & 32) });
         }
-        for (const [slot, peer] of this.peers) if (arrived - peer.lastHeard > this.PEER_GONE_MS) this.peers.delete(slot);
+        // (One no snapshot ever listed has no `lastHeard`: a poll before the socket was ready made it, far from here. It goes too.)
+        for (const [slot, peer] of this.peers) if (!(arrived - peer.lastHeard <= this.PEER_GONE_MS)) this.peers.delete(slot);
         this.learnNames();
         this.showStatus();
     },
@@ -403,7 +480,7 @@ const ReactorOnline = {
         if (map !== previous) { this.peers.clear(); this.sleepers.clear(); this._nextSleepers = 0; this._mapId = map; }
         const player = $gamePlayer;
         const flags = this.placeFlags() & 63;
-        const response = await fetch(this.request({
+        const response = await this.ask(this.request({
             a: "sync", s: this.slot, g: this.nonce, t: this.token, m: map, pm: previous, c: Math.floor(performance.now()),
             x: Math.max(0, Math.round(player._realX * 32)), y: Math.max(0, Math.round(player._realY * 32)), f: flags
         }), { cache: "no-store" });
@@ -440,17 +517,49 @@ const ReactorOnline = {
         this.showStatus();
     },
 
-    /** Names and looks are asked for once, for players not met before. A returning slot may be someone new. */
+    /** The vehicle under this player, as a model anyone can draw. Null on foot. */
+    rideState() {
+        const vehicles = typeof ReactorVehicles !== "undefined" ? ReactorVehicles : null, event = vehicles?.ridden?.();
+        const spec = event && typeof Reactor3D !== "undefined" ? Reactor3D.characterModelSpec(event) : null;
+        if (!spec) return null;
+        const { name, file, ext, size, scale, yaw, pitch, roll, faces } = spec;
+        return { name, file, ext, size, scale, yaw, pitch, roll, faces, inside: !!vehicles.riderInside?.(event) };
+    },
+
+    /** The kind of battle this player is in, or nothing. */
+    fightState() {
+        if (typeof $gameFight !== "undefined" && $gameFight?.isHere?.() && !$gameFight._ending) return $gameFight.mode();
+        return $gameParty?.inBattle?.() ? "classic" : "";
+    },
+
+    /** Others hear of a change, not a stream: riding and fighting begin and end rarely. */
+    shareState() {
+        if (this.slot < 0 || !$gameMap?.mapId()) return;
+        const state = { ride: this.rideState(), fight: this.fightState() }, text = JSON.stringify(state) + $gameMap.mapId();
+        if (text === this._stateSent || this._stateSending || $gamePlayer.isTransferring()) return;
+        // Where they are, as of arriving: all someone following them needs to come too.
+        state.place = { map: $gameMap.mapId(), x: $gamePlayer.x, y: $gamePlayer.y };
+        this._stateSending = true;
+        this.post("state", state, { s: this.slot, g: this.nonce, t: this.token })
+            .then(() => { this._stateSent = text; }, () => null).finally(() => { this._stateSending = false; });
+    },
+
+    /** Names and looks are asked for at once for players not met before, and everyone's now and then: a look, a ride or a battle can change. */
     async learnNames() {
-        const unknown = [...this.peers.values()].filter(peer => !peer.actorId).map(peer => peer.slot);
-        if (!unknown.length || this._asking) return;
+        const now = performance.now(), refresh = now >= (this._nextWho || 0);
+        const asked = [...this.peers.values()].filter(peer => refresh || !peer.actorId).map(peer => peer.slot);
+        if (!asked.length || this._asking) return;
+        if (refresh) this._nextWho = now + this.WHO_MS;
         this._asking = true;
         try {
-            const response = await fetch(this.request({ a: "who", ids: unknown.join(",") }), { cache: "no-store" });
+            const response = await this.ask(this.request({ a: "who", ids: asked.join(",") }), { cache: "no-store" });
             const players = response.ok ? (await response.json()).players : {};
             for (const [slot, player] of Object.entries(players)) {
                 const peer = this.peers.get(Number(slot));
-                if (peer) { peer.setLook(player.actor || 1, player.name || ""); if (player.model) this.fetchLook(peer, player.model); }
+                if (!peer) continue;
+                peer.setLook(player.actor || 1, player.name || "");
+                if (player.model && player.model !== peer.modelId) this.fetchLook(peer, player.model);
+                peer.setState(player.ride, player.fight);
             }
         } catch (error) {
             // Asked again with the next exchange.
@@ -462,11 +571,13 @@ const ReactorOnline = {
     stop() {
         this.leave();
         this._running = false;
+        ReactorOnlineBattle.leave?.();
         ReactorOnlineVoice.turnOff();
         this.peers.clear();
         this.sleepers.clear();
         ReactorOnlineSocket.close();
         ReactorWorldState.stop();
+        ReactorOnlineParty.stop();
         this.slot = -1;
         this._mapId = 0;
         this.setState("off");
@@ -506,6 +617,7 @@ const ReactorOnline = {
     /** A game has begun, new or loaded: from here on this player is online. */
     onGameStarted() {
         this.gameStarted = true;
+        this._removed = false;
     },
 
     // ---- Characters ----
@@ -523,8 +635,8 @@ const ReactorOnline = {
         for (let index = 0; index < count; index++) {
             const body = buffer.slice(index * size, (index + 1) * size);
             // Plain text, so a desktop build's request needs no separate permission check.
-            const response = await fetch(this.request({ a: "upload", s: this.slot, g: this.nonce, t: this.token, id, i: index, n: count }),
-                { method: "POST", body, headers: { "Content-Type": "text/plain" } });
+            const response = await this.ask(this.request({ a: "upload", s: this.slot, g: this.nonce, t: this.token, id, i: index, n: count }),
+                { method: "POST", body, headers: { "Content-Type": "text/plain" } }, this.TRANSFER_MS);
             if (!response.ok) throw new Error(await response.text());
             answer = await response.json();
             if (progress) progress(Math.round((index + 1) / count * 100));
@@ -536,26 +648,40 @@ const ReactorOnline = {
     async announceCharacter() {
         const leader = $gameParty.leader(), model = ReactorCharacters.current()?.id;
         if (!this.config()) return;
+        // Not joined: no name has been shown yet, and join() takes the one the server gives.
+        if (leader && this.slot < 0) this.myName = leader.name();
         if (this.account?.session) await this.post("profile", { session: this.account.session, character: ReactorCharacters.current() }).catch(() => {});
         if (this.slot < 0) return;
-        await fetch(this.request({ a: "look", s: this.slot, g: this.nonce, t: this.token, n: leader ? leader.name() : "", c: leader ? leader.actorId() : 0, h: model || "" }), { cache: "no-store" }).catch(() => {});
+        const answer = await this.ask(this.request({ a: "look",s: this.slot, g: this.nonce, t: this.token, n: leader ? leader.name() : "", c: leader ? leader.actorId() : 0, h: model || "" }), { cache: "no-store" })
+            .then(response => response.ok ? response.json() : null).catch(() => null);
+        // The server may show this player under another name (another's registered name, or one already in use):
+        // parties and invites know them by that one. With no answer the name shown is still the one from before.
+        if (answer && typeof answer.name === "string" && answer.name) this.myName = answer.name;
     },
 
     async downloadCharacter(id) {
-        const response = await fetch(this.request({ a: "model", h: id }));
+        const response = await this.ask(this.request({ a: "model", h: id }), undefined, this.TRANSFER_MS);
         if (!response.ok) return null;
         return response.arrayBuffer();
     },
 
-    /** Another player's model, one download at a time; until it comes, they show their actor. */
+    /**
+     * Another player's model, one download at a time. Until it comes they show no body (`_characterModelSpec`): shown
+     * as their actor meanwhile, a square of sleepers came up as the Demo's actor and changed into their own one by one.
+     * A character that cannot be had (gone from the server, or broken) leaves them their actor.
+     */
     fetchLook(peer, id) {
         peer.modelId = id;
+        peer.lookFailed = false;
         this._lookQueue = (this._lookQueue || Promise.resolve()).then(async () => {
             if (peer.modelId !== id) return;
             if (ReactorCharacters.isInstalled(id)) { peer.modelSpec = ReactorCharacters.models.get(id); return; }
             const buffer = await ReactorCharacters.fetch(id);
-            if (buffer && peer.modelId === id) peer.modelSpec = await ReactorCharacters.install(id, buffer);
-        }).catch(error => console.warn("A player's character could not be loaded.", error));
+            if (peer.modelId !== id) return;
+            const spec = buffer ? await ReactorCharacters.install(id, buffer) : null;
+            if (peer.modelId !== id) return;
+            if (spec) peer.modelSpec = spec; else peer.lookFailed = true;
+        }).catch(error => { if (peer.modelId === id) peer.lookFailed = true; console.warn("A player's character could not be loaded.", error); });
     }
 };
 
@@ -626,7 +752,8 @@ Spriteset_Map.prototype.removeReactorOnlinePeer = function(slot, entry) {
 Spriteset_Map.prototype.placeReactorOnlineName = function(entry) {
     const peer = entry.peer, name = entry.name, config = ReactorOnline.config();
     // Someone speaking shows it, because a 2D character has no mouth to move.
-    const shown = (peer.speaking ? "♪ " : "") + peer.playerName;
+    const hidden = ReactorOnlineBattle.drawsAsUnit(peer);
+    const shown = hidden ? "" : (peer.speaking ? "♪ " : "") + (ReactorOnlineParty.has(peer.playerName) ? "[Party] " : "") + peer.playerName + (peer.fight ? " (in battle)" : "");
     if (entry.written !== shown) {
         entry.written = shown;
         name.bitmap.clear();
@@ -677,22 +804,39 @@ Spriteset_Map.prototype.reactorOnlineNamePoint = function(entry) {
 };
 
 if (typeof Reactor3D !== "undefined") {
+    // A sleeper lies still: its pose settles over its first second, then nothing more is sampled for it.
+    const animationDue = Reactor3D.animationDue;
+    Reactor3D.animationDue = function(holder, character) {
+        if (!(character instanceof Game_RemotePlayer) || !character.asleep) return animationDue.apply(this, arguments);
+        if ((holder.sleptFrames || 0) >= 60) { holder.poseHeld = true; return (holder.sampled = false); }
+        const due = animationDue.apply(this, arguments);
+        if (due) holder.sleptFrames = (holder.sleptFrames || 0) + 1;
+        return due;
+    };
     const modelSpec = Reactor3D._characterModelSpec;
     Reactor3D._characterModelSpec = function(character) {
+        if (character instanceof Game_RemoteVehicle) return character.modelSpec;
         if (character instanceof Game_RemotePlayer) {
+            if (character.inside || ReactorOnlineBattle.drawsAsUnit(character)) return null;
             if (character.modelSpec) return character.modelSpec;
+            // Their own character on its way: nothing yet, rather than the actor it would replace.
+            if (character.modelId && !character.lookFailed) return null;
             return character.actorId ? this.databaseModelSpecOfProject(character.actorId) : null;
         }
         return modelSpec.call(this, character);
     };
     const instanceKey = Reactor3D.modelInstanceKey;
     Reactor3D.modelInstanceKey = function(character) {
+        if (character instanceof Game_RemoteVehicle) return "rv" + character.rider.slot + ":" + character.modelSpec.name;
         return character instanceof Game_RemotePlayer ? "r" + character.slot + ":" + (character.modelSpec ? character.modelSpec.name : "") : instanceKey.call(this, character);
     };
     const modelCharacters = Spriteset_Map.prototype.reactor3DModelCharacters;
     Spriteset_Map.prototype.reactor3DModelCharacters = function() {
         const characters = modelCharacters.call(this);
-        for (const [, peer] of ReactorOnline.everyone()) characters.push(peer);
+        for (const [, peer] of ReactorOnline.everyone()) {
+            characters.push(peer);
+            if (peer.vehicle) characters.push(peer.vehicle);
+        }
         return characters;
     };
 }

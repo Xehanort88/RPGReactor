@@ -25,7 +25,6 @@
     ReactorUI.DATA_URL = "data/UserInterfaces.json";
     ReactorUI.PLUGIN_NAME = "RPGReactor";
     ReactorUI.COMMAND_NAME = "CallUserInterface";
-    ReactorUI.BOOT_OPTION = "rrui";
     ReactorUI.CAPTURE_OPTION = "rrcapture";
     /** Scenes the editor can capture, by key; the values are class names. */
     ReactorUI.CAPTURE_SCENES = {
@@ -50,7 +49,6 @@
     const ActionHud = () => window.ReactorActionHud || null;
     /** The Tactical battle HUD's shared half (reactor_ui_fight.js): node settings, layout and drawing. */
     const FightHud = () => window.ReactorFightHud || null;
-    ReactorUI.TACTICAL_FIELD = "reactorTacticalInterfaceId";
     /** The stock battle windows a Battle Window node places, by scene property. */
     ReactorUI.BATTLE_WINDOWS = {
         partyCommand: "_partyCommandWindow", actorCommand: "_actorCommandWindow", help: "_helpWindow",
@@ -81,6 +79,315 @@
         left: [0, 0.5], center: [0.5, 0.5], right: [1, 0.5],
         bottomLeft: [0, 1], bottom: [0.5, 1], bottomRight: [1, 1]
     };
+
+    // <interface-motion>
+    // The same text stands in editor/src/utils/InterfaceMotion.js (a test pins the two), so the editor's canvas
+    // draws a picture fill, a frame and a moving element with the numbers the game uses.
+    /**
+     * Pictures as an element's look, and motion for an element: the settings, and the maths the game and the
+     * editor's canvas both draw from. Nothing here touches a window, a sprite or a canvas.
+     *
+     * A node's `motion` is absent when nothing moves; else it holds any of the keys of DEFAULTS. Time is `age`,
+     * the game updates (60 a second) since the element was shown.
+     */
+    function interfaceMotionApi() {
+        /** Nodes that can move: the ones drawn in a window of their own. */
+        const MOTION_TYPES = ["box", "image", "text", "button", "list", "gauge", "input"];
+        /** Nodes that can also grow and turn about their center (a list's rows are cut to its frame, which does not turn). */
+        const TURN_TYPES = ["box", "image", "text", "button", "gauge", "input"];
+        /** Nodes that take focus, so can react to it. */
+        const FOCUS_TYPES = ["button", "input"];
+        /** Image sources that are one whole picture, which frames cut up and drift scrolls. */
+        const FRAME_SOURCES = ["picture", "system", "title1", "title2"];
+        /** Nodes whose background can be a picture. */
+        const FILL_TYPES = ["box", "button", "list", "input"];
+        const FILL_FITS = ["stretch", "contain", "tile", "slice"];
+        const FRAME_MODES = ["loop", "once", "pingpong"];
+        const TAU = Math.PI * 2;
+        /** Each setting: [default, least, most]. A setting at its default does nothing. */
+        const RANGES = {
+            cols: [1, 1, 64], rows: [1, 1, 64], frameCount: [0, 0, 4096], fps: [8, 1, 60],
+            floatX: [0, -2000, 2000], floatY: [0, -2000, 2000], floatPeriod: [120, 2, 3600], floatOffset: [0, 0, 3600],
+            pulseFrom: [100, 10, 400], pulseTo: [100, 10, 400], pulsePeriod: [120, 2, 3600], pulseOffset: [0, 0, 3600],
+            spin: [0, -1440, 1440],
+            swayAngle: [0, -180, 180], swayPeriod: [120, 2, 3600], swayOffset: [0, 0, 3600],
+            fadeFrom: [255, 0, 255], fadeTo: [255, 0, 255], fadePeriod: [120, 2, 3600], fadeOffset: [0, 0, 3600],
+            driftX: [0, -2000, 2000], driftY: [0, -2000, 2000],
+            appearX: [0, -4000, 4000], appearY: [0, -4000, 4000], appearScale: [100, 0, 400], appearOpacity: [255, 0, 255],
+            appearDuration: [20, 1, 600], appearDelay: [0, 0, 600],
+            focusScale: [100, 50, 200], focusX: [0, -200, 200], focusY: [0, -200, 200]
+        };
+        const KEYS = Object.keys(RANGES);
+        const DEFAULTS = { frameMode: "loop" };
+        for (const key of KEYS) DEFAULTS[key] = RANGES[key][0];
+
+        /** What a motion does, as flags: read once when an element is made. */
+        function traits(m) {
+            const frames = !!m && m.cols * m.rows > 1;
+            const drift = !!m && !frames && (m.driftX !== 0 || m.driftY !== 0);
+            const turns = !!m && (m.pulseFrom !== 100 || m.pulseTo !== 100 || m.spin !== 0 || m.swayAngle !== 0);
+            const idle = !!m && (turns || m.floatX !== 0 || m.floatY !== 0 || m.fadeFrom !== 255 || m.fadeTo !== 255);
+            const appear = !!m && (m.appearX !== 0 || m.appearY !== 0 || m.appearScale !== 100 || m.appearOpacity !== 255);
+            const focus = !!m && (m.focusScale !== 100 || m.focusX !== 0 || m.focusY !== 0);
+            return { frames, drift, idle, appear, focus, centered: turns || (!!m && (m.appearScale !== 100 || m.focusScale !== 100)),
+                // Whether the node itself is moved, grown, turned or faded (a sheet's frames and a drift happen inside it).
+                moves: idle || appear || focus };
+        }
+
+        /**
+         * Carrying. A node's motion and its Angle carry every node placed inside it, at any depth: moved with it,
+         * grown and turned about its center, faded by its opacity. A carry is the sum of a node's ancestors, written
+         * as one transform: a point (x, y) of the layout lands at (a*x - b*y + tx, b*x + a*y + ty), and what stands
+         * there is `scale` times its size, turned by `turn` degrees and `alpha` times as opaque.
+         */
+        function newCarry() {
+            return { a: 1, b: 0, tx: 0, ty: 0, scale: 1, turn: 0, alpha: 1 };
+        }
+
+        /** A carry that moves nothing. */
+        function carryStart(out) {
+            out.a = 1; out.b = 0; out.tx = 0; out.ty = 0; out.scale = 1; out.turn = 0; out.alpha = 1;
+            return out;
+        }
+
+        /**
+         * Adds one ancestor to a carry, outermost first: the ancestor's center (cx, cy) in the layout, and its
+         * own offset, size, turn (its Angle and its motion's, in degrees) and opacity.
+         */
+        function carryInto(out, cx, cy, dx, dy, scale, turn, alpha) {
+            const r = turn * Math.PI / 180, la = scale * Math.cos(r), lb = scale * Math.sin(r);
+            const lx = cx + dx - (la * cx - lb * cy), ly = cy + dy - (lb * cx + la * cy);
+            const a = out.a, b = out.b;
+            out.tx += a * lx - b * ly;
+            out.ty += b * lx + a * ly;
+            out.a = a * la - b * lb;
+            out.b = b * la + a * lb;
+            out.scale *= scale;
+            out.turn += turn;
+            out.alpha *= alpha;
+            return out;
+        }
+
+        /** Where a point of the layout is drawn under a carry. */
+        function carryPoint(carry, x, y, out) {
+            out.x = carry.a * x - carry.b * y + carry.tx;
+            out.y = carry.b * x + carry.a * y + carry.ty;
+            return out;
+        }
+
+        /** The point of the layout that is drawn at (x, y): carryPoint undone. */
+        function carryBack(carry, x, y, out) {
+            const d = carry.a * carry.a + carry.b * carry.b || 1, px = x - carry.tx, py = y - carry.ty;
+            out.x = (carry.a * px + carry.b * py) / d;
+            out.y = (carry.a * py - carry.b * px) / d;
+            return out;
+        }
+
+        /** A movement on the screen as a movement in the layout under a carry (a drag of a carried node). */
+        function carryDeltaBack(carry, dx, dy, out) {
+            const d = carry.a * carry.a + carry.b * carry.b || 1;
+            out.x = (carry.a * dx + carry.b * dy) / d;
+            out.y = (carry.a * dy - carry.b * dx) / d;
+            return out;
+        }
+
+        /**
+         * A carried node as it is drawn: its ancestors' carry, then its own offset, size, turn and opacity about
+         * its own center (cx, cy). Written into `out` as x, y (where its center is drawn), scale, turn and alpha.
+         */
+        function carried(carry, cx, cy, dx, dy, scale, turn, alpha, out) {
+            carryPoint(carry, cx + dx, cy + dy, out);
+            out.scale = carry.scale * scale;
+            out.turn = carry.turn + turn;
+            out.alpha = carry.alpha * alpha;
+            return out;
+        }
+
+        /** Whether a node with this Angle and motion carries what is inside it anywhere but where the layout put it. */
+        function carries(angle, m) {
+            return !!angle || (!!m && traits(m).moves);
+        }
+
+        /**
+         * A node's motion with every setting in range, or null when nothing would move. `type` is the node's
+         * type and `source` an Image node's source: what a node of that kind cannot do is switched off.
+         */
+        function normalize(raw, type, source) {
+            if (!raw || typeof raw !== "object" || !MOTION_TYPES.includes(type)) return null;
+            const m = {};
+            for (const key of KEYS) {
+                const range = RANGES[key], value = Number(raw[key]);
+                m[key] = Number.isFinite(value) ? Math.min(range[2], Math.max(range[1], Math.round(value))) : range[0];
+            }
+            m.frameMode = FRAME_MODES.includes(raw.frameMode) ? raw.frameMode : "loop";
+            const off = keys => { for (const key of keys) m[key] = DEFAULTS[key]; };
+            if (type !== "image" || !FRAME_SOURCES.includes(source || "picture")) off(["cols", "rows", "frameCount", "fps", "frameMode", "driftX", "driftY"]);
+            if (!TURN_TYPES.includes(type)) off(["pulseFrom", "pulseTo", "spin", "swayAngle", "appearScale", "focusScale"]);
+            if (!FOCUS_TYPES.includes(type)) off(["focusScale", "focusX", "focusY"]);
+            m.frameCount = Math.min(m.frameCount, m.cols * m.rows);
+            const t = traits(m);
+            return t.frames || t.drift || t.idle || t.appear || t.focus ? m : null;
+        }
+
+        /** A motion as it is stored: only the settings that are not at their default; null when there are none. */
+        function compact(m) {
+            if (!m) return null;
+            const stored = {};
+            for (const key of Object.keys(DEFAULTS)) if (m[key] !== undefined && m[key] !== DEFAULTS[key]) stored[key] = m[key];
+            return Object.keys(stored).length ? stored : null;
+        }
+
+        /** Which frame of `count` shows after `age` updates, each frame held for `hold` updates. */
+        function frameAt(age, count, hold, mode) {
+            if (!(count > 1)) return 0;
+            const step = Math.floor(Math.max(0, age) / Math.max(hold, 1e-6));
+            if (mode === "once") return Math.min(step, count - 1);
+            if (mode === "pingpong") {
+                const turn = step % (2 * (count - 1));
+                return turn < count ? turn : 2 * (count - 1) - turn;
+            }
+            return step % count;
+        }
+
+        /** How many frames a sheet plays: its count, or every cell. */
+        function frameTotal(m) {
+            return m.frameCount > 0 ? Math.min(m.frameCount, m.cols * m.rows) : m.cols * m.rows;
+        }
+
+        /** The cell of frame `index` in a sheet of `cols` by `rows`, read left to right, top to bottom. */
+        function frameRect(index, cols, rows, width, height, out) {
+            const fw = Math.floor(width / cols), fh = Math.floor(height / rows);
+            out.x = (index % cols) * fw;
+            out.y = Math.floor(index / cols) * fh;
+            out.width = fw;
+            out.height = fh;
+            return out;
+        }
+
+        /** Where an Image node's picture of sw x sh stands in its box of dw x dh, by its Fit. */
+        function fitRect(fit, sw, sh, dw, dh, out) {
+            out.x = 0; out.y = 0; out.width = sw; out.height = sh;
+            if (fit === "stretch") { out.width = dw; out.height = dh; }
+            else if (fit === "contain" && sw > 0 && sh > 0) {
+                const scale = Math.min(dw / sw, dh / sh);
+                out.width = Math.round(sw * scale);
+                out.height = Math.round(sh * scale);
+                out.x = Math.floor((dw - out.width) / 2);
+                out.y = Math.floor((dh - out.height) / 2);
+            }
+            return out;
+        }
+
+        const wave = (age, period, offset) => Math.sin((age + offset) / period * TAU);
+        /** From 0 up to 1 and back, starting at 0. */
+        const swing = (age, period, offset) => 0.5 - 0.5 * Math.cos((age + offset) / period * TAU);
+
+        /**
+         * Where an element is after `age` updates: written into `out` as dx, dy (pixels from its place), scale
+         * (1 is its size), turn (degrees added to its Angle), alpha (0-1, times its opacity), frame (the sheet
+         * frame) and driftX, driftY (how far its picture has scrolled). `focus` is 0-1, how far it has gone
+         * toward its focused look; `leave` is how far the interface has closed, 0 to 1 (below 0: it is not
+         * closing), which runs Appear backward over the interface's own closing transition.
+         */
+        function pose(m, age, focus, leave, out) {
+            let dx = 0, dy = 0, scale = 1, turn = 0, alpha = 1;
+            if (m.floatX !== 0 || m.floatY !== 0) {
+                const w = wave(age, m.floatPeriod, m.floatOffset);
+                dx += m.floatX * w;
+                dy += m.floatY * w;
+            }
+            if (m.pulseFrom !== 100 || m.pulseTo !== 100) scale *= (m.pulseFrom + (m.pulseTo - m.pulseFrom) * swing(age, m.pulsePeriod, m.pulseOffset)) / 100;
+            if (m.spin !== 0) turn += m.spin * age / 60 % 360;
+            if (m.swayAngle !== 0) turn += m.swayAngle * wave(age, m.swayPeriod, m.swayOffset);
+            if (m.fadeFrom !== 255 || m.fadeTo !== 255) alpha *= (m.fadeFrom + (m.fadeTo - m.fadeFrom) * swing(age, m.fadePeriod, m.fadeOffset)) / 255;
+            if (m.appearX !== 0 || m.appearY !== 0 || m.appearScale !== 100 || m.appearOpacity !== 255) {
+                let t = (age - m.appearDelay) / m.appearDuration;
+                if (leave >= 0) t = Math.min(t, 1 - leave);
+                t = t < 0 ? 0 : t > 1 ? 1 : t;
+                // Ease out: fast at first, settling into place.
+                const rest = (1 - t) * (1 - t) * (1 - t), come = 1 - rest;
+                dx += m.appearX * rest;
+                dy += m.appearY * rest;
+                scale *= (m.appearScale + (100 - m.appearScale) * come) / 100;
+                alpha *= (m.appearOpacity + (255 - m.appearOpacity) * come) / 255;
+            }
+            if (focus > 0) {
+                const f = focus * focus * (3 - 2 * focus);
+                scale *= 1 + (m.focusScale / 100 - 1) * f;
+                dx += m.focusX * f;
+                dy += m.focusY * f;
+            }
+            // Whole pixels (and never a negative zero), so text and edges stay sharp.
+            out.dx = Math.round(dx) || 0;
+            out.dy = Math.round(dy) || 0;
+            out.scale = scale;
+            out.turn = turn;
+            out.alpha = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
+            out.frame = m.cols * m.rows > 1 ? frameAt(age, frameTotal(m), 60 / m.fps, m.frameMode) : 0;
+            out.driftX = m.driftX * age / 60;
+            out.driftY = m.driftY * age / 60;
+            return out;
+        }
+
+        /** A pose to write into. */
+        function newPose() {
+            return { dx: 0, dy: 0, scale: 1, turn: 0, alpha: 1, frame: 0, driftX: 0, driftY: 0 };
+        }
+
+        /**
+         * The pieces that draw a picture of sw x sh over a box of dw x dh: stretched over it, whole inside it,
+         * repeated across it, or nine-sliced (`nineSlice` is the function that cuts the nine). Each piece is
+         * { sx, sy, sw, sh, dx, dy, dw, dh }.
+         */
+        function pictureSegments(sw, sh, dw, dh, fit, insets, nineSlice) {
+            if (!(sw > 0 && sh > 0 && dw > 0 && dh > 0)) return [];
+            if (fit === "slice" && nineSlice) return nineSlice(sw, sh, dw, dh, insets);
+            if (fit === "contain") {
+                const scale = Math.min(dw / sw, dh / sh);
+                const w = Math.round(sw * scale), h = Math.round(sh * scale);
+                return [{ sx: 0, sy: 0, sw, sh, dx: Math.floor((dw - w) / 2), dy: Math.floor((dh - h) / 2), dw: w, dh: h }];
+            }
+            // A picture so small that it would repeat thousands of times is stretched instead.
+            if (fit === "tile" && Math.ceil(dw / sw) * Math.ceil(dh / sh) <= 4096) {
+                const segments = [];
+                for (let y = 0; y < dh; y += sh) {
+                    for (let x = 0; x < dw; x += sw) {
+                        const w = Math.min(sw, dw - x), h = Math.min(sh, dh - y);
+                        segments.push({ sx: 0, sy: 0, sw: w, sh: h, dx: x, dy: y, dw: w, dh: h });
+                    }
+                }
+                return segments;
+            }
+            return [{ sx: 0, sy: 0, sw, sh, dx: 0, dy: 0, dw, dh }];
+        }
+
+        /**
+         * The picture a control shows in a state ("base", "focused", "pressed", "disabled"): its own, else the
+         * one it falls back to (pressed to selected, every one to the normal picture).
+         */
+        function statePicture(node, state) {
+            const normal = node.fillImage || "";
+            if (state === "disabled") return node.disabledImage || normal;
+            if (state === "pressed") return node.pressedImage || node.focusedImage || normal;
+            if (state === "focused") return node.focusedImage || normal;
+            return normal;
+        }
+
+        /** The picture under a list's row in a state, or "" when it has none. */
+        function rowPicture(node, state) {
+            const normal = node.rowImage || "";
+            if (state === "disabled") return node.disabledImage || normal;
+            if (state === "focused") return node.focusedImage || normal;
+            return normal;
+        }
+
+        return { MOTION_TYPES, TURN_TYPES, FOCUS_TYPES, FRAME_SOURCES, FILL_TYPES, FILL_FITS, FRAME_MODES, RANGES, DEFAULTS,
+            normalize, compact, traits, frameAt, frameTotal, frameRect, fitRect, pose, newPose, pictureSegments, statePicture, rowPicture,
+            newCarry, carryStart, carryInto, carryPoint, carryBack, carryDeltaBack, carried, carries };
+    }
+    // </interface-motion>
+    const Motion = interfaceMotionApi();
+    ReactorUI.Motion = Motion;
 
     /** Physical screen and centred UI-area metrics used by every interface. */
     ReactorUI.screenMetrics = function() {
@@ -221,6 +528,12 @@
         const list = window.$dataUserInterfaces;
         const raw = Array.isArray(list) ? list[Number(id)] : null;
         return raw ? this.normalizeInterface(raw) : null;
+    };
+
+    /** A stored record's mode as normalizeInterface would give it, without building the record. */
+    ReactorUI.storedMode = function(raw) {
+        const mode = raw && raw.mode === "fight" ? "tactical" : raw && raw.mode;
+        return ["overlay", "battle", "tactical", "action", "firstPerson", "victory"].includes(mode) ? mode : "scene";
     };
 
     // Whether the shop refuses to buy an item back: no price, or the database's "Can't be sold" (rrNoSell)
@@ -542,6 +855,9 @@
         });
     };
 
+    const FILLS = ["window", "color", "gradient", "none"];
+    const FILLS_WITH_PICTURE = ["window", "color", "gradient", "none", "picture"];
+
     ReactorUI.normalizeNode = function(raw) {
         const source = raw && typeof raw === "object" ? raw : {};
         const type = oneOf(source.type, this.NODE_TYPES, "box");
@@ -561,7 +877,7 @@
             angle: this.TURNABLE_TYPES.includes(type) ? clamp(Math.round(finite(source.angle, 0)), -180, 180) : 0,
             visible: this.normalizeCondition(source.visible),
             // Box / button surface
-            fill: oneOf(source.fill, ["window", "color", "gradient", "none"], type === "text" || type === "image" || type === "gauge" || type === "fightTurnOrder" || type === "fightInfo"
+            fill: oneOf(source.fill, Motion.FILL_TYPES.includes(type) ? FILLS_WITH_PICTURE : FILLS, type === "text" || type === "image" || type === "gauge" || type === "fightTurnOrder" || type === "fightInfo"
                 || (type.startsWith("action") && type !== "actionVitals" && type !== "actionWeapon") || type.startsWith("victory") ? "none" : "window"),
             color: isHexColor(source.color) ? source.color : "#000000",
             color2: isHexColor(source.color2) ? source.color2 : "#000000",
@@ -570,6 +886,19 @@
             borderWidth: clamp(Math.round(finite(source.borderWidth, 0)), 0, 32),
             borderColor: isHexColor(source.borderColor) ? source.borderColor : "#ffffff",
             radius: clamp(Math.round(finite(source.radius, 0)), 0, 200),
+            // A picture as the surface (fill "picture"): by reference, "system/Name" or a name in img/pictures; drawn
+            // stretched, whole inside, repeated or nine-sliced (by the slice borders below). A control's states and a
+            // list's rows can have pictures of their own; a gauge's bar and back can be pictures.
+            fillImage: text(source.fillImage, "").trim(),
+            fillFit: oneOf(source.fillFit, Motion.FILL_FITS, "stretch"),
+            focusedImage: type === "button" || type === "input" || type === "list" ? text(source.focusedImage, "").trim() : "",
+            pressedImage: type === "button" || type === "input" ? text(source.pressedImage, "").trim() : "",
+            disabledImage: type === "button" || type === "input" || type === "list" ? text(source.disabledImage, "").trim() : "",
+            rowImage: type === "list" ? text(source.rowImage, "").trim() : "",
+            gaugeImage: type === "gauge" ? text(source.gaugeImage, "").trim() : "",
+            gaugeBackImage: type === "gauge" ? text(source.gaugeBackImage, "").trim() : "",
+            // Frames, idle motion, Appear and the focused look; null when nothing moves.
+            motion: Motion.normalize(source.motion, type, source.source),
             // Text / button label
             text: text(source.text, ""),
             labelScript: text(source.labelScript, ""),
@@ -1314,9 +1643,10 @@
             semantic(Window_StatusBase.prototype, "drawActorCharacter", function(actor, x, y) {
                 if (Window_StatusBase.rrShowsModelCharacter && Window_StatusBase.rrShowsModelCharacter(actor)) return;
                 const bitmap = ImageManager.loadCharacter(actor.characterName());
-                const big = ImageManager.isBigCharacter(actor.characterName());
-                const pw = bitmap.width > 0 ? bitmap.width / (big ? 3 : 12) : 48;
-                const ph = bitmap.height > 0 ? bitmap.height / (big ? 4 : 8) : 48;
+                // The window's own cut, so an [NF] or [1D] sheet is sized as it is drawn.
+                const cell = Window_Base.rrCharacterCell(actor.characterName(), actor.characterIndex(), bitmap.width, bitmap.height);
+                const pw = bitmap.width > 0 ? cell.pw : 48;
+                const ph = bitmap.height > 0 ? cell.ph : 48;
                 self.drawLog(this.contents).push({
                     kind: "image", source: "character", file: actor.characterName(), index: actor.characterIndex(),
                     x: Math.round(x - pw / 2), y: Math.round(y - ph), width: Math.round(pw), height: Math.round(ph), opacity: this.contents.paintOpacity
@@ -1748,15 +2078,17 @@
     // Calling
 
     ReactorUI.call = function(id) {
-        const record = this.interface(id);
-        if (!record) {
+        // The scene builds the record when it opens: here only its mode is read, from the stored record.
+        const list = window.$dataUserInterfaces;
+        const raw = Array.isArray(list) ? list[Number(id)] : null;
+        if (!raw) {
             console.warn("ReactorUI: no user interface with id " + id);
             return false;
         }
-        if (record.mode === "overlay") {
+        if (this.storedMode(raw) === "overlay") {
             const scene = SceneManager._scene;
             if (typeof Scene_Map !== "undefined" && scene instanceof Scene_Map && scene.ensureReactorUIOverlay) {
-                scene.ensureReactorUIOverlay(record);
+                scene.ensureReactorUIOverlay(this.normalizeInterface(raw));
                 return true;
             }
             console.warn("ReactorUI: overlay interface " + id + " requires Scene_Map");
@@ -1825,6 +2157,12 @@
         this._uiLastText = null;
         this._uiBitmap = null;
         this._uiFontScale = 1;
+        // A label with no token ({...}), no escape code and no expression reads the same on every frame.
+        this._uiDynamicText = !!node.labelScript || /[\\{\x1b]/.test(String(node.text == null ? "" : node.text));
+        // Null for a node that does not move: every motion path below is behind this one field.
+        this._uiMotion = node.motion ? ReactorUI.motionState(node) : null;
+        // Placed by a pose: its own motion, or (set when the scene links its windows) an ancestor's motion or Angle.
+        this._uiPosed = !!this._uiMotion;
         Window_Base.prototype.initialize.call(this, rect);
         this.opacity = this.usesSkin() ? 255 : 0;
         this.frameVisible = this.usesSkin();
@@ -1880,8 +2218,18 @@
         return !this._uiEnabled ? "disabled" : this._uiPressed ? "pressed" : this._uiFocused ? "focused" : "base";
     };
 
+    /** syncVisualState's working values, reused. */
+    const SYNC_STYLE = { opacity: "", offsetX: 0, offsetY: 0 };
+
     Window_ReactorUINode.prototype.syncVisualState = function() {
-        const style = ReactorUI.controlStyle(this._uiNode, this.controlState());
+        // Runs for every node of an overlay on every frame: the opacity and the pressed offset are read as
+        // ReactorUI.controlStyle gives them, without building its whole style.
+        const authored = this._uiNode, state = this.controlState();
+        const style = SYNC_STYLE;
+        style.opacity = state === "disabled" ? (authored.disabledOpacity === "" ? ReactorUI.DISABLED_OPACITY : authored.disabledOpacity)
+            : state === "pressed" ? authored.pressedOpacity : state === "focused" ? authored.focusedOpacity : "";
+        style.offsetX = state === "pressed" ? authored.pressedOffsetX : 0;
+        style.offsetY = state === "pressed" ? authored.pressedOffsetY : 0;
         const base = this._uiOpacity === undefined ? 255 : this._uiOpacity;
         const stateOpacity = style.opacity === "" ? 255 : style.opacity;
         const opacity = Math.round(base * stateOpacity / 255);
@@ -1901,6 +2249,209 @@
         this.y = y + style.offsetY + (this._uiTransitionY || 0) + this._uiTurnY;
         this.alpha = this._uiTransitionAlpha === undefined ? 1 : this._uiTransitionAlpha;
         if (this._uiGauge) this._uiGauge.opacity = opacity;
+        // A moving node is placed from here by its pose (once the scene has laid it out).
+        if (this._uiPosed && this._uiLayoutX !== undefined) this.applyMotionPose(x + style.offsetX, y + style.offsetY, angle, opacity);
+    };
+
+    //-------------------------------------------------------------------------
+    // Motion: frames, idle motion, Appear and the focused look of a node. The
+    // numbers come from the shared maths (Motion.pose); here they move, grow,
+    // turn and fade the node's own window and switch its picture's frame.
+    // Nothing is drawn again, nothing is laid out again and nothing is made
+    // per update. A node without motion has `_uiMotion` null and runs none of
+    // this; a hidden node does not update.
+
+    /** A moving node's state: its settings, its age in updates, and the pose it is drawn at. */
+    ReactorUI.motionState = function(node) {
+        const def = node.motion, traits = Motion.traits(def);
+        const state = {
+            def, age: 0, focus: 0, leave: -1, frame: -1,
+            centered: traits.centered,
+            // The windows of the nodes inside this one, which it carries (ReactorUI.linkCarried); null when it has none.
+            carried: null,
+            picture: traits.frames || traits.drift, drift: traits.drift,
+            reacts: traits.focus,
+            // Idle motion, frames and drift never come to rest; Appear does, after its delay and duration.
+            lively: traits.idle || traits.drift || (traits.frames && (def.frameMode !== "once")),
+            restAge: Math.max(traits.appear ? def.appearDelay + def.appearDuration : 0,
+                traits.frames && def.frameMode === "once" ? Math.ceil(Motion.frameTotal(def) * 60 / def.fps) : 0),
+            settled: false,
+            pose: Motion.newPose()
+        };
+        Motion.pose(def, 0, 0, -1, state.pose);
+        return state;
+    };
+
+    /** How far the interface has closed (0 to 1), or -1 while it is not closing: Appear runs backward as it closes. */
+    ReactorUI.motionLeave = function(window, progress) {
+        const m = window._uiMotion;
+        if (!m || m.leave === progress) return;
+        m.leave = progress;
+        m.settled = false;
+    };
+
+    const PICTURE_CELL = { x: 0, y: 0, width: 0, height: 0 };
+    const PICTURE_PLACE = { x: 0, y: 0, width: 0, height: 0 };
+    const CARRY = Motion.newCarry();
+    const CARRIED = { x: 0, y: 0, scale: 1, turn: 0, alpha: 1 };
+
+    /**
+     * Once a scene or an overlay has made its windows: which of them stand inside a node that moves or has an
+     * Angle. Such a window keeps its ancestors that carry it, outermost first (`_uiCarry`), and each moving
+     * ancestor keeps the windows it carries, so its update places them. Worked out here, once; a window with
+     * no such ancestor and no motion keeps `_uiPosed` false and is placed as it always was.
+     */
+    ReactorUI.linkCarried = function(windows, nodes) {
+        let byNode = null, byId = null;
+        for (const window of windows) {
+            const node = window._uiNode;
+            if (!node || !(node.parent > 0)) continue;
+            if (!byNode) {
+                byNode = new Map(); byId = new Map();
+                for (const other of windows) if (other._uiNode) byNode.set(other._uiNode, other);
+                for (const other of nodes) byId.set(other.id, other);
+            }
+            let chain = null;
+            // Up the parents; a chain longer than the record is a cycle, which carries nothing.
+            let parent = byId.get(node.parent), steps = 0;
+            for (; parent && parent !== node && steps <= nodes.length; parent = byId.get(parent.parent), steps++) {
+                const carrier = byNode.get(parent);
+                if (carrier && carrier !== window && Motion.carries(parent.angle, parent.motion)) (chain || (chain = [])).unshift(carrier);
+            }
+            // (Ending back at the node itself is a cycle too: the layout roots such a node on the screen.)
+            if (!chain || parent === node || steps > nodes.length) continue;
+            window._uiCarry = chain;
+            window._uiPosed = true;
+            for (const carrier of chain) {
+                const m = carrier._uiMotion;
+                if (m && Motion.traits(m.def).moves) (m.carried || (m.carried = [])).push(window);
+            }
+            if (window.syncVisualState) window.syncVisualState();
+        }
+    };
+
+    /** Where a window's center is drawn, in its layer: what direction keys and anything else that asks "where is it" go by. */
+    ReactorUI.drawnCenter = function(window, out) {
+        const centered = window.pivot && window.pivot.x !== 0;
+        const sx = window.scale ? window.scale.x : 1, sy = window.scale ? window.scale.y : 1;
+        out.x = centered ? window.x : window.x + window.width / 2 * sx;
+        out.y = centered ? window.y : window.y + window.height / 2 * sy;
+        return out;
+    };
+
+    Window_ReactorUINode.prototype.applyMotionPose = function(baseX, baseY, angle, opacity) {
+        const m = this._uiMotion, pose = m ? m.pose : null, fit = this._uiFitScale || 1, chain = this._uiCarry;
+        const tx = this._uiTransitionX || 0, ty = this._uiTransitionY || 0;
+        if (chain) {
+            // Inside a node that moves or has an Angle: its ancestors' carry first, then its own pose about its own center.
+            const carry = Motion.carryStart(CARRY);
+            for (let i = 0; i < chain.length; i++) {
+                const a = chain[i], am = a._uiMotion, ap = am ? am.pose : null, af = a._uiFitScale || 1;
+                Motion.carryInto(carry, a._uiLayoutX + a.width / 2 * af, a._uiLayoutY + a.height / 2 * af,
+                    ap ? ap.dx * af : 0, ap ? ap.dy * af : 0, ap ? ap.scale : 1, (a._uiNode.angle || 0) + (ap ? ap.turn : 0), ap ? ap.alpha : 1);
+            }
+            const halfW = this.width / 2 * fit, halfH = this.height / 2 * fit;
+            const at = Motion.carried(carry, baseX + halfW, baseY + halfH, pose ? pose.dx * fit : 0, pose ? pose.dy * fit : 0,
+                pose ? pose.scale : 1, angle + (pose ? pose.turn : 0), pose ? pose.alpha : 1, CARRIED);
+            this.pivot.set(this.width / 2, this.height / 2);
+            this.rotation = at.turn * Math.PI / 180;
+            this.scale.set(fit * at.scale, fit * at.scale);
+            this._uiTurnX = halfW;
+            this._uiTurnY = halfH;
+            // Its corner on a whole pixel where nothing turns or grows it, so text stays sharp.
+            const whole = carry.turn === 0 && carry.scale === 1;
+            this.x = (whole ? Math.round(at.x - halfW) + halfW : at.x) + tx;
+            this.y = (whole ? Math.round(at.y - halfH) + halfH : at.y) + ty;
+            this.alpha *= at.alpha;
+        } else if (m.centered) {
+            // Grown and turned about its center, as an Angle turns it.
+            this.pivot.set(this.width / 2, this.height / 2);
+            this.rotation = (angle + pose.turn) * Math.PI / 180;
+            this.scale.set(fit * pose.scale, fit * pose.scale);
+            this._uiTurnX = this.width / 2 * fit;
+            this._uiTurnY = this.height / 2 * fit;
+            this.x = baseX + tx + this._uiTurnX + Math.round(pose.dx * fit);
+            this.y = baseY + ty + this._uiTurnY + Math.round(pose.dy * fit);
+            this.alpha *= pose.alpha;
+        } else {
+            this.x += Math.round(pose.dx * fit);
+            this.y += Math.round(pose.dy * fit);
+            this.alpha *= pose.alpha;
+        }
+        if (this._uiPicture) this._uiPicture.opacity = opacity;
+    };
+
+    /** Places the windows this one carries, after it has moved. */
+    Window_ReactorUINode.prototype.placeCarried = function() {
+        const carried = this._uiMotion.carried;
+        for (let i = 0; i < carried.length; i++) carried[i].syncVisualState();
+    };
+
+    /** One game update of a shown, moving node. */
+    Window_ReactorUINode.prototype.updateMotion = function() {
+        const m = this._uiMotion;
+        const focus = m.reacts && this._uiFocused ? 1 : 0;
+        // At rest: Appear is over, nothing idles and the focused look is where it should be.
+        if (m.settled && m.focus === focus) return;
+        m.age++;
+        if (m.focus !== focus) m.focus = focus > m.focus ? Math.min(1, m.focus + 0.125) : Math.max(0, m.focus - 0.125);
+        Motion.pose(m.def, m.age, m.focus, m.leave, m.pose);
+        m.settled = !m.lively && m.leave < 0 && m.age >= m.restAge && m.focus === focus;
+        this.syncVisualState();
+        if (m.carried) this.placeCarried();
+        if (m.picture) this.updatePictureSprite();
+    };
+
+    /** Shown again (or for the first time): Appear starts over. */
+    Window_ReactorUINode.prototype.restartMotion = function() {
+        const m = this._uiMotion;
+        m.age = 0;
+        m.leave = -1;
+        m.settled = false;
+        Motion.pose(m.def, 0, m.focus, -1, m.pose);
+        this.syncVisualState();
+        if (m.carried) this.placeCarried();
+        if (m.picture) this.updatePictureSprite();
+    };
+
+    /**
+     * An Image node with frames or drift shows its picture in a sprite inside the window, so a frame is a
+     * change of the sprite's frame and a drift a change of its origin: the window's bitmap is not painted.
+     */
+    Window_ReactorUINode.prototype.showPictureSprite = function(bitmap) {
+        const m = this._uiMotion, node = this._uiNode, def = m.def;
+        let sprite = this._uiPicture;
+        if (!sprite) {
+            sprite = this._uiPicture = m.drift ? new TilingSprite(bitmap) : new Sprite(bitmap);
+            this.addInnerChild(sprite);
+        } else if (sprite.bitmap !== bitmap) sprite.bitmap = bitmap;
+        const w = this.contentsWidth(), h = this.contentsHeight();
+        if (m.drift) sprite.move(0, 0, w, h);
+        else {
+            const cell = Motion.frameRect(0, def.cols, def.rows, bitmap.width, bitmap.height, PICTURE_CELL);
+            const place = Motion.fitRect(node.fit, cell.width, cell.height, w, h, PICTURE_PLACE);
+            sprite.x = place.x;
+            sprite.y = place.y;
+            if (cell.width > 0 && cell.height > 0) sprite.scale.set(place.width / cell.width, place.height / cell.height);
+        }
+        m.frame = -1;
+        this.updatePictureSprite();
+    };
+
+    Window_ReactorUINode.prototype.updatePictureSprite = function() {
+        const m = this._uiMotion, sprite = this._uiPicture;
+        if (!sprite) return;
+        if (m.drift) {
+            sprite.origin.x = m.pose.driftX;
+            sprite.origin.y = m.pose.driftY;
+            return;
+        }
+        if (m.pose.frame === m.frame) return;
+        m.frame = m.pose.frame;
+        const bitmap = sprite.bitmap;
+        if (!bitmap || !bitmap.isReady()) return;
+        const cell = Motion.frameRect(m.frame, m.def.cols, m.def.rows, bitmap.width, bitmap.height, PICTURE_CELL);
+        sprite.setFrame(cell.x, cell.y, cell.width, cell.height);
     };
 
     Window_ReactorUINode.prototype.resetFontSettings = function() {
@@ -2020,18 +2571,35 @@
         "playtime", "index", "paramName", "paramValue", "price", "level", "symbol", "valueText", "title", "timestamp",
         "date", "partyCharacters", "partyFaces", "existing", "enabled", "cost", "slot", "newValue", "change"];
 
+    /** The {context.field} pattern and its lower-case field table, built once (again if the field list grows). */
+    ReactorUI.contextTokens = function() {
+        let made = this._contextTokens;
+        if (!made || made.count !== this.CONTEXT_FIELDS.length) {
+            made = this._contextTokens = {
+                count: this.CONTEXT_FIELDS.length,
+                pattern: new RegExp("\\{context\\.(" + this.CONTEXT_FIELDS.join("|") + ")\\}", "gi"),
+                fields: new Map(this.CONTEXT_FIELDS.map(name => [name.toLowerCase(), name]))
+            };
+        }
+        return made;
+    };
+
     ReactorUI.resolveContextTokens = function(value, node, scene) {
+        const source = String(value == null ? "" : value);
+        if (source.indexOf("{") < 0) return source;
         const row = scene && scene.context ? scene.context(node && node.contextName) : null;
-        const fields = this.CONTEXT_FIELDS.join("|");
-        return String(value == null ? "" : value).replace(new RegExp("\\{context\\.(" + fields + ")\\}", "gi"), (match, token) => {
+        const tokens = this.contextTokens();
+        return source.replace(tokens.pattern, (match, token) => {
             if (!row) return "";
-            const field = this.CONTEXT_FIELDS.find(name => name.toLowerCase() === token.toLowerCase());
-            const result = row[field];
+            const result = row[tokens.fields.get(token.toLowerCase())];
             return result == null ? "" : String(result);
         });
     };
 
     ReactorUI.resolveActorTokens = function(value, node, scene) {
+        // No brace, no token: nothing to look up (this runs for every label, every frame it may change).
+        const source = String(value == null ? "" : value);
+        if (source.indexOf("{") < 0) return source;
         const actor = this.resolveActor(node, scene);
         const contextBound = this.resolveContextTokens(value, node, scene);
         return contextBound.replace(/\{actor\.(name|nickname|class|level|profile|hp|mp|tp|mhp|maxHp|mmp|maxMp|maxTp|currentExp|totalExp|nextExp|nextRequiredExp|atk|def|mat|mdf|agi|luk)\}/gi,
@@ -2070,7 +2638,13 @@
     };
 
     ReactorUI.listRowsSignature = function(rows) {
-        return JSON.stringify(rows.map(row => Object.keys(row).filter(key => key !== "data").sort().map(key => [key, row[key]])));
+        // What a row paints and how it is found: its key, its text and whether it can be chosen (with its count
+        // and value). The other fields reach the screen through the selection, which is published at every poll.
+        let signature = "";
+        for (const row of rows) {
+            signature += row.key + "\u0001" + row.text + "\u0001" + row.enabled + "\u0001" + row.count + "\u0001" + row.value + "\u0002";
+        }
+        return signature;
     };
 
     /** The row selected in the list a node follows (its filterContext), or null. */
@@ -2128,14 +2702,35 @@
         if (!focused || !focused.node || focused.node().contextName !== node.compareContext) return null;
         const row = scene.context(node.compareContext);
         if (!row || row.slot === "" || row.slot == null || !actor.forceChangeEquip) return null;
+        // Asked at every poll of the parameter list. The copy is made once per candidate, as the stock screen
+        // makes it once per cursor move, and again when the actor's class, level, equipment or states differ.
+        const part = list => Array.isArray(list) ? list.map(entry => entry && typeof entry === "object" ? entry._dataClass + entry._itemId : entry).join(",") : "";
+        const key = [actor.actorId ? actor.actorId() : 0, row.slot, row.data ? row.kind + ":" + row.data.id : "", actor._classId, actor._level,
+            part(actor._equips), part(actor._states), part(actor._paramPlus), part(actor._buffs)].join("|");
+        const kept = scene._equipPreview;
+        if (kept && kept.source === actor && kept.key === key) return kept.actor;
         const preview = JsonEx.makeDeepCopy(actor);
         preview.forceChangeEquip(Number(row.slot) || 0, row.data || null);
+        scene._equipPreview = { source: actor, key, actor: preview };
         return preview;
+    };
+
+    /** A save's date as text, written out once per timestamp (Save and Load lists ask for every slot at each poll). */
+    ReactorUI._slotDates = new Map();
+    ReactorUI.slotDateText = function(timestamp) {
+        let date = this._slotDates.get(timestamp);
+        if (date === undefined) {
+            if (this._slotDates.size > 500) this._slotDates.clear();
+            date = new Date(timestamp).toLocaleString();
+            this._slotDates.set(timestamp, date);
+        }
+        return date;
     };
 
     /** Rows for the fixed declarative List sources. */
     ReactorUI.listRows = function(node, scene) {
         const rows = [];
+        const keys = new Set();
         const add = row => {
             const base = {
                 key: String(row.kind || "row") + ":" + String(row.id), kind: "row", id: 0, value: 0,
@@ -2147,7 +2742,8 @@
             row = Object.assign(base, row);
             const baseKey = row.key;
             let duplicate = 1;
-            while (rows.some(existing => existing.key === row.key)) row.key = baseKey + ":" + duplicate++;
+            while (keys.has(row.key)) row.key = baseKey + ":" + duplicate++;
+            keys.add(row.key);
             row.icon = row.iconIndex;
             row.index = rows.length + 1;
             row.text = this.formatListRow(node.rowText, row);
@@ -2313,11 +2909,21 @@
                     ["commandRemember", terms.commandRemember || "Command Remember"]
                 ];
                 if (terms.touchUI != null && config.touchUI !== undefined) descriptors.push(["touchUI", terms.touchUI]);
+                // Graphics, where and when the stock Options window offers it (Window_Options.addGraphicsOption).
+                const graphics = typeof Window_Options !== "undefined" && Window_Options.GRAPHICS_TEXT && Window_Options.GRAPHICS_VALUES
+                    && typeof Reactor3D !== "undefined" && Reactor3D.Quality && config.reactor3dSeen ? Window_Options.GRAPHICS_TEXT : null;
+                if (graphics) descriptors.push(["graphicsQuality", graphics.name]);
                 descriptors.push(
                     ["bgmVolume", terms.bgmVolume || "BGM Volume"], ["bgsVolume", terms.bgsVolume || "BGS Volume"],
                     ["meVolume", terms.meVolume || "ME Volume"], ["seVolume", terms.seVolume || "SE Volume"]
                 );
                 for (const [symbol, name] of descriptors) {
+                    if (symbol === "graphicsQuality") {
+                        const value = Window_Options.GRAPHICS_VALUES.includes(config.graphicsQuality) ? config.graphicsQuality : "auto";
+                        add({ key: "option:" + symbol, kind: "option", id: symbol, value, symbol, name,
+                            valueText: graphics[value] || graphics.auto, defaultText: "{name}  {valueText}" });
+                        continue;
+                    }
                     const volume = symbol.includes("Volume");
                     const value = volume ? Math.max(0, Math.min(100, Number(config[symbol]) || 0)) : !!config[symbol];
                     add({ key: "option:" + symbol, kind: "option", id: symbol, value, symbol, name,
@@ -2339,7 +2945,7 @@
                     const partyCharacters = info && Array.isArray(info.characters) ? info.characters.map(entry => entry[0] + "[" + entry[1] + "]").join(", ") : "";
                     const partyFaces = info && Array.isArray(info.faces) ? info.faces.map(entry => entry[0] + "[" + entry[1] + "]").join(", ") : "";
                     add({ key: "save:" + id, kind: "save", id, value: id, name, title: info && info.title || "",
-                        playtime: info && info.playtime || "", timestamp: timestamp || "", date: timestamp ? new Date(timestamp).toLocaleString() : "",
+                        playtime: info && info.playtime || "", timestamp: timestamp || "", date: timestamp ? this.slotDateText(timestamp) : "",
                         partyCharacters, partyFaces, existing, enabled, data: info,
                         defaultText: info && info.playtime ? "{name}  {playtime}" : "{name}" });
                 }
@@ -2475,7 +3081,7 @@
             case "title2": bitmap = node.file ? ImageManager.loadTitle2(node.file) : null; break;
         }
         this._uiBitmap = bitmap;
-        if (bitmap && !bitmap.isReady()) bitmap.addLoadListener(() => this.refresh());
+        if (bitmap && !bitmap.isReady()) bitmap.addLoadListener(() => { if (!this.destroyed && this.contents) this.refresh(); });
     };
 
     Window_ReactorUINode.prototype.refresh = function() {
@@ -2491,7 +3097,7 @@
             case "input": this.drawSurface(); this.drawInput(); this.drawFocus(); break;
         }
         this.syncVisualState();
-        this._uiLastText = this.currentText();
+        if (this._uiDynamicText) this._uiLastText = this.currentText();
     };
 
     //-------------------------------------------------------------------------
@@ -2765,6 +3371,21 @@
         P.gaugeBackColor = function() { return this._uiNode.gaugeBackColor || Sprite_Gauge.prototype.gaugeBackColor.call(this); };
         P.gaugeColor1 = function() { return this._uiNode.gaugeColor1 || Sprite_Gauge.prototype.gaugeColor1.call(this); };
         P.gaugeColor2 = function() { return this._uiNode.gaugeColor2 || Sprite_Gauge.prototype.gaugeColor2.call(this); };
+        P.drawGaugeRect = function(x, y, width, height) {
+            const node = this._uiNode;
+            if (!node.gaugeImage && !node.gaugeBackImage) { Sprite_Gauge.prototype.drawGaugeRect.call(this, x, y, width, height); return; }
+            // The bar as a picture cut to the value (the Actor Panel's Meter image), and its back as a picture;
+            // either falls back to the drawn one when it is not set or its file is missing.
+            if (!this._uiPictureRedraw) this._uiPictureRedraw = () => { if (!this.destroyed && this.bitmap) this.redraw(); };
+            const rect = { x, y, width, height };
+            if (!(node.gaugeBackImage && ReactorUI.drawImageMeter(this.bitmap, rect, node.gaugeBackImage, 1, this._uiPictureRedraw))) {
+                this.bitmap.fillRect(x, y, width, height, this.gaugeBackColor());
+            }
+            const rate = this.gaugeRate();
+            if (!(node.gaugeImage && ReactorUI.drawImageMeter(this.bitmap, rect, node.gaugeImage, rate, this._uiPictureRedraw))) {
+                this.bitmap.gradientFillRect(x + 1, y + 1, Math.floor((width - 2) * rate), height - 2, this.gaugeColor1(), this.gaugeColor2());
+            }
+        };
         P.drawLabel = function() {
             if (!this._uiNode.showLabel) return;
             if (!this.label().includes("\\")) { Sprite_Gauge.prototype.drawLabel.call(this); return; }
@@ -2786,8 +3407,51 @@
         return Sprite_ReactorUIGauge;
     };
 
+    /**
+     * A picture that is loaded, or null: `ref` if it can be drawn, else `fallback` (the normal picture while a
+     * state's own is loading or missing). `redraw` runs when a picture still loading arrives or fails.
+     */
+    ReactorUI.readyPicture = function(ref, fallback, redraw) {
+        for (const name of ref && fallback && fallback !== ref ? [ref, fallback] : [ref || fallback]) {
+            const image = name ? this.softImage(name) : null;
+            if (image && !this.softFailed(image) && this.whenReady(image, redraw)) return image;
+        }
+        return null;
+    };
+
+    /** Draws a picture over a rectangle of a bitmap by `fit`: stretched, whole inside, repeated or nine-sliced by the node's slice borders. */
+    ReactorUI.blitPicture = function(bitmap, image, x, y, width, height, fit, node, opacity, radius) {
+        const insets = { left: node.sliceLeft, top: node.sliceTop, right: node.sliceRight, bottom: node.sliceBottom };
+        const segments = Motion.pictureSegments(image.width, image.height, width, height, fit, insets, this.nineSliceSegments);
+        const context = bitmap.context;
+        const clipped = radius > 0 && context;
+        if (clipped) {
+            context.save();
+            roundedPath(context, x, y, width, height, radius);
+            context.clip();
+        }
+        bitmap.paintOpacity = opacity;
+        for (const part of segments) bitmap.blt(image, part.sx, part.sy, part.sw, part.sh, x + part.dx, y + part.dy, part.dw, part.dh);
+        if (clipped) context.restore();
+        bitmap.paintOpacity = 255;
+    };
+
+    /** Fill "picture": the node's picture (a control's by its state) behind its contents; nothing when it is missing. */
+    Window_ReactorUINode.prototype.drawPictureFill = function() {
+        const node = this._uiNode;
+        const bitmap = this.contentsBack || this.contents;
+        if (!this._uiPictureRedraw) this._uiPictureRedraw = () => { if (!this.destroyed && this.contents) this.refresh(); };
+        // A list's own states are its rows': its surface is always the normal picture.
+        const state = node.type === "list" ? "base" : this.controlState();
+        const image = ReactorUI.readyPicture(Motion.statePicture(node, state), node.fillImage, this._uiPictureRedraw);
+        if (image) ReactorUI.blitPicture(bitmap, image, 0, 0, this.contentsWidth(), this.contentsHeight(), node.fillFit, node, node.fillOpacity, node.radius);
+        if (node.borderWidth > 0) this.drawBorder(bitmap);
+        touch(bitmap);
+    };
+
     Window_ReactorUINode.prototype.drawSurface = function() {
         const node = this._uiNode;
+        if (node.fill === "picture") { this.drawPictureFill(); return; }
         const stateFill = ReactorUI.controlStyle(node, this.controlState()).fillColor;
         if (!stateFill && (node.fill === "window" || node.fill === "none")) {
             if (node.fill === "window" && node.borderWidth > 0) this.drawBorder(this.contents);
@@ -2854,19 +3518,17 @@
             sw = pw;
             sh = ph;
         } else if (node.source === "character") {
-            const big = ImageManager.isBigCharacter(node.file);
-            const pw = bitmap.width / (big ? 3 : 12);
-            const ph = bitmap.height / (big ? 4 : 8);
-            const n = big ? 0 : node.index;
-            sx = ((n % 4) * 3 + 1) * pw;
-            sy = Math.floor(n / 4) * 4 * ph;
-            sw = pw;
-            sh = ph;
+            const cell = Window_Base.rrCharacterCell(node.file, node.index, bitmap.width, bitmap.height);
+            sx = cell.sx;
+            sy = cell.sy;
+            sw = cell.pw;
+            sh = cell.ph;
         } else if (node.source === "icon") {
             bitmap = ReactorUI.iconBitmap(bitmap, node.index);
             sw = bitmap.width;
             sh = bitmap.height;
         }
+        if (this._uiMotion && this._uiMotion.picture) { this.showPictureSprite(bitmap); return; }
         const w = this.contentsWidth();
         const h = this.contentsHeight();
         if (node.nineSlice && (node.source === "picture" || node.source === "system")) {
@@ -2909,7 +3571,7 @@
         const node = this._uiNode;
         // Buttons inside a shared title/menu panel have no window fill of
         // their own. They still need the skin's normal selection cursor.
-        const cursor = this._uiFocused && !node.focusedFillColor;
+        const cursor = this._uiFocused && !node.focusedFillColor && !(node.fill === "picture" && node.focusedImage);
         this.setCursorRect(0, 0, cursor ? this.contentsWidth() : 0, cursor ? this.contentsHeight() : 0);
         if (this._uiFocused && node.focusedBorderColor) {
             this.drawBorder(this.contents, ReactorUI.cssColor(node.focusedBorderColor, 255), Math.max(2, node.borderWidth));
@@ -2918,15 +3580,27 @@
 
     Window_ReactorUINode.prototype.update = function() {
         Window_Base.prototype.update.call(this);
+        // A hidden node does no work: updateConditions brings it up to date on the frame it shows again.
+        if (this.visible === false) { this._uiStale = true; return; }
+        this.updateShown();
+        if (this._uiMotion) this.updateMotion();
+    };
+
+    /** The node's per-frame work: what it shows is compared with the game and redrawn when it differs. */
+    Window_ReactorUINode.prototype.updateShown = function() {
+        if (this._uiStale && this._uiMotion) this.restartMotion();
+        this._uiStale = false;
         if (this.isEditing && this.isEditing() && ++this._uiCaretTimer >= 30) {
             this._uiCaretTimer = 0;
             this._uiCaretOn = !this._uiCaretOn;
             this.refresh();
         }
-        if (this._uiNode.type === "text" || this._uiNode.type === "button") {
+        if (this._uiDynamicText && (this._uiNode.type === "text" || this._uiNode.type === "button")) {
             if (this.currentText() !== this._uiLastText) {
+                // An auto-sized text moves what is anchored to it: the scene lays out once this frame,
+                // after its windows, however many texts changed.
                 if (this._uiNode.type === "text" && (this._uiNode.width === 0 || this._uiNode.height === 0)
-                    && this._uiScene && this._uiScene.refreshNodeLayouts) this._uiScene.refreshNodeLayouts();
+                    && this._uiScene && this._uiScene.refreshNodeLayouts) this._uiScene._layoutDirty = true;
                 this.refresh();
             }
         }
@@ -2974,6 +3648,10 @@
         this._uiRows = ReactorUI.listRows(node, scene);
         this._uiRowsSignature = ReactorUI.listRowsSignature(this._uiRows);
         this._uiRefreshWait = 0;
+        this._uiMotion = node.motion ? ReactorUI.motionState(node) : null;
+        this._uiPosed = !!this._uiMotion;
+        // Whether rows have pictures of their own under them.
+        this._uiRowPictures = !!(node.rowImage || node.focusedImage || node.disabledImage);
         Window_Selectable.prototype.initialize.call(this, rect);
         this.opacity = this.usesSkin() ? 255 : 0;
         this.frameVisible = this.usesSkin();
@@ -3022,6 +3700,12 @@
     Window_ReactorUIList.prototype.setPressed = Window_ReactorUINode.prototype.setPressed;
     Window_ReactorUIList.prototype.controlState = Window_ReactorUINode.prototype.controlState;
     Window_ReactorUIList.prototype.syncVisualState = Window_ReactorUINode.prototype.syncVisualState;
+    Window_ReactorUIList.prototype.applyMotionPose = Window_ReactorUINode.prototype.applyMotionPose;
+    Window_ReactorUIList.prototype.updateMotion = Window_ReactorUINode.prototype.updateMotion;
+    Window_ReactorUIList.prototype.placeCarried = Window_ReactorUINode.prototype.placeCarried;
+    Window_ReactorUIList.prototype.restartMotion = Window_ReactorUINode.prototype.restartMotion;
+    Window_ReactorUIList.prototype.updatePictureSprite = Window_ReactorUINode.prototype.updatePictureSprite;
+    Window_ReactorUIList.prototype.drawPictureFill = Window_ReactorUINode.prototype.drawPictureFill;
     Window_ReactorUIList.prototype.resetFontSettings = function() {
         Window_Base.prototype.resetFontSettings.call(this);
         const node = this._uiNode;
@@ -3065,7 +3749,7 @@
         // A text row's highlight is painted with the row, not drawn as a
         // cursor, so moving the selection repaints (the surface under the
         // rows may be a fill, so the whole list rather than two rows).
-        if (previous !== index && this._uiFocused && this._uiNode.rowLayout !== "actorPanel" && this.contents) this.paint();
+        if (previous !== index && this._uiFocused && (this._uiNode.rowLayout !== "actorPanel" || this._uiRowPictures) && this.contents) this.paint();
         this.publishSelection();
     };
     Window_ReactorUIList.prototype.isCurrentItemEnabled = function() {
@@ -3102,12 +3786,31 @@
         if (this._uiNode.dataSource === "options") this.changeOption(false, false);
         else Window_Selectable.prototype.cursorLeft.call(this);
     };
+    /**
+     * A row's picture by its state, stretched under the row with the node's slice borders kept; returns the
+     * state whose own picture was drawn, else "".
+     */
+    Window_ReactorUIList.prototype.drawRowPicture = function(index) {
+        const node = this._uiNode, row = this._uiRows[index];
+        const state = !this._uiEnabled || (row && row.enabled === false) ? "disabled" : this._uiFocused && index === this.index() ? "focused" : "base";
+        const ref = Motion.rowPicture(node, state);
+        if (!ref) return "";
+        if (!this._uiPictureRedraw) this._uiPictureRedraw = () => { if (!this.destroyed && this.contents) this.refresh(); };
+        const image = ReactorUI.readyPicture(ref, node.rowImage, this._uiPictureRedraw);
+        if (!image) return "";
+        const rect = this.itemRect(index);
+        ReactorUI.blitPicture(this.contentsBack, image, rect.x, rect.y, rect.width, rect.height, "slice", node, 255, 0);
+        return image === ReactorUI.softImage(ref) && ref !== node.rowImage ? state : "";
+    };
+
     Window_ReactorUIList.prototype.drawItemBackground = function(index) {
         if (this.usesSkin()) Window_Selectable.prototype.drawItemBackground.call(this, index);
+        // A Selected row picture is the selection mark: no highlight is laid over it.
+        const pictured = this._uiRowPictures ? this.drawRowPicture(index) : "";
         if(this._uiScene?._actorSelection?.pending && this._uiScene._actorSelection.pending===this._uiRows[index]?.data) {
             const r=this.itemRect(index); this.contentsBack.fillRect(r.x,r.y,r.width,r.height,ColorManager.pendingColor());
         }
-        if (this._uiFocused && index === this.index() && (this._uiNode.rowLayout !== "actorPanel" || this._uiNode.focusedFillColor)) {
+        if (pictured !== "focused" && this._uiFocused && index === this.index() && (this._uiNode.rowLayout !== "actorPanel" || this._uiNode.focusedFillColor)) {
             const rect = this.itemRect(index);
             const color = this._uiNode.focusedFillColor || this._uiNode.highlightColor;
             const alpha = this._uiNode.focusedFillColor ? 255 : 96;
@@ -3146,7 +3849,12 @@
         const slash = text.indexOf("/");
         const folder = slash > 0 ? text.slice(0, slash) : "pictures";
         const name = slash > 0 ? text.slice(slash + 1) : text;
-        const bitmap = Bitmap.load("img/" + folder + "/" + Utils.encodeURI(name) + ".png");
+        // A name that carries its own extension (a .jpg or .webp picked in the editor) is loaded as written,
+        // as ImageManager.loadBitmap does; any other is a .png.
+        const lower = name.toLowerCase();
+        const extensions = typeof ImageManager !== "undefined" && ImageManager._imageExtensions || [".png"];
+        const explicit = extensions.some(extension => lower.endsWith(extension));
+        const bitmap = Bitmap.load("img/" + folder + "/" + Utils.encodeURI(name) + (explicit ? "" : ".png"));
         this._softImages.set(text, bitmap);
         return bitmap;
     };
@@ -3165,7 +3873,8 @@
             const settle = () => {
                 const redraws = bitmap._rrRedraws;
                 bitmap._rrRedraws = null;
-                if (redraws) for (const fn of redraws) fn();
+                // One part's failure must not stop the others (or reach the error screen from a load listener).
+                if (redraws) for (const fn of redraws) { try { fn(); } catch (error) { console.warn("ReactorUI: a redraw after a picture loaded failed", error); } }
             };
             bitmap.addLoadListener(settle);
             // A picture that fails calls no load listener; its parts redraw then, with their fallback.
@@ -3180,7 +3889,6 @@
         return false;
     };
 
-    /** A meter picture cut to the rate, stretched to the part's box. */
     /**
      * A meter picture cut to the rate and stretched to the part's box. A
      * two-row picture (MOG's) holds the meter on top and the damage trail
@@ -3324,7 +4032,18 @@
                 }
                 ctx.translate(r.x,r.y);
                 ctx.scale(r.width/ImageManager.faceWidth,r.height/ImageManager.faceHeight);
-                Window_StatusBase.prototype.drawActorFace.call(this,actor,0,0,ImageManager.faceWidth,ImageManager.faceHeight);
+                // drawActorFace (a face sheet, or an actor's rendered 3D face) draws into `contents`. For a part
+                // on the back layer it is called on a stand-in whose `contents` is that layer, or the face
+                // landed on the front layer at the window's corner, unscaled.
+                let target=this;
+                if(bitmap!==this.contents) {
+                    if(!this._uiBackFace || this._uiBackFace.contents!==bitmap) {
+                        this._uiBackFace=Object.create(this,{contents:{value:bitmap},
+                            refresh:{value:()=>{if(!this.destroyed && this.contents) this.refresh();}}});
+                    }
+                    target=this._uiBackFace;
+                }
+                Window_StatusBase.prototype.drawActorFace.call(target,actor,0,0,ImageManager.faceWidth,ImageManager.faceHeight);
             } else if(element.kind==='states') {
                 const sheet=ImageManager.loadSystem('IconSet');
                 if(!sheet.isReady()) {
@@ -3342,11 +4061,11 @@
             } else {
                 const data=element.gauge?ReactorUI.actorGaugeData(actor,element.gauge,element):null;
                 const numberText=!data?'':element.valueFormat==='percent'?String(Math.round(data.rate*100)):element.valueFormat==='current'?String(data.value):data.value+'/'+data.max;
-                if(element.kind==='gauge' && element.meterImage && ReactorUI.drawImageMeter(bitmap,r,element.meterImage,data.rate,()=>this.refresh(),element.meterRows,data.rate)) {
+                if(element.kind==='gauge' && element.meterImage && ReactorUI.drawImageMeter(bitmap,r,element.meterImage,data.rate,()=>{if(!this.destroyed&&this.contents)this.refresh();},element.meterRows,data.rate)) {
                     // drawn from the picture
                 } else if(element.kind==='gauge') {
                     ReactorUI.drawActorGauge(ctx,r,element,data.rate,[data.color,data.color2,ColorManager.gaugeBackColor()]);
-                } else if(element.kind==='value' && element.numberImage && ReactorUI.drawImageNumber(bitmap,r,element.numberImage,numberText,element.align,()=>this.refresh())) {
+                } else if(element.kind==='value' && element.numberImage && ReactorUI.drawImageNumber(bitmap,r,element.numberImage,numberText,element.align,()=>{if(!this.destroyed&&this.contents)this.refresh();})) {
                     // drawn from the digit sheet
                 } else {
                     let label=element.kind==='value'?(element.valueFormat==='percent'?Math.round(data.rate*100)+'%':element.valueFormat==='current'?String(data.value):data.value+' / '+data.max)
@@ -3356,7 +4075,7 @@
                     // drawTextEx on the list itself resets the authored font.
                     const renderer=ReactorUI.gaugeLabelRenderer({bitmap,textHeight:()=>r.height,
                         setupLabelFont:()=>{this.resetFontSettings(); bitmap.fontSize=element.fontSize; if(element.color) bitmap.textColor=element.color;},
-                        redraw:()=>this.refresh()});
+                        redraw:()=>{if(!this.destroyed&&this.contents)this.refresh();}});
                     const measured=renderer.textSizeEx(label).width;
                     const x=r.x+(element.align==='right'?Math.max(0,r.width-measured):element.align==='center'?Math.max(0,(r.width-measured)/2):0);
                     renderer.drawTextEx(label,x,r.y,r.width);
@@ -3406,7 +4125,7 @@
             this.setCursorRect(0, 0, this.innerWidth, Math.min(this.innerHeight, last.y + last.height));
             return;
         }
-        if (this._uiNode.rowLayout === "actorPanel" && this._uiFocused && !this._uiNode.focusedFillColor && this.index() >= 0) {
+        if (this._uiNode.rowLayout === "actorPanel" && this._uiFocused && !this._uiNode.focusedFillColor && !this._uiNode.focusedImage && this.index() >= 0) {
             const rect = this.itemRect(this.index());
             this.setCursorRect(rect.x, rect.y, rect.width, rect.height);
         } else this.setCursorRect(0, 0, 0, 0);
@@ -3429,18 +4148,49 @@
     // pictures, over the row backgrounds and under the row text, moved and
     // redrawn per frame without repainting the rows.
 
+    const NO_PANEL_PARTS = Object.freeze([]);
+    /** A portrait that neither reacts nor changes frame. */
+    const STILL_FACE = Object.freeze({ frame: 0, shake: 0, zoom: 1 });
+
     Window_ReactorUIList.prototype.panelSpriteElements = function() {
         const node = this._uiNode;
-        if (node.rowLayout !== "actorPanel" || !this._uiRows.length) return [];
+        if (node.rowLayout !== "actorPanel" || !this._uiRows.length) return NO_PANEL_PARTS;
         const rect = this.itemRect(0);
-        const key = rect.width + "x" + rect.height + ":" + this.contents.fontSize + ":" + JSON.stringify(node.actorElements || {});
-        if (key !== this._uiPanelLayoutKey) {
-            this._uiPanelLayoutKey = key;
-            const elements = ReactorUI.actorPanelLayout(node, rect.width, rect.height, this.contents.fontSize);
-            this._uiPanelSpriteElements = Object.entries(elements).filter(([, element]) => element.visible && ReactorUI.isSpriteElement(node, element))
+        // Asked every frame. The node's parts are fixed for the window's life, so the layout follows
+        // the row's size and the font size alone.
+        const fontSize = this.contents.fontSize;
+        if (rect.width !== this._uiPanelLayoutWidth || rect.height !== this._uiPanelLayoutHeight || fontSize !== this._uiPanelLayoutFont) {
+            this._uiPanelLayoutWidth = rect.width;
+            this._uiPanelLayoutHeight = rect.height;
+            this._uiPanelLayoutFont = fontSize;
+            const elements = ReactorUI.actorPanelLayout(node, rect.width, rect.height, fontSize);
+            const parts = Object.entries(elements).filter(([, element]) => element.visible && ReactorUI.isSpriteElement(node, element))
                 .sort((a, b) => Number(!!b[1].behind) - Number(!!a[1].behind));
+            // Each actor's sprites are kept by their place in this list: another set of parts starts them again.
+            const names = parts.map(([key]) => key).join("|");
+            if (names !== this._uiPanelPartNames) {
+                this._uiPanelPartNames = names;
+                this.clearPanelSprites();
+            }
+            this._uiPanelSpriteElements = parts;
         }
         return this._uiPanelSpriteElements;
+    };
+
+    /** Takes down one actor's sprites (an entry of `_uiPanelSprites`). */
+    Window_ReactorUIList.prototype.removePanelSprites = function(entry) {
+        for (const sprite of entry.sprites) {
+            if (!sprite) continue;
+            if (this._uiPanelLayer) this._uiPanelLayer.removeChild(sprite);
+            if (sprite._rrOwnBitmap && sprite.bitmap) sprite.bitmap.destroy();
+        }
+        entry.sprites.length = 0;
+    };
+
+    Window_ReactorUIList.prototype.clearPanelSprites = function() {
+        if (!this._uiPanelSprites) return;
+        for (const entry of this._uiPanelSprites.values()) this.removePanelSprites(entry);
+        this._uiPanelSprites.clear();
     };
 
     Window_ReactorUIList.prototype.panelLayer = function() {
@@ -3459,21 +4209,34 @@
         const elements = this.panelSpriteElements();
         if (!elements.length && !this._uiPanelLayer) return;
         const layer = this.panelLayer();
-        const node = this._uiNode;
-        const seen = new Set();
-        this._uiRows.forEach((row, index) => {
-            const actor = row.data;
-            if (!actor) return;
+        // Runs every frame for as long as the panel shows: sprites are found by actor and by the part's
+        // place in the list, and an actor seen this frame is stamped, so nothing is built to do it.
+        const actors = this._uiPanelSprites;
+        const stamp = this._uiPanelStamp = (this._uiPanelStamp || 0) + 1;
+        const rows = this._uiRows;
+        let seen = 0;
+        for (let index = 0; index < rows.length; index++) {
+            const actor = rows[index].data;
+            if (!actor) continue;
             const rect = this.itemRect(index);
             const active = ReactorUI.isActiveActor(actor);
-            for (const [key, element] of elements) {
-                const id = (actor.actorId ? actor.actorId() : index) + ":" + key;
-                seen.add(id);
-                let sprite = this._uiPanelSprites.get(id);
+            const id = actor.actorId ? actor.actorId() : index;
+            let entry = actors.get(id);
+            if (!entry) {
+                entry = { sprites: [], stamp: 0 };
+                actors.set(id, entry);
+            }
+            if (entry.stamp !== stamp) {
+                entry.stamp = stamp;
+                seen++;
+            }
+            for (let part = 0; part < elements.length; part++) {
+                const element = elements[part][1];
+                let sprite = entry.sprites[part];
                 if (!sprite) {
                     sprite = new Sprite();
                     sprite._rrKind = element.kind === "portrait" ? "portrait" : element.kind === "image" ? "image" : "gauge";
-                    this._uiPanelSprites.set(id, sprite);
+                    entry.sprites[part] = sprite;
                     layer.addChild(sprite);
                 }
                 const cx = rect.x + element.x + element.width / 2;
@@ -3488,26 +4251,37 @@
                     if (element.rotation) sprite.rotation += element.rotation * Math.PI / 180;
                 } else this.updateGaugeSprite(sprite, actor, element, rect.x + element.x, rect.y + element.y);
             }
-        });
-        for (const [id, sprite] of this._uiPanelSprites) {
-            if (seen.has(id)) continue;
-            layer.removeChild(sprite);
-            if (sprite._rrOwnBitmap && sprite.bitmap) sprite.bitmap.destroy();
-            this._uiPanelSprites.delete(id);
+        }
+        // Someone left the rows: their sprites go.
+        if (seen !== actors.size) {
+            for (const [id, entry] of actors) {
+                if (entry.stamp === stamp) continue;
+                this.removePanelSprites(entry);
+                actors.delete(id);
+            }
         }
     };
 
     Window_ReactorUIList.prototype.updatePortraitSprite = function(sprite, actor, element, cx, cy) {
         const node = this._uiNode;
         const picture = node.portraitSource === "picture";
-        const file = picture ? node.portraitPattern.replace(/\{id\}/g, String(actor.actorId())) : actor.faceName();
+        let file;
+        if (picture) {
+            // The picture's name is written out once per actor, not once a frame.
+            const id = actor.actorId();
+            if (sprite._rrPatternId !== id) {
+                sprite._rrPatternId = id;
+                sprite._rrPattern = node.portraitPattern.replace(/\{id\}/g, String(id));
+            }
+            file = sprite._rrPattern;
+        } else file = actor.faceName();
         if (sprite._rrFile !== file) {
             sprite._rrFile = file;
             sprite.bitmap = picture ? ReactorUI.softImage(file.includes("/") ? file : "pictures/" + file) : ImageManager.loadFace(file);
         }
         const bitmap = sprite.bitmap;
         if (!bitmap || !bitmap.isReady()) return;
-        const state = node.portraitMotion || node.portraitFrames === 5 ? ReactorUI.faceState(actor) : { frame: 0, shake: 0, zoom: 1 };
+        const state = node.portraitMotion || node.portraitFrames === 5 ? ReactorUI.faceState(actor) : STILL_FACE;
         let fw, fh, fx = 0, fy = 0;
         if (picture) {
             const frames = node.portraitFrames;
@@ -3564,7 +4338,11 @@
     };
 
     Window_ReactorUIList.prototype.destroy = function(options) {
-        if (this._uiPanelSprites) for (const sprite of this._uiPanelSprites.values()) if (sprite._rrOwnBitmap && sprite.bitmap) sprite.bitmap.destroy();
+        if (this._uiPanelSprites) {
+            for (const entry of this._uiPanelSprites.values()) {
+                for (const sprite of entry.sprites) if (sprite && sprite._rrOwnBitmap && sprite.bitmap) sprite.bitmap.destroy();
+            }
+        }
         Window_Selectable.prototype.destroy.call(this, options);
     };
 
@@ -3572,9 +4350,36 @@
         if (this._uiFocused && this._uiScene.acceptsInput()) this.activate();
         else this.deactivate();
         Window_Selectable.prototype.update.call(this);
-        if (this._uiNode.rowLayout === "actorPanel") this.updatePanelSprites();
+        if (this.visible === false) {
+            // Hidden: its sprites wait. Its rows are still read, as its selection may be the context that
+            // shown nodes follow, but not in an overlay hidden as a whole, where nothing shows.
+            this._uiStale = true;
+            if (this._uiScene._hiddenWhole) return;
+        } else {
+            this._uiStale = false;
+            if (this._uiNode.rowLayout === "actorPanel") this.updatePanelSprites();
+            if (this._uiMotion) this.updateMotion();
+        }
         if (++this._uiRefreshWait < 15) return;
+        this.pollRows();
+    };
+
+    /** Shown again after an update spent hidden (updateConditions): sprites and rows are brought up to date now. */
+    Window_ReactorUIList.prototype.updateShown = function() {
+        if (this._uiStale && this._uiMotion) this.restartMotion();
+        this._uiStale = false;
+        if (this._uiNode.rowLayout === "actorPanel") this.updatePanelSprites();
+        this.pollRows();
+    };
+
+    /** Reads the rows again and repaints when they differ: four times a second, and at once when asked to. */
+    Window_ReactorUIList.prototype.pollRows = function() {
         this._uiRefreshWait = 0;
+        // Rows written in the editor never change: only the selection is published again, as an unchanged list does.
+        if (this._uiNode.dataSource === "literal" && Array.isArray(this._uiNode.items) && this._uiRows.length === this._uiNode.items.length) {
+            this.publishSelection();
+            return;
+        }
         const rows = ReactorUI.listRows(this._uiNode, this._uiScene);
         const signature = ReactorUI.listRowsSignature(rows) + (this._uiNode.rowLayout==='actorPanel'?ReactorUI.actorPanelRevision(this._uiNode,rows):'');
         const selected = this.selectedRow();
@@ -3735,6 +4540,7 @@
 
     /** Every list re-reads its rows on its next update: after an item is used, equipped, bought or sold. */
     Scene_ReactorUI.prototype.refreshAllLists = function() {
+        this._equipPreview = null;
         for (const window of this._nodeWindows) if (window.node().type === "list") window._uiRefreshWait = 15;
     };
 
@@ -3795,13 +4601,43 @@
         // A Victory record is drawn by the Victory interface itself, over this scene (Playtest Interface).
         if (this._interface && this._interface.mode !== "victory") {
             this.createNodes();
+            const pictures = ReactorUI.interfacePictures(this._interface);
+            if (pictures.length) {
+                this._pendingPictures = pictures.map(ref => ReactorUI.softImage(ref)).filter(Boolean);
+                this._picturesBy = performance.now() + 1000;
+            }
             if (this._resumeState) this.restoreResumeState(this._resumeState);
-            this.applyInterfaceTransition(this._transitionPhase === "opening" ? 0 : 1);
+            // Progress 0 either way: the start of the opening transition, or (with none) the start of the closing
+            // one, which is the interface as it stands. Progress 1 of the closing one left a record that opens
+            // with no transition and closes with a fade or a slide unseen for as long as it was open.
+            this.applyInterfaceTransition(0);
         }
     };
 
     Scene_ReactorUI.prototype.isReady = function() {
-        return ReactorUI.isReady() && Scene_MenuBase.prototype.isReady.call(this);
+        return ReactorUI.isReady() && Scene_MenuBase.prototype.isReady.call(this) && (!this._pendingPictures || this.picturesReady());
+    };
+
+    /** Every picture a record's nodes name as their look: fills, state and row pictures, gauge bars. */
+    ReactorUI.interfacePictures = function(record) {
+        const refs = [];
+        for (const node of record && record.nodes || []) {
+            if (node.fill === "picture" && node.fillImage) refs.push(node.fillImage);
+            for (const ref of [node.focusedImage, node.pressedImage, node.disabledImage, node.rowImage, node.gaugeImage, node.gaugeBackImage]) if (ref) refs.push(ref);
+        }
+        return refs;
+    };
+
+    /**
+     * A scene opens with its pictures in place, so nothing pops in a moment later: it waits for them as it
+     * waits for the game's own images, but never more than a second, and a missing file holds nothing up.
+     */
+    Scene_ReactorUI.prototype.picturesReady = function() {
+        if (performance.now() < this._picturesBy) {
+            for (const bitmap of this._pendingPictures) if (!bitmap.isReady() && !ReactorUI.softFailed(bitmap)) return false;
+        }
+        this._pendingPictures = null;
+        return true;
     };
 
     Scene_ReactorUI.prototype.createBackground = function() {
@@ -3909,16 +4745,19 @@
             window.opacity = Math.min(window.opacity, opacity);
             window.contentsOpacity = opacity;
             window._uiOpacity = opacity;
+            if (window._uiMotion) (this._motionWindows || (this._motionWindows = [])).push(window);
             window.syncVisualState();
             this._nodeWindows.push(window);
             this.addWindow(window);
         }
+        ReactorUI.linkCarried(this._nodeWindows, this._interface.nodes);
         this.updateConditions();
         this.focusInitial();
     };
 
     /** Re-measures auto-sized text and repositions it and anchored descendants. */
     Scene_ReactorUI.prototype.refreshNodeLayouts = function() {
+        this._layoutDirty = false;
         if (!this._interface) return;
         const fit = this._interface.fit || null;
         const root = fit ? new Rectangle(0, 0, fit.width, fit.height) : new Rectangle(0, 0, Graphics.width, Graphics.height);
@@ -3956,8 +4795,17 @@
             this._measureWindow = new (built(Window_ReactorUINode))(new Rectangle(0, 0, 8, 8), this, node);
             this._measureWindow.visible = false;
         }
-        this._measureWindow._uiNode = node;
-        return this._measureWindow.measure();
+        const measurer = this._measureWindow;
+        measurer._uiNode = node;
+        // A layout measures every auto-sized text; one whose words have not changed keeps its size.
+        const words = measurer.convertEscapeCharacters(measurer.labelValue());
+        const sizes = this._measuredTexts || (this._measuredTexts = new Map());
+        let kept = sizes.get(node);
+        if (!kept || kept.words !== words) {
+            kept = { words, size: measurer.measure() };
+            sizes.set(node, kept);
+        }
+        return { width: kept.size.width, height: kept.size.height };
     };
 
     Scene_ReactorUI.prototype.start = function() {
@@ -4004,6 +4852,7 @@
 
     Scene_ReactorUI.prototype.onActorChange = function() {
         Scene_MenuBase.prototype.onActorChange.call(this);
+        this._equipPreview = null;
         for (const window of this._nodeWindows) {
             if (window.node().type === "list") window._uiRefreshWait = 14;
             else window.refresh();
@@ -4063,6 +4912,7 @@
         if (this._transitionPhase === "idle") return;
         const duration = this._interface ? this._interface.transitionDuration : 1;
         this._transitionFrame = Math.min(duration, this._transitionFrame + 1);
+        if (this._motionWindows && this._transitionPhase === "closing") for (const window of this._motionWindows) ReactorUI.motionLeave(window, this._transitionFrame / duration);
         this.applyInterfaceTransition(this._transitionFrame / duration);
         if (this._transitionFrame < duration) return;
         if (this._transitionPhase === "opening") {
@@ -4099,6 +4949,7 @@
     /** Undoes a close whose next interface could not open: this one shows again and takes input. */
     Scene_ReactorUI.prototype.cancelClose = function() {
         this._closing = false;
+        if (this._motionWindows) for (const window of this._motionWindows) ReactorUI.motionLeave(window, -1);
         this._transitionPhase = "opening";
         this.applyInterfaceTransition(1);
         this._transitionPhase = "idle";
@@ -4114,21 +4965,30 @@
             this._authoredNodes = new Map(this._interface.nodes.map(node => [node.id, node]));
         }
         const authored = this._authoredNodes;
-        const shown = node => {
-            if (node && node.type === "gauge" && ReactorUI.isPoolHidden(node.gauge)) return false;
-            for (let depth = 0; node && depth <= authored.size; depth++) {
-                if (!ReactorUI.evaluateCondition(node.visible, this)) return false;
+        // Each node's own condition is asked once per pass, however many nodes stand under it.
+        const known = this._shownNodes || (this._shownNodes = new Map());
+        known.clear();
+        const chain = (node, depth) => {
+            if (!node || depth > authored.size) return false;
+            let result = known.get(node);
+            if (result !== undefined) return result;
+            if (!ReactorUI.evaluateCondition(node.visible, this)) result = false;
+            else {
                 const parent = authored.get(node.parent);
-                if (!parent || parent === node) return true;
-                node = parent;
+                result = !parent || parent === node ? true : chain(parent, depth + 1);
             }
-            return false;
+            known.set(node, result);
+            return result;
         };
+        const shown = node => !(node && node.type === "gauge" && ReactorUI.isPoolHidden(node.gauge)) && chain(node, 0);
         for (const window of this._nodeWindows) {
             const node = window.node();
             window.visible = shown(node);
-            if (node.type === "button" || node.type === "list") window.setEnabled(ReactorUI.evaluateCondition(node.enabled, this));
+            // Hidden when the windows updated this frame, so it did no work then: it catches up before it is drawn.
+            if (window.visible && window._uiStale && window.updateShown) window.updateShown();
+            if (node.type === "button" || node.type === "list" || node.type === "input") window.setEnabled(ReactorUI.evaluateCondition(node.enabled, this));
         }
+        if (this._layoutDirty) this.refreshNodeLayouts();
         const focused = this.focusedWindow();
         if (focused && !this.canFocus(focused)) {
             this.setFocus(this._nodeWindows.findIndex(window => this.canFocus(window)));
@@ -4139,6 +4999,8 @@
         this._inputHandled = false;
         Scene_MenuBase.prototype.update.call(this);
         if (!this._interface || this._interface.mode === "victory") return;
+        // Auto-sized texts that changed as the windows updated: one layout for all of them.
+        if (this._layoutDirty) this.refreshNodeLayouts();
         this.updateInterfaceTransition();
         if (!this.acceptsInput()) return;
         // A field marked to start typing does so once the interface is up (Name Input, a terminal prompt).
@@ -4173,11 +5035,16 @@
         for (let i = this._nodeWindows.length - 1; i >= 0; i--) {
             const window = this._nodeWindows[i];
             if (!this.canFocus(window) || !window.containsPoint(TouchInput.x, TouchInput.y)) continue;
+            const hadFocus = i === this._focusIndex;
             this.setFocus(i);
             if (TouchInput.isTriggered()) window.setPressed(true);
             // Window_Selectable handles List hover, touch selection, and the
             // engine's select-then-confirm gesture after it receives focus.
             if (window.node().type !== "list" && TouchInput.isTriggered()) this.activateFocused();
+            // A list that had no focus was inactive when it updated this frame, so it missed the touch:
+            // a finger never hovers, and the release would act on the row selected before. Select the
+            // row under the touch now.
+            else if (!hadFocus && TouchInput.isTriggered() && window.onTouchSelect) window.onTouchSelect(true);
             return;
         }
     };
@@ -4241,7 +5108,8 @@
                 return;
             }
         }
-        const center = window => ({ x: window.x + window.width / 2, y: window.y + window.height / 2 });
+        // Where each control is drawn: a node that is turned, or carried by one that moves or is turned, is not where the layout put it.
+        const center = window => ReactorUI.drawnCenter(window, { x: 0, y: 0 });
         const from = center(current);
         const axis = direction === "left" || direction === "right" ? "x" : "y";
         const sign = direction === "right" || direction === "down" ? 1 : -1;
@@ -4675,7 +5543,8 @@
             this.executeUse({ item, user, all: false, forUser: false }, null, window);
             return;
         }
-        this.beginActorSelection(action, { item, user, all: probe.isForAll(), forUser: probe.isForUser(), row, window });
+        // Only a skill is fixed on its user: an item "for the user" goes to whoever is chosen (Window_MenuActor.selectForItem).
+        this.beginActorSelection(action, { item, user, all: probe.isForAll(), forUser: probe.isForUser() && DataManager.isSkill(item), row, window });
     };
 
     Scene_ReactorUI.prototype.executeUse = function(use, actor, window) {
@@ -4726,8 +5595,9 @@
     /** A text input starts editing: typing always, the stock character grid when the node asks for it. */
     Scene_ReactorUI.prototype.beginInput = function(window, quiet) {
         if (this._editingWindow) return;
-        if (!quiet) SoundManager.playOk();
         const node = window.node();
+        // The field's own Sound stands in for the OK sound, as a button's does.
+        if (!quiet) { if (node.se) AudioManager.playSe(node.se); else SoundManager.playOk(); }
         if (this._role === "name" && this.nameMaxLength() > 0) node.maxLength = Math.min(node.maxLength, this.nameMaxLength());
         this._editingWindow = window;
         window.beginEdit();
@@ -4737,12 +5607,19 @@
     Scene_ReactorUI.prototype.commitInput = function(window, soundPlayed) {
         if (window !== this._editingWindow) return;
         const node = window.node();
+        // An actor's name is never stored empty, as on the stock screen (Window_NameInput.onNameOk): the
+        // name it had comes back, or the field refuses, and the edit goes on.
+        if (node.inputTarget === "actorName" && !window.inputValue()) {
+            if (window._uiInitial) { window.setDraft(window._uiInitial); if (!soundPlayed) SoundManager.playOk(); }
+            else SoundManager.playBuzzer();
+            return;
+        }
         this.closeCharacterGrid();
         this._editingWindow = null;
         const written = window.endEdit(true);
         this._inputHandled = true;
         if (!written) { SoundManager.playBuzzer(); return; }
-        if (!soundPlayed) SoundManager.playOk();
+        if (!soundPlayed) { if (node.se) AudioManager.playSe(node.se); else SoundManager.playOk(); }
         this.runAction(node.action);
     };
 
@@ -4853,6 +5730,19 @@
 
     ReactorUI.changeOption = function(symbol, forward, wrap) {
         if (typeof ConfigManager === "undefined" || !symbol) return false;
+        if (symbol === "graphicsQuality") {
+            // The steps of Window_Options.changeGraphicsQuality: left and right stop at the ends, OK goes round.
+            const values = typeof Window_Options !== "undefined" && Window_Options.GRAPHICS_VALUES || [];
+            if (!values.length) return false;
+            const at = Math.max(0, values.indexOf(ConfigManager.graphicsQuality));
+            const next = wrap ? (at + (forward ? 1 : values.length - 1)) % values.length : Math.max(0, Math.min(values.length - 1, at + (forward ? 1 : -1)));
+            if (next === at) return false;
+            ConfigManager.graphicsQuality = values[next];
+            // Auto chosen again starts from the full picture.
+            if (values[next] === "auto" && typeof Reactor3D !== "undefined" && Reactor3D.Quality) Reactor3D.Quality.reset();
+            if (typeof SoundManager !== "undefined" && SoundManager.playCursor) SoundManager.playCursor();
+            return true;
+        }
         const volume = symbol.includes("Volume");
         const previous = ConfigManager[symbol];
         let value;
@@ -4947,9 +5837,17 @@
         overlay.update = function() {
             // `_standDown`: its owner has it leave for now (a battle HUD while the battle's results are shown).
             const shown = !this._standDown && ReactorUI.evaluateCondition(this._interface.visible, scene);
+            // Hidden as a whole and staying so (a HUD behind a switch, a battle HUD standing down): its
+            // windows were hidden on the frame it faded out, and they do no work until it shows again.
+            if (!shown && this._hiddenWhole && this._visibilityAlpha <= 0) return;
             const transition = shown ? this._interface.openTransition : this._interface.closeTransition;
             const step = transition === "none" ? 1 : 1 / this._interface.transitionDuration;
             this._visibilityAlpha = shown ? Math.min(1, this._visibilityAlpha + step) : Math.max(0, this._visibilityAlpha - step);
+            if (this._motionWindows) {
+                // While the overlay fades or slides out, Appear runs backward over the same updates.
+                const leave = shown ? -1 : 1 - this._visibilityAlpha;
+                for (const window of this._motionWindows) ReactorUI.motionLeave(window, leave);
+            }
             this.updateConditions();
             // Slides move the whole overlay in over its fade.
             const slide = 1 - this._visibilityAlpha;
@@ -4961,6 +5859,7 @@
                 window.syncVisualState();
                 if (this._visibilityAlpha <= 0) window.visible = false;
             }
+            this._hiddenWhole = this._visibilityAlpha <= 0;
         };
         overlay.update();
         return overlay;
@@ -4978,7 +5877,8 @@
     Scene_Map.prototype.createReactorUIOverlays = function() {
         const records = Array.isArray(window.$dataUserInterfaces) ? window.$dataUserInterfaces : [];
         for (const raw of records) {
-            if (!raw) continue;
+            // Every map scene asks: only the overlays are built.
+            if (!raw || ReactorUI.storedMode(raw) !== "overlay") continue;
             const record = ReactorUI.normalizeInterface(raw);
             if (record.mode === "overlay") this.ensureReactorUIOverlay(record);
         }
@@ -6697,10 +7597,19 @@
         for (const window of hud._nodeWindows) {
             const node = window.node();
             if (node.type !== "list" || node.dataSource !== "party" || !window.visible) continue;
-            const index = window._uiRows.findIndex(row => row.data === actor);
+            const rows = window._uiRows;
+            let index = -1;
+            for (let i = 0; i < rows.length && index < 0; i++) if (rows[i].data === actor) index = i;
             if (index < 0) continue;
             const rect = window.itemRect(index), shown = ReactorUI.shownScale(window);
-            return { x: window.x + (window.padding + rect.x) * shown, y: window.y + (window.padding + rect.y) * shown, width: rect.width * shown, height: rect.height * shown };
+            // Asked every frame by a window that follows the acting actor: the answer is written into one
+            // object the HUD keeps, to be read at once and not held.
+            const out = hud._slotOut || (hud._slotOut = { x: 0, y: 0, width: 0, height: 0 });
+            out.x = window.x + (window.padding + rect.x) * shown;
+            out.y = window.y + (window.padding + rect.y) * shown;
+            out.width = rect.width * shown;
+            out.height = rect.height * shown;
+            return out;
         }
         return null;
     };
@@ -6768,13 +7677,18 @@
                 const sprite = sprites ? sprites.find(other => other._battler === actor) : null;
                 if (sprite) {
                     const top = this.battlerTop(scene, sprite), layer = scene._windowLayer;
-                    state.follow = { x: Math.round(top.x - (layer ? layer.x : 0) - win.width * state.scale / 2 + node.x * state.scale),
-                        y: Math.round(top.y - (layer ? layer.y : 0) - win.height * state.scale + node.y * state.scale) };
+                    const follow = state.follow || (state.follow = { x: 0, y: 0 });
+                    follow.x = Math.round(top.x - (layer ? layer.x : 0) - win.width * state.scale / 2 + node.x * state.scale);
+                    follow.y = Math.round(top.y - (layer ? layer.y : 0) - win.height * state.scale + node.y * state.scale);
                     followed = true;
                 }
             }
             const slot = followed ? null : hud.slotRect(actor);
-            if (slot) state.follow = { x: slot.x + Math.round(node.x * state.scale), y: slot.y + Math.round(node.y * state.scale) };
+            if (slot) {
+                const follow = state.follow || (state.follow = { x: 0, y: 0 });
+                follow.x = slot.x + Math.round(node.x * state.scale);
+                follow.y = slot.y + Math.round(node.y * state.scale);
+            }
             // Kept on the screen: on a small game (640x480) the slot's offset would stand it above the top edge.
             if (state.follow) {
                 x = state.follow.x; y = state.follow.y;
@@ -6997,7 +7911,7 @@
         const bitmap = arrow.bitmap;
         if (bitmap && bitmap.isReady()) {
             const fw = Math.floor(bitmap.width / node.frames);
-            const frame = Math.floor(Graphics.frameCount / node.frameSpeed) % node.frames;
+            const frame = Motion.frameAt(Graphics.frameCount, node.frames, node.frameSpeed, "loop");
             arrow.setFrame(fw * frame, 0, fw, bitmap.height);
         }
         const float = node.floatRange ? Math.round(Math.sin(Graphics.frameCount / 10) * node.floatRange) : 0;
@@ -7585,8 +8499,10 @@
         const list = window.$dataUserInterfaces;
         const raw = Array.isArray(list) ? list[id] : null;
         if (!raw || typeof raw !== "object" || Array.isArray(raw)) return 0;
-        const record = this.normalizeInterface(raw);
-        return record.id === id && record.mode === "scene" && (record.roles || []).includes(role) ? id : 0;
+        // Asked twice for every scene the game opens: the three fields are read from the stored record
+        // as normalizeInterface reads them, and nothing is built.
+        const roles = Array.isArray(raw.roles) ? raw.roles : raw.stock ? [raw.stock] : [];
+        return Math.max(0, Math.floor(finite(raw.id, 0))) === id && this.storedMode(raw) === "scene" && roles.includes(role) ? id : 0;
     };
 
     ReactorUI._bypassReplacements = new Set();

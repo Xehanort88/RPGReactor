@@ -26,7 +26,7 @@
             z-index: 10000;
             flex-direction: column;
         ">
-            <img id="splash-image" data-splash-images="splash-screen-01.png,splash-screen-02.png" alt="RPG Reactor" width="1920" height="1200" style="width: 100%; height: auto; margin-bottom: 24px;">
+            <img id="splash-image" data-splash-images="splash-screen-01.png,splash-screen-02.png,splash-screen-03.png" alt="RPG Reactor" width="1920" height="1200" style="width: 100%; height: auto; margin-bottom: 24px;">
             <script>
                 (() => {
                     const image = document.getElementById('splash-image');
@@ -35,9 +35,19 @@
                     try {
                         if (typeof nw !== 'undefined' && typeof require === 'function') {
                             const fs = require('fs');
-                            const { fileURLToPath } = require('url');
-                            const folder = fileURLToPath(new URL('images/', window.location.href));
-                            const discovered = fs.readdirSync(folder, { withFileTypes: true })
+                            const path = require('path');
+                            // NW.js serves this page from chrome-extension://, so the page address
+                            // cannot name the folder; ask NW.js for the app folder instead.
+                            const roots = [
+                                nw.__dirname,
+                                typeof __dirname !== 'undefined' ? __dirname : null,
+                                window.location.protocol === 'file:' ? require('url').fileURLToPath(new URL('.', window.location.href)) : null,
+                                path.join(process.cwd(), 'package.nw'),
+                                process.cwd()
+                            ].filter(Boolean);
+                            const folder = roots.map(root => path.join(root, 'images'))
+                                .find(candidate => fs.existsSync(path.join(candidate, 'icon.png')));
+                            const discovered = !folder ? [] : fs.readdirSync(folder, { withFileTypes: true })
                                 .filter(entry => entry.isFile() && /^splash-screen-\d+\.png$/i.test(entry.name))
                                 .map(entry => entry.name).sort();
                             if (discovered.length) images = discovered;
@@ -763,7 +773,7 @@
                 <div class="rr-about-overview">
                     <img class="rr-about-logo" src="images/logo.png" alt="RPG Reactor" width="112" height="112" onerror="this.style.display='none'">
                     <div class="rr-about-summary">
-                        <h3 data-i18n="about.version">RPG Reactor v0.99.4</h3>
+                        <h3 data-i18n="about.version">RPG Reactor v0.99.5</h3>
                         <p data-i18n="about.description">An open-source, cross-platform RPG game engine built with NW.js, PixiJS v8, and Three.js</p>
                         <p class="rr-about-compatibility" data-i18n="about.compatibility">
                             Create amazing RPG games with a professional editor that runs on Windows, Mac, and Linux.
@@ -955,6 +965,7 @@
     <script src="src/utils/EditorCache.js"></script>
     <script src="src/utils/FightHud.js"></script>
     <script src="src/utils/InterfaceFit.js"></script>
+    <script src="src/utils/InterfaceMotion.js"></script>
     <script src="src/utils/ActionHud.js"></script>
     <script src="src/utils/VictoryHud.js"></script>
     <script src="src/utils/FightLook.js"></script>
@@ -1155,6 +1166,7 @@
     <script src="src/forge/Character3D/Character3DBuilder.js"></script>
     <script src="src/forge/Character3D/CharacterBodyArtPanel.js"></script>
     <script src="src/forge/Character3D/CharacterSpriteSheet.js"></script>
+    <script src="src/forge/Character3D/CharacterGroups.js"></script>
     <script src="src/forge/Props/PropCloth.js"></script>
     <script src="src/forge/Props/PropMesh.js"></script>
     <script src="src/forge/Props/PropRandom.js"></script>
@@ -1345,9 +1357,6 @@
     <script src="src/event/commands/LabelEditor.js"></script>
     <script src="src/event/commands/JumpToLabelEditor.js"></script>
     <script src="src/event/commands/ChangeWindowColorEditor.js"></script>
-    <script src="src/event/commands/ChangeBattleBGMEditor.js"></script>
-    <script src="src/event/commands/ChangeVictoryMEEditor.js"></script>
-    <script src="src/event/commands/ChangeDefeatMEEditor.js"></script>
     <script src="src/event/commands/ChangeVehicleBGMEditor.js"></script>
     <script src="src/event/commands/SetVehicleLocationEditor.js"></script>
     <script src="src/event/commands/TintScreenEditor.js"></script>
@@ -1426,7 +1435,6 @@
     <script src="src/database/DatabaseMusicSequenceEditor.js"></script>
     <script src="src/database/TraitHelp.js"></script>
     <script src="src/database/ResourcePools.js"></script>
-    <script src="src/database/DatabaseItemBaseEditor.js"></script>
     <script src="src/database/DatabaseRowClipboard.js"></script>
     <script src="src/database/DatabaseReferenceFinder.js"></script>
     <script src="src/database/DatabaseTraitEditor.js"></script>
@@ -1475,6 +1483,7 @@
     <script src="src/event/commands/FollowerCommandEditor.js"></script>
     <script src="src/database/DatabaseSystem1Editor.js"></script>
     <script src="src/database/DatabaseSystem2Editor.js"></script>
+    <script src="src/database/DatabaseFlowForm.js"></script>
     <script src="src/database/DatabaseOnlineEditor.js"></script>
     <script src="src/database/DatabaseCharacterCreationEditor.js"></script>
     <script src="src/database/DatabaseFeaturesEditor.js"></script>

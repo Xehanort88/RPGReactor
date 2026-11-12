@@ -187,9 +187,9 @@ test('a model will not turn into the player', () => {
     }
 });
 
-test('a modeled event does not collide with its own footprint', () => {
+test('a modeled event does not collide with its own footprint, and an event is stopped by any non-Through event as in MZ', () => {
     const source = runtimeSource('reactor_objects.js');
-    assert.match(source, /event !== this && event\.isNormalPriority/);
+    assert.match(source, /events\.some\(event => event !== this\)/);
 });
 
 test('sprites hide when a character model is ready', () => {
@@ -927,7 +927,7 @@ test('the sync loop binds instances, loads rules, and plays queued actions', () 
     // the skinning (rest hid it as a uniform shrink; motion shredded).
     assert.match(source, /skinned\.bind\(skeleton, new THREE\.Matrix4\(\)\)/);
     assert.match(source, /Reactor3D\.cloneModelTemplate = function/);
-    assert.match(source, /const object = Reactor3D\.cloneModelTemplate\(template\)/, 'instances clone through the rebinder');
+    assert.match(source, /const object = Reactor3D\.cloneModelTemplate\(template(?:, \{ shareKey \})?\)/, 'instances clone through the rebinder');
     assert.match(source, /new THREE\.AnimationMixer\(inner\)/);
     assert.match(source, /rule\.type === "clip"/);
     assert.match(source, /Reactor3D\.loadModelSidecar\(spec\.name\)/);

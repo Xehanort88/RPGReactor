@@ -417,6 +417,8 @@
     Game_Quests.prototype.setObjective = function(id, index, state) {
         const quest = ReactorQuests.find(id);
         if (!quest) return false;
+        // An objective the quest does not have changes nothing, and does not bring a hidden quest into the log.
+        if (index !== "all" && !(Number.isInteger(index) && index >= 0 && index < (quest.objectives || []).length)) return false;
         this.discover(quest.id);
         const states = this.objectiveStates(quest.id);
         const apply = (value, at) => {
@@ -483,6 +485,8 @@
     Game_Quests.prototype.setReward = function(id, index, visible) {
         const quest = ReactorQuests.find(id);
         if (!quest) return false;
+        // A reward the quest does not have changes nothing, and does not bring a hidden quest into the log.
+        if (index !== "all" && !(Number.isInteger(Number(index)) && Number(index) >= 0 && Number(index) < (quest.rewards || []).length)) return false;
         this.discover(quest.id);
         const shown = this.rewardsShown(quest.id);
         let ids;
@@ -664,8 +668,9 @@
     const indexOf = raw => {
         const text = String(raw == null ? "" : raw).trim().toLowerCase();
         if (!text || text === "all") return "all";
+        // (Only the word, or nothing, means all: "0", a negative or a typo is no objective, not every one of them.)
         const n = Number(text);
-        return n >= 1 ? n - 1 : "all";
+        return Number.isInteger(n) && n >= 1 ? n - 1 : -1;
     };
 
     PluginManager.registerCommand("RPGReactor", "QuestSet", function(args) {
@@ -832,7 +837,6 @@
 
     Scene_Quest.prototype.createDetailWindow = function() {
         this._detailWindow = new Window_QuestDetail(this.detailWindowRect());
-        this._detailWindow.setHandler("cancel", this.onDetailCancel.bind(this));
         this.addWindow(this._detailWindow);
     };
 
@@ -861,10 +865,6 @@
     Scene_Quest.prototype.onListCancel = function() {
         this._listWindow.deselect();
         this._categoryWindow.activate();
-    };
-
-    Scene_Quest.prototype.onDetailCancel = function() {
-        this._listWindow.activate();
     };
 
     Scene_Quest.prototype.update = function() {

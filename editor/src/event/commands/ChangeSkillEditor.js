@@ -216,6 +216,12 @@ class ChangeSkillEditor {
                 option.selected = (this.actorId === i);
                 select.appendChild(option);
             }
+            // An actor the Database no longer has, or a variable's number left from Variable: shown as what is saved, not as the first entry.
+            if (this.actorId !== 0 && !actors[this.actorId]) {
+                const kept = document.createElement('option');
+                kept.value = this.actorId; kept.textContent = `#${String(this.actorId).padStart(4, '0')}`; kept.selected = true;
+                select.appendChild(kept);
+            }
             select.addEventListener('change', (e) => { this.actorId = parseInt(e.target.value); });
             fixedRow.appendChild(select);
         }
@@ -235,7 +241,7 @@ class ChangeSkillEditor {
 
         if (this.actorSelect === 1) {
             const varInput = document.createElement('input');
-            varInput.type = 'number'; varInput.min = 1; varInput.max = 9999; varInput.value = this.actorId || 1;
+            varInput.type = 'number'; varInput.min = 1; varInput.max = 9999; if (!(this.actorId > 0)) this.actorId = 1; varInput.value = this.actorId;
             varInput.style.cssText = 'padding:6px 10px; background-color:var(--color-bg-input); color:var(--color-text); border:1px solid var(--color-border-input); border-radius:3px; font-size:12px; width:80px;';
             varInput.addEventListener('input', (e) => { this.actorId = parseInt(e.target.value) || 1; });
             varRow.appendChild(varInput);

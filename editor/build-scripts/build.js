@@ -70,6 +70,7 @@ console.log('========================================\n');
 
 // Paths/files to exclude when staging (relative to project root)
 const EXCLUDED = new Set([
+    'reactor-builder', // a playtest's copy of the Forge; a game that builds characters is given a fresh one
     'Backup',
     'BACKUP',
     'backup',
@@ -99,8 +100,14 @@ const EXCLUDED = new Set([
 // data/ and never removes it. Those files are regenerated on the next battle
 // test and are never read outside btest mode, so shipping them only bloats the
 // release (13-15 MB on a mature project) and leaks the developer's test party.
+// Version control and IDE folders, and the editor's own half-written files: never the game's (see build-worker.js).
+const NEVER_SHIPPED = new Set(['.git', '.svn', '.hg', '.vscode', '.idea', '.DS_Store', 'Thumbs.db', 'desktop.ini']);
 function isStagingExcluded(relPath) {
     if (EXCLUDED.has(relPath)) return true;
+    const parts = relPath.split(path.sep);
+    if (NEVER_SHIPPED.has(parts[0]) || NEVER_SHIPPED.has(parts[parts.length - 1])) return true;
+    // The editor's own half-written files (a save or import interrupted).
+    if (/\.tmp-rr-|\.partial-/.test(parts[parts.length - 1])) return true;
     if (/^rpgmaker-runtime-backup(-\d+)?\.zip$/.test(relPath)) return true;
     // The Character Generator's recipe beside each sheet it saved: the editor's, not the game's.
     if (relPath.startsWith('img' + path.sep) && /\.character\.json$/i.test(relPath)) return true;
@@ -142,7 +149,7 @@ function validateProjectRuntime(root) {
         'reactor_objects.js', 'reactor_objects_actions.js', 'reactor_objects_battlers.js', 'reactor_objects_map.js', 'reactor_objects_interpreter.js', 'reactor_objects_followers.js', 'reactor_objects_legacy.js',
         'reactor_hdr_overlay.js', 'reactor_scenes.js', 'reactor_sprites.js', 'reactor_picture_extensions.js', 'reactor_screen_fx.js',
         'reactor_media_surfaces.js', 'reactor_quests.js', 'reactor_image_layers.js', 'reactor_controls.js', 'reactor_physics.js', 'reactor_rig_motions.js',
-            'reactor_battle_data.js', 'reactor_battle_room.js', 'reactor_battle_presentation.js', 'reactor_battle_events.js', 'reactor_fight_look.js', 'reactor_fight.js', 'reactor_fight_flow.js', 'reactor_fight_tactical.js', 'reactor_fight_stage.js', 'reactor_fight_camera.js', 'reactor_fight_action.js', 'reactor_fight_menu.js', 'reactor_fight_classic.js', 'reactor_speaker_face.js', 'reactor_character_creator.js', 'reactor_online.js', 'reactor_online_ui.js', 'reactor_online_voice.js', 'reactor_vehicles.js', 'reactor_vehicles_drive.js', 'reactor_vehicles_feel.js', 'reactor_vehicles_hints.js', 'reactor_vehicles_mount.js',
+            'reactor_battle_data.js', 'reactor_battle_room.js', 'reactor_battle_presentation.js', 'reactor_battle_events.js', 'reactor_fight_look.js', 'reactor_fight.js', 'reactor_fight_flow.js', 'reactor_fight_tactical.js', 'reactor_fight_stage.js', 'reactor_fight_camera.js', 'reactor_fight_action.js', 'reactor_fight_menu.js', 'reactor_fight_classic.js', 'reactor_speaker_face.js', 'reactor_character_creator.js', 'reactor_online.js', 'reactor_online_ui.js', 'reactor_online_voice.js', 'reactor_online_party.js', 'reactor_online_battle.js', 'reactor_online_classic.js', 'reactor_online_action.js', 'reactor_vehicles.js', 'reactor_vehicles_drive.js', 'reactor_vehicles_feel.js', 'reactor_vehicles_hints.js', 'reactor_vehicles_mount.js',
         'reactor_windows.js', 'reactor_ui_victory.js', 'reactor_ui_fight.js', 'reactor_ui_action.js', 'reactor_ui.js', 'reactor_mv_compat.js', 'reactor_plugins.js',
         path.join('libs', 'pixi.js'), path.join('libs', 'pixi_compat.js'),
         path.join('libs', 'pako.min.js'), path.join('libs', 'lz-string.js'), path.join('libs', 'localforage.min.js'),

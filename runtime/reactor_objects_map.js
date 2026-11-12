@@ -179,14 +179,24 @@ Game_Map.prototype.setupEvents = function() {
     this.refreshTileEvents();
 };
 
+// Which common events run by themselves, worked out once for the Database in use. Kept beside the map, not on it:
+// the map is written into every save, and these lists were the whole common-event database written with it, twice.
+const rrCommonEventTriggers = { source: null, autorun: [], parallel: [] };
+
 Game_Map.prototype.refreshCommonEventTriggerCache = function() {
-    this._commonEventTriggerSource = $dataCommonEvents;
-    this._autorunCommonEvents = [];
-    this._parallelCommonEvents = [];
+    // (A save from before carries the old lists on the map: dropped here, so its next save is free of them.)
+    if (this._commonEventTriggerSource !== undefined) {
+        delete this._commonEventTriggerSource;
+        delete this._autorunCommonEvents;
+        delete this._parallelCommonEvents;
+    }
+    rrCommonEventTriggers.source = $dataCommonEvents;
+    rrCommonEventTriggers.autorun = [];
+    rrCommonEventTriggers.parallel = [];
     for (const commonEvent of $dataCommonEvents) {
         if (!commonEvent) continue;
-        if (commonEvent.trigger === 1) this._autorunCommonEvents.push(commonEvent);
-        if (commonEvent.trigger === 2) this._parallelCommonEvents.push(commonEvent);
+        if (commonEvent.trigger === 1) rrCommonEventTriggers.autorun.push(commonEvent);
+        if (commonEvent.trigger === 2) rrCommonEventTriggers.parallel.push(commonEvent);
     }
 };
 
@@ -245,17 +255,13 @@ Game_Map.prototype.eraseEvent = function(eventId) {
 };
 
 Game_Map.prototype.autorunCommonEvents = function() {
-    if (this._commonEventTriggerSource !== $dataCommonEvents || !this._autorunCommonEvents) {
-        this.refreshCommonEventTriggerCache();
-    }
-    return this._autorunCommonEvents;
+    if (rrCommonEventTriggers.source !== $dataCommonEvents || this._commonEventTriggerSource !== undefined) this.refreshCommonEventTriggerCache();
+    return rrCommonEventTriggers.autorun;
 };
 
 Game_Map.prototype.parallelCommonEvents = function() {
-    if (this._commonEventTriggerSource !== $dataCommonEvents || !this._parallelCommonEvents) {
-        this.refreshCommonEventTriggerCache();
-    }
-    return this._parallelCommonEvents;
+    if (rrCommonEventTriggers.source !== $dataCommonEvents || this._commonEventTriggerSource !== undefined) this.refreshCommonEventTriggerCache();
+    return rrCommonEventTriggers.parallel;
 };
 
 Game_Map.prototype.setupScroll = function() {
@@ -1069,7 +1075,8 @@ Game_CharacterBase.LATE_FIELDS = [
     "_reactorChaseLater", "_reactorPosePitch", "_reactorFallYaw", "_reactorPush", "_reactorPushAlso", "_reactorPushDir",
     "_reactorPushFrames", "_reactorDriftX", "_reactorDriftY", "_rrSpin", "_rrSpinCount", "_rrVehicle", "_rrHome", "_rrYaw",
     "_rrStage", "_rrFade", "_rrDrop", "_rrVehicleTransfer", "_borderArrival", "_destinationCheckCounter",
-    "_reactorSpin", "_rrMirror", "_rrFlip", "_rrSpinPivot", "_rrPageImage"
+    "_reactorSpin", "_rrMirror", "_rrFlip", "_rrSpinPivot", "_rrPageImage",
+    "_reactorRisen", "_reactorSplash", "_reactorRagdoll", "_reactorStepOff", "_reactorSplashSeen", "_reactorRippleAt"
 ];
 
 /**
@@ -4161,8 +4168,10 @@ Game_Event.prototype.isCollidedWithEvents = function(x, y) {
         // does not plow through anyone, and nobody walks into its side.
         return Reactor3D.bodyMeetsEvents(this, x, y, this._reactorMoveDirection(x, y));
     }
+    // As MZ: an event is stopped by any event that is not Through, whatever its priority (only the player ignores
+    // events below and above the characters).
     const events = $gameMap.eventsXyNt(x, y);
-    return events.some(event => event !== this && event.isNormalPriority());
+    return events.some(event => event !== this);
 };
 
 /** The facing a step onto (x, y) implies, for footprint sweep tests. */

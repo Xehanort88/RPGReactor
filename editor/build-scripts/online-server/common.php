@@ -40,6 +40,7 @@ function settingsOf(array $config): array {
     $settings['accounts'] = array_merge(['mode' => 'none', 'registration' => true, 'minPassword' => 8, 'persist' => true, 'sleepers' => true, 'sleeperDays' => 30], is_array($settings['accounts'] ?? null) ? $settings['accounts'] : []);
     $settings['chat'] = array_merge(['enabled' => true, 'who' => 'all', 'world' => true, 'cooldown' => 2, 'maxLength' => 200, 'history' => 50, 'blockedWords' => ''], is_array($settings['chat'] ?? null) ? $settings['chat'] : []);
     $settings['voice'] = array_merge(['enabled' => false, 'who' => 'all'], is_array($settings['voice'] ?? null) ? $settings['voice'] : []);
+    $settings['storage'] = array_merge(['characterMB' => 0, 'totalGB' => 0], is_array($settings['storage'] ?? null) ? $settings['storage'] : []);
     $settings['engine'] = array_merge(['enabled' => true, 'rate' => 15, 'movement' => 'speed', 'maxSpeed' => 16], is_array($settings['engine'] ?? null) ? $settings['engine'] : []);
     return $settings;
 }
@@ -56,9 +57,9 @@ function textFold(string $text): string {
     return function_exists('mb_strtolower') ? mb_strtolower($text, 'UTF-8') : strtolower($text);
 }
 
-/** A JSON body. Passwords and sessions travel here, never in a URL, which servers write to their logs. */
-function jsonBody(): array {
-    $body = json_decode((string)file_get_contents('php://input', false, null, 0, 65536), true);
+/** A JSON body, read up to `$most` bytes. Passwords and sessions travel here, never in a URL, which servers write to their logs. */
+function jsonBody(int $most = 65536): array {
+    $body = json_decode((string)file_get_contents('php://input', false, null, 0, $most), true);
     return is_array($body) ? $body : [];
 }
 
@@ -90,10 +91,44 @@ function intParam(string $name, int $low, int $high): int {
 
 /** The player a request speaks for, or a refusal. */
 function player(string $secret): int {
+    global $config;
     $slot = intParam('s', 0, SLOTS - 1);
     $nonce = (string)($_GET['g'] ?? '');
     if ($nonce === '' || !hash_equals(tokenFor($slot, $nonce, $secret), (string)($_GET['t'] ?? ''))) fail(401, 'Unknown player.');
+    $dir = dataDir($config);
+    // A token is for one visit: once its slot is given to someone else, the old one no longer speaks for it.
+    $current = slotNonce($dir, $slot);
+    if ($current !== '' && !hash_equals($current, strtolower($nonce))) fail(401, 'Unknown player.');
+    // Removed, or signed in elsewhere: nothing this token asks is done (chat, parties, uploads, leaving) any more.
+    $state = aliveAt($dir, $slot);
+    if ($state === REMOVED) fail(403, 'You have been removed from this world.');
+    if ($state === REPLACED) fail(403, 'You signed in somewhere else.');
     return $slot;
+}
+
+/** The nonce the slot's current visit was given at join (nonce.bin, 8 bytes a slot), or '' when none was kept. */
+function slotNonce(string $dir, int $slot): string {
+    $file = @fopen($dir . '/nonce.bin', 'rb');
+    if (!$file) return '';
+    fseek($file, $slot * 8);
+    $bytes = (string)fread($file, 8);
+    fclose($file);
+    return strlen($bytes) === 8 && $bytes !== str_repeat("\0", 8) ? bin2hex($bytes) : '';
+}
+
+function setSlotNonce(string $dir, int $slot, string $nonce): void {
+    $file = fopen($dir . '/nonce.bin', 'c+b');
+    if (!$file) return;
+    fseek($file, $slot * 8);
+    fwrite($file, (string)hex2bin($nonce));
+    fclose($file);
+}
+
+/** JSON to keep in a file, or a refusal: a value JSON cannot hold (a number too large, INF) must never write an empty file over a good one. */
+function jsonText($value): string {
+    $text = json_encode($value);
+    if ($text === false) fail(400, 'That value cannot be kept.');
+    return $text;
 }
 
 function clearRecord(string $dir, int $map, int $slot): void {
@@ -132,7 +167,40 @@ function setPlayer(string $dir, int $slot, string $name, int $actor, string $mod
     $names = readNames($dir);
     $names[$slot] = ['name' => $name !== '' ? $name : 'Player ' . ($slot + 1), 'actor' => $actor, 'model' => $model, 'account' => $account, 'ip' => $ip];
     $temporary = $dir . '/names.' . getmypid() . '.tmp';
-    if (file_put_contents($temporary, json_encode($names)) !== false) rename($temporary, $dir . '/names.json');
+    if (file_put_contents($temporary, jsonText($names)) !== false) rename($temporary, $dir . '/names.json');
+}
+
+function setPlayerState(string $dir, int $slot, ?array $ride, string $fight, array $place): void {
+    $names = readNames($dir);
+    if (!isset($names[$slot])) return;
+    $names[$slot]['ride'] = $ride;
+    $names[$slot]['fight'] = $fight;
+    $names[$slot]['place'] = $place;
+    $temporary = $dir . '/names.' . getmypid() . '.tmp';
+    if (file_put_contents($temporary, jsonText($names)) !== false) rename($temporary, $dir . '/names.json');
+}
+
+/** A vehicle's model as a game described it: other players' games will ask for that name, so only a plain one passes. */
+function cleanRide($ride): ?array {
+    if (!is_array($ride)) return null;
+    $name = (string)($ride['name'] ?? '');
+    $file = (string)($ride['file'] ?? '');
+    $ext = (string)($ride['ext'] ?? '');
+    if (!preg_match('~^[\w .()-]+(/[\w .()-]+)*$~', $name) || strpos($name, '..') !== false || strlen($name) > 160) return null;
+    if (!preg_match('~^[\w .()-]{0,120}$~', $file) || strpos($file, '..') !== false || !preg_match('/^\.[a-z0-9]{1,6}$/', $ext)) return null;
+    $out = ['name' => $name, 'file' => $file, 'ext' => $ext, 'inside' => !empty($ride['inside'])];
+    foreach (['size', 'scale', 'yaw', 'pitch', 'roll'] as $key) if (is_numeric($ride[$key] ?? null)) $out[$key] = (float)$ride[$key];
+    $faces = [];
+    foreach (['front', 'back', 'left', 'right', 'top', 'bottom'] as $key) {
+        $face = $ride['faces'][$key] ?? null;
+        if (is_array($face) && count($face) === 3 && count(array_filter($face, 'is_numeric')) === 3) $faces[$key] = array_map('floatval', array_values($face));
+    }
+    $out['faces'] = (object)$faces;
+    return $out;
+}
+
+function cleanFight(string $fight): string {
+    return in_array($fight, ['classic', 'tactical', 'action', 'firstPerson'], true) ? $fight : '';
 }
 
 function lockPlayers(string $dir) {
@@ -148,6 +216,42 @@ function cleanText(string $text): string {
 
 function cleanName(): string {
     return textStart(cleanText((string)($_GET['n'] ?? '')), 24);
+}
+
+/**
+ * The name a player shows, made fair. Parties, invites and challenges know people by name, so a name must not
+ * pass for someone else's: a registered name is its account's own (anyone else is shown as a guest of it), and
+ * two players online never share one (a number is added). Asked at join and at every change of look.
+ */
+function fairName(string $dir, int $slot, string $name, string $account): string {
+    if ($name === '') $name = 'Player ' . ($slot + 1);
+    if (nameOfAnother($dir, $name, $account)) $name = textStart($name, 16) . ' (guest)';
+    // The names in use are read once (this runs under the players lock): every numbered try is checked against them,
+    // and a numbered name that is someone else's account is passed over as the plain name would be.
+    $taken = namesInUse($dir, $slot);
+    $base = $name;
+    for ($n = 2; $n < 100 && (isset($taken[textFold($name)]) || ($n > 2 && nameOfAnother($dir, $name, $account))); $n++) {
+        $name = textStart($base, 19) . ' (' . $n . ')';
+    }
+    return $name;
+}
+
+/** Whether `name` is a registered account other than `account`. */
+function nameOfAnother(string $dir, string $name, string $account): bool {
+    $owner = readAccount($dir, accountKey($name));
+    return $owner && textFold((string)($owner['username'] ?? '')) !== textFold($account);
+}
+
+/** The folded names of players online now, other than `not`'s, as keys. */
+function namesInUse(string $dir, int $not = -1): array {
+    $alive = (string)@file_get_contents($dir . '/alive.bin');
+    $taken = [];
+    foreach (readNames($dir) as $slot => $known) {
+        if ((int)$slot === $not || strlen($alive) < ((int)$slot + 1) * 4) continue;
+        $seen = (int)unpack('V', substr($alive, (int)$slot * 4, 4))[1];
+        if ($seen > time() - ALIVE_SECONDS && $seen < REPLACED) $taken[textFold((string)($known['name'] ?? ''))] = true;
+    }
+    return $taken;
 }
 
 /** A model this server holds, or nothing. */
@@ -175,6 +279,9 @@ function checkPackage(string $file, array $rules): void {
     if ($fields['version'] !== 1 || $glbAt + 20 > $size) fail(422, 'That character is damaged.');
     $info = json_decode((string)fread($in, $fields['json']), true);
     if (!is_array($info)) fail(422, 'That character is damaged.');
+    // The portrait travels inside the package. An address would be fetched by every game that meets this character.
+    $face = $info['face'] ?? '';
+    if ($face !== '' && (!is_string($face) || strlen($face) > 4194304 || !preg_match('~^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]*$~', $face))) fail(422, 'That character is damaged.');
     $recipe = is_array($info['recipe'] ?? null) ? $info['recipe'] : [];
     $species = speciesRule($rules);
     if (!in_array('all', $species, true) && !in_array((string)($recipe['species'] ?? 'human'), $species, true)) fail(422, 'This game does not allow that species.');
@@ -248,9 +355,11 @@ function accountView(array $account, string $key, string $secret): array {
 /** Where an account's progress is, for the first thing a sign-in needs to know: is there a life to wake up to? */
 function progressOf(string $dir, string $key): ?array {
     $file = $dir . '/accounts/' . $key . '.save';
-    if (!is_file($file)) return null;
     $wake = @json_decode((string)@file_get_contents($dir . '/accounts/' . $key . '.wake'), true);
-    return ['at' => (int)filemtime($file), 'wake' => is_array($wake) ? $wake : null];
+    $saved = is_file($file);
+    // A player who left before their first save still went to sleep somewhere.
+    if (!$saved && !is_array($wake)) return null;
+    return ['at' => $saved ? (int)filemtime($file) : (int)@filemtime($dir . '/accounts/' . $key . '.wake'), 'wake' => is_array($wake) ? $wake : null, 'saved' => $saved];
 }
 
 function sleepFile(string $dir, int $map, string $key): string {
@@ -262,10 +371,15 @@ function noteWake(string $dir, string $key, array $note, array $look): void {
     $file = $dir . '/accounts/' . $key . '.wake';
     $before = @json_decode((string)@file_get_contents($file), true);
     if (is_array($before) && (int)($before['map'] ?? 0) !== $note['map']) @unlink(sleepFile($dir, (int)($before['map'] ?? 0), $key));
-    file_put_contents($file, json_encode($note));
+    // Written aside and swapped in: the sleepers list read a note half written, and dropped that sleeper.
+    $swap = function (string $path, string $text): void {
+        $temporary = $path . '.' . getmypid() . '.tmp';
+        if (file_put_contents($temporary, $text) !== false) rename($temporary, $path);
+    };
+    $swap($file, json_encode($note));
     $sleeper = sleepFile($dir, $note['map'], $key);
     if (!is_dir(dirname($sleeper))) @mkdir(dirname($sleeper), 0770, true);
-    file_put_contents($sleeper, json_encode($note + $look + ['id' => substr($key, 0, 16), 'at' => time()]));
+    $swap($sleeper, json_encode($note + $look + ['id' => substr($key, 0, 16), 'at' => time()]));
 }
 
 function forgetAccount(string $dir, string $key): void {
@@ -366,6 +480,65 @@ function voiceCollect(string $dir, int $slot): array {
         if (($message['t'] ?? 0) >= $oldest) $fresh[] = ['from' => $message['from'], 'data' => $message['data']];
     }
     return $fresh;
+}
+
+// ---- Parties: players who go together ----
+
+const PARTY_MOST = 8;
+
+function readParties(string $dir): array {
+    $state = @json_decode((string)@file_get_contents($dir . '/parties.json'), true);
+    return is_array($state) ? $state + ['parties' => [], 'invites' => [], 'challenges' => []] : ['parties' => [], 'invites' => [], 'challenges' => []];
+}
+
+function writeParties(string $dir, array $state): void {
+    $temporary = $dir . '/parties.' . getmypid() . '.tmp';
+    if (file_put_contents($temporary, jsonText($state)) !== false) rename($temporary, $dir . '/parties.json');
+}
+
+/** The party someone is in, as [id, party], or nothing. People are known by name, because a slot lasts one visit. */
+function partyOf(array $state, string $name): array {
+    foreach ($state['parties'] as $id => $party) if (in_array($name, $party['members'], true)) return [$id, $party];
+    return ['', null];
+}
+
+/** Someone online by name, in any case, other than `$not`: their slot, or -1. */
+function slotNamed(string $dir, string $name, int $not = -1, ?array $names = null): int {
+    // One read of each file a request, however many names it asks after (a party's news asks for every member).
+    static $aliveOf = [];
+    $alive = $aliveOf[$dir] ?? ($aliveOf[$dir] = (string)@file_get_contents($dir . '/alive.bin'));
+    foreach ($names ?? readNames($dir) as $slot => $known) {
+        if ((int)$slot === $not || textFold((string)($known['name'] ?? '')) !== textFold($name) || strlen($alive) < ((int)$slot + 1) * 4) continue;
+        $seen = (int)unpack('V', substr($alive, (int)$slot * 4, 4))[1];
+        if ($seen > time() - ALIVE_SECONDS && $seen < REPLACED) return (int)$slot;
+    }
+    return -1;
+}
+
+// ---- Shared battles: the server lists them and carries their messages; the host's game runs them ----
+
+const BATTLE_SECONDS = 20;              // a battle whose host hasn't been heard from for this long is over
+const BATTLE_LOG_BYTES = 16777216;
+
+function battleFile(string $dir, string $id): string {
+    if (!preg_match('/^[a-f0-9]{16}$/', $id)) fail(400, 'Unknown battle.');
+    return $dir . '/battles/' . $id . '.log';
+}
+
+function readBattles(string $dir): array {
+    $battles = @json_decode((string)@file_get_contents($dir . '/battles.json'), true);
+    return is_array($battles) ? $battles : [];
+}
+
+function writeBattles(string $dir, array $battles): void {
+    $temporary = $dir . '/battles.' . getmypid() . '.tmp';
+    if (file_put_contents($temporary, jsonText((object)$battles)) !== false) rename($temporary, $dir . '/battles.json');
+}
+
+function lockBattles(string $dir) {
+    $lock = fopen($dir . '/battles.lock', 'c');
+    if (!$lock || !flock($lock, LOCK_EX)) fail(500, 'Could not reach the battle list.');
+    return $lock;
 }
 
 // ---- The Engine: the real-time half, when this server can run it ----
@@ -503,7 +676,7 @@ function postChat(string $dir, string $channel, array $message, int $keep): arra
     $list[] = $message;
     $list = array_slice($list, -max(1, $keep));
     $temporary = chatFile($dir, $channel) . '.' . getmypid() . '.tmp';
-    file_put_contents($temporary, json_encode($list));
+    file_put_contents($temporary, jsonText($list));
     rename($temporary, chatFile($dir, $channel));
     setChatCount($dir, $id);
     flock($lock, LOCK_UN);

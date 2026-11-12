@@ -668,7 +668,7 @@ test('inside a building the roof and the wall in the camera\'s way are cut aroun
       capScene.updateCutCaps(capMap, 1e9, null); assert.equal(capScene._cutCaps.length, 0, 'no cut, no caps'); }
     assert.ok(R.CUTAWAY_DROP > 0.6 && R.CUTAWAY_DROP < 1, 'the cut plane sits under a doorway header');
     assert.match(runtime, /if \(vRRCutPos\.y > rrCutTop && vRRCutPos\.x >= rrCutBox\.x[^\n]*discard;\\n\\t#include <alphatest_fragment>/, 'the shadow pass takes the storey cut too: a cut roof casts no shadow into the room');
-    assert.match(runtime, /if \(cutState !== this\._cutState\) \{\n\s*this\._cutState = cutState;\n\s*const S = Reactor3D\.Shadows;\n\s*if \(S\) \{ if \(S\.cutChanged\) S\.cutChanged\(\); else if \(S\.invalidate\) S\.invalidate\(\); \}/, 'the static shadows are drawn again, at once, when the cut changes');
+    assert.match(runtime, /if \(cutState !== this\._cutState\) \{\n\s*this\._cutState = cutState;\n\s*const S = Reactor3D\.Shadows;[\s\S]{0,500}?const region = Reactor3D\.cutRegion\(was, now\);\n\s*if \(S\) \{ if \(S\.cutChanged\) S\.cutChanged\(region\); else if \(S\.invalidate\) S\.invalidate\(\); \}/, 'the static shadows are drawn again, at once, when the cut changes');
     { const THREEx = loadThree(); const stone = new THREEx.MeshBasicMaterial(); stone.__reactorPieces = true; const caster = R.Shadows.casterMaterialFor(stone, false); assert.ok(caster.__rrCaster && typeof caster.onBeforeCompile === 'function' && caster.customProgramCacheKey() === 'reactor3d-caster-pieces', 'pieces get their own caster material'); assert.equal(R.Shadows.casterMaterialFor(new THREEx.MeshBasicMaterial(), false).customProgramCacheKey, THREEx.Material.prototype.customProgramCacheKey, 'other casters are unchanged'); }
     // A floor slab shows only the faces that can be seen: none inside a
     // wall's cell, no seam against the slab next door, and its underside
@@ -1437,7 +1437,8 @@ test('rock tops, tints and the rock brush: rows, filled areas, each rock its own
     const shaded = {}; R.triplanarMaterial(shaded, 5);
     const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <project_vertex>', fragmentShader: '#include <common>\n#include <map_fragment>' };
     shaded.onBeforeCompile(shader);
-    assert.match(shader.fragmentShader, /texture2D\(map, vRRTriPos\.zy \* rrTriScale\) \* rrTriW\.x \+ texture2D\(map, vRRTriPos\.xz \* rrTriScale\) \* rrTriW\.y/);
+    // (Each lookup takes the view's mip bias: Reactor3D.MipBias, zero at full size.)
+    assert.match(shader.fragmentShader, /texture2D\(map, vRRTriPos\.zy \* rrTriScale, rrMipBias\) \* rrTriW\.x \+ texture2D\(map, vRRTriPos\.xz \* rrTriScale, rrMipBias\) \* rrTriW\.y/);
     assert.equal(shader.uniforms.rrTriScale.value, 0.2);
     assert.match(shaded.customProgramCacheKey(), /\|triplanar$/);
     // The brush: a drag lays one rock each spacing, a Ctrl rectangle fills a grid, each rock varies by its seed.

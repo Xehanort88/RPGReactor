@@ -11,32 +11,73 @@
     const CELL=.04,SKIN_GAP=.0012,LAYER_GAP=.0016,TUCK_GAP=.006,SPREAD=.8,ROUNDS=8,SMOOTH=6;
     const key=(x,y,z)=>((x+1024)*2048+(y+1024))*2048+(z+1024);
 
-    /** Triangles on a grid: each listed in every cell within reach of it, so a point reads one cell. */
+    /**
+     * Triangles on a grid: each listed in every cell within reach of it, so a point reads one cell. A cell lists
+     * hundreds of a fine skin's triangles; each is kept in flat arrays with a bounding sphere, and one whose sphere
+     * lies farther than the nearest found so far is passed over (it can't be nearer), so a query reads a few closely.
+     */
     function Surface(){
-        const cells=new Map(),tris=[];
+        // The grid is made when the surface is first asked (`grid`), in one pass over every triangle's box of cells:
+        // each cell's triangles in the order they were added, read by index. (Listed into a map of arrays as each was
+        // added, sorting a garment into its grid cost a quarter of what asking it did, and a garment is sorted anew
+        // for every round of every layer.)
+        const T=[],N=[],F=[],B=[];
+        let made=null;
+        const grid=()=>{
+            const count=N.length,lo=[Infinity,Infinity,Infinity],hi=[-Infinity,-Infinity,-Infinity];
+            for(let i=0;i<B.length;i+=6)for(let k=0;k<3;k++){if(B[i+k]<lo[k])lo[k]=B[i+k];if(B[i+3+k]>hi[k])hi[k]=B[i+3+k];}
+            const nx=count?hi[0]-lo[0]+1:0,ny=count?hi[1]-lo[1]+1:0,nz=count?hi[2]-lo[2]+1:0,total=nx*ny*nz;
+            // (A surface too far-flung for a box of cells, a stray point a kilometer off: its cells in a map, as before.)
+            if(!(total<=2e7)){
+                const map=new Map();
+                for(let id=0;id<count;id++){const o=id*6;for(let x=B[o];x<=B[o+3];x++)for(let y=B[o+1];y<=B[o+4];y++)for(let z=B[o+2];z<=B[o+5];z++){const k=key(x,y,z);let list=map.get(k);if(!list)map.set(k,list=[]);list.push(id);}}
+                return (made={map});
+            }
+            const starts=new Int32Array(total+1);
+            for(let id=0;id<count;id++){const o=id*6;for(let x=B[o]-lo[0];x<=B[o+3]-lo[0];x++)for(let y=B[o+1]-lo[1];y<=B[o+4]-lo[1];y++){const row=(x*ny+y)*nz-lo[2];for(let z=B[o+2];z<=B[o+5];z++)starts[row+z+1]++;}}
+            for(let c=0;c<total;c++)starts[c+1]+=starts[c];
+            const next=starts.slice(0,total),ids=new Int32Array(starts[total]);
+            for(let id=0;id<count;id++){const o=id*6;for(let x=B[o]-lo[0];x<=B[o+3]-lo[0];x++)for(let y=B[o+1]-lo[1];y<=B[o+4]-lo[1];y++){const row=(x*ny+y)*nz-lo[2];for(let z=B[o+2];z<=B[o+5];z++)ids[next[row+z]++]=id;}}
+            return (made={lo,nx,ny,nz,starts,ids});
+        };
         const add=(a,b,c,flip,face)=>{
             const e1=[b[0]-a[0],b[1]-a[1],b[2]-a[2]],e2=[c[0]-a[0],c[1]-a[1],c[2]-a[2]];
             let n=[e1[1]*e2[2]-e1[2]*e2[1],e1[2]*e2[0]-e1[0]*e2[2],e1[0]*e2[1]-e1[1]*e2[0]];
             const l=Math.hypot(n[0],n[1],n[2]);if(l<1e-12)return;
             const s=(flip?-1:1)/l;n=[n[0]*s,n[1]*s,n[2]*s];
-            const id=tris.length;tris.push({a,e1,e2,n,face,d11:e1[0]*e1[0]+e1[1]*e1[1]+e1[2]*e1[2],d12:e1[0]*e2[0]+e1[1]*e2[1]+e1[2]*e2[2],d22:e2[0]*e2[0]+e2[1]*e2[1]+e2[2]*e2[2]});
-            const lo=[0,1,2].map(k=>Math.floor((Math.min(a[k],b[k],c[k])-CELL)/CELL)),hi=[0,1,2].map(k=>Math.floor((Math.max(a[k],b[k],c[k])+CELL)/CELL));
-            for(let x=lo[0];x<=hi[0];x++)for(let y=lo[1];y<=hi[1];y++)for(let z=lo[2];z<=hi[2];z++){const k=key(x,y,z);let list=cells.get(k);if(!list)cells.set(k,list=[]);list.push(id);}
+            const id=N.length,d11=e1[0]*e1[0]+e1[1]*e1[1]+e1[2]*e1[2],d12=e1[0]*e2[0]+e1[1]*e2[1]+e1[2]*e2[2],d22=e2[0]*e2[0]+e2[1]*e2[1]+e2[2]*e2[2];
+            // The sphere round the corners, its radius padded so rounding can never pass over a nearer triangle.
+            const cx=(a[0]+b[0]+c[0])/3,cy=(a[1]+b[1]+c[1])/3,cz=(a[2]+b[2]+c[2])/3;
+            const r=Math.sqrt(Math.max((a[0]-cx)**2+(a[1]-cy)**2+(a[2]-cz)**2,(b[0]-cx)**2+(b[1]-cy)**2+(b[2]-cz)**2,(c[0]-cx)**2+(c[1]-cy)**2+(c[2]-cz)**2))*(1+1e-6)+1e-9;
+            T.push(a[0],a[1],a[2],e1[0],e1[1],e1[2],e2[0],e2[1],e2[2],d11,d12,d22,d11*d22-d12*d12,cx,cy,cz,r);N.push(n);F.push(face);
+            // Its box of cells (every cell within reach of it), kept for the grid.
+            B.push(Math.floor((Math.min(a[0],b[0],c[0])-CELL)/CELL),Math.floor((Math.min(a[1],b[1],c[1])-CELL)/CELL),Math.floor((Math.min(a[2],b[2],c[2])-CELL)/CELL),
+                Math.floor((Math.max(a[0],b[0],c[0])+CELL)/CELL),Math.floor((Math.max(a[1],b[1],c[1])+CELL)/CELL),Math.floor((Math.max(a[2],b[2],c[2])+CELL)/CELL));
+            made=null;
         };
         /** The nearest surface point's signed distance (below 0: inside) and its outward normal, or null with nothing near. */
         const nearest=(x,y,z,out)=>{
-            const list=cells.get(key(Math.floor(x/CELL),Math.floor(y/CELL),Math.floor(z/CELL)));
-            if(!list)return false;
+            const g=made||grid();
+            let list,from,end;
+            if(g.map){list=g.map.get(key(Math.floor(x/CELL),Math.floor(y/CELL),Math.floor(z/CELL)));if(!list)return false;from=0;end=list.length;}
+            else{
+                const gx=Math.floor(x/CELL)-g.lo[0],gy=Math.floor(y/CELL)-g.lo[1],gz=Math.floor(z/CELL)-g.lo[2];
+                if(!(gx>=0&&gy>=0&&gz>=0&&gx<g.nx&&gy<g.ny&&gz<g.nz))return false;
+                const cell=(gx*g.ny+gy)*g.nz+gz;list=g.ids;from=g.starts[cell];end=g.starts[cell+1];
+            }
             let best=Infinity,found=false;
-            for(let i=0;i<list.length;i++){
-                const t=tris[list[i]],A=t.a,E=t.e1,F=t.e2,px=x-A[0],py=y-A[1],pz=z-A[2];
-                const d=E[0]*px+E[1]*py+E[2]*pz,e=F[0]*px+F[1]*py+F[2]*pz,det=t.d11*t.d22-t.d12*t.d12;
-                let u=t.d22*d-t.d12*e,v=t.d11*e-t.d12*d;
+            for(let i=from;i<end;i++){
+                const o=list[i]*17;
+                const sx=x-T[o+13],sy=y-T[o+14],sz=z-T[o+15],gap=Math.sqrt(sx*sx+sy*sy+sz*sz)-T[o+16];
+                if(gap>0&&gap*gap>best)continue;
+                const px=x-T[o],py=y-T[o+1],pz=z-T[o+2];
+                const d=T[o+3]*px+T[o+4]*py+T[o+5]*pz,e=T[o+6]*px+T[o+7]*py+T[o+8]*pz,d11=T[o+9],d12=T[o+10],d22=T[o+11],det=T[o+12];
+                let u=d22*d-d12*e,v=d11*e-d12*d;
                 const over=u>=0&&v>=0&&u+v<=det;
                 if(u<0)u=0;if(v<0)v=0;if(u+v>det){const k=det/(u+v);u*=k;v*=k;}
                 u/=det||1;v/=det||1;
-                const qx=px-E[0]*u-F[0]*v,qy=py-E[1]*u-F[1]*v,qz=pz-E[2]*u-F[2]*v,dd=qx*qx+qy*qy+qz*qz;
-                if(dd<best){best=dd;found=true;out.d=qx*t.n[0]+qy*t.n[1]+qz*t.n[2];out.n=t.n;out.over=over;out.face=t.face;}
+                const qx=px-T[o+3]*u-T[o+6]*v,qy=py-T[o+4]*u-T[o+7]*v,qz=pz-T[o+5]*u-T[o+8]*v,dd=qx*qx+qy*qy+qz*qz;
+                if(dd<best){const id=list[i],n=N[id];best=dd;found=true;out.d=qx*n[0]+qy*n[1]+qz*n[2];out.n=n;out.over=over;out.face=F[id];}
             }
             if(found&&best>CELL*CELL)return false;
             return found;
@@ -243,7 +284,7 @@
     }
 
     /** Settles `entries` on the finished skin: innermost first, by what each garment is. `bumps`: raised skin details. */
-    function settle(entries,skin,triangleNormals,bumps,rankOf,clings){
+    function settle(entries,skin,triangleNormals,bumps,rankOf,clings,quick=false){
         const bare=Surface(),P=skin.positions,I=skin.index,at=v=>[P[v*3],P[v*3+1],P[v*3+2]];
         for(let t=0;t<I.length;t+=3)bare.add(at(I[t]),at(I[t+1]),at(I[t+2]),false);
         const beneath=[bare];
@@ -276,7 +317,8 @@
                 if(e.skirt||e.lining)continue;
                 if(open.length&&clings?.(e))tent(e.laid,open,beneath);
                 const r=settlePiece(e.laid,beneath,bumps||[],report.length?LAYER_GAP:SKIN_GAP);
-                hug(e.laid,[skin.positions,...finished.flatMap(g=>g.list.filter(x=>!x.lining).map(x=>x.laid.positions))],bare,[SKIN_GAP,LAYER_GAP],skin.normals);
+                // (`quick`, a catalog picture: skin finer than the cloth's own faces is not looked for.)
+                if(!quick)hug(e.laid,[skin.positions,...finished.flatMap(g=>g.list.filter(x=>!x.lining).map(x=>x.laid.positions))],bare,[SKIN_GAP,LAYER_GAP],skin.normals);
                 moved+=r.moved;deepest=Math.min(deepest,r.deepest);
             }
             if(seams.length)sew(seams);

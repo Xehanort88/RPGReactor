@@ -27,7 +27,6 @@
     const Game_Fight = root.Game_Fight;
     if (!F || !Game_Fight) return;
 
-    F.AREAS = ["self", "single", "circle", "square", "line", "cone", "cross", "all"];
     F.AI_PRESETS = ["aggressive", "ranged", "support"];
     F.DEFAULT_JUMP = 1;
     // A blow from the side or from behind (the way the target faces).
@@ -43,7 +42,7 @@
     // (`rrBattle.heightReach`, the Database's Combat card): `most` 0 is no more reach at all.
     F.HEIGHT_REACH_LEVELS = 2;
     F.HEIGHT_REACH_MAX = 3;
-    F.HEIGHT_REACH_LIMITS = { levels: [1, 10], most: [0, 10] };
+    F.HEIGHT_REACH_LIMITS = { levels: [1, 10], most: [0, 50] };
     F.HEIGHT_OVER_COVER = 2;
     // A blow struck from beside its target (reach 1) lands only when the two stand within this many levels.
     F.MELEE_HEIGHT = 2;
@@ -277,7 +276,7 @@
         const skill = DataManager.isSkill(item);
         // The attack skill (whichever skill a weapon makes it) and any physical skill aimed at the other side.
         const weaponLike = skill && item.scope >= 1 && item.scope <= 6 && ((!!battler && item.id === battler.attackSkillId()) || item.hitType === 1);
-        const weapon = weaponLike && battler && battler.isActor && battler.isActor() ? battler.weapons()[0] || null : null;
+        const weapon = weaponLike && battler && battler.isActor && (battler.isActor() || battler.isRemoteActor) ? battler.weapons()[0] || null : null;
         const kept = tagCache.get(item);
         const cached = kept && kept.tactics;
         if (cached && cached.weapon === weapon && cached.weaponNote === (weapon ? weapon.note : "") && cached.weaponOwn === (weapon ? weapon.rrBattle || null : null)
@@ -2196,7 +2195,12 @@
         for (let z = 0; z < 6; z++) if (z !== 4) key = (key * 31 + (data[z * size + at] || 0)) | 0;
         key = (key << 1) || 2;
         // A tile event can change what stands on a cell at any moment: such a map is asked afresh.
-        const kept = !($gameMap.tileEvents && $gameMap.tileEvents.length > 0), known = hides.cells[at];
+        // (Only the cells one stands on: with any tile event on the map every cell of every sight line was asked
+        // afresh, four passability checks each, thousands for one AI decision.)
+        let kept = true;
+        const tiles = $gameMap.tileEvents;
+        if (tiles && tiles.length > 0) for (let i = 0; i < tiles.length; i++) if (tiles[i].pos(x, y)) { kept = false; break; }
+        const known = hides.cells[at];
         if (kept && known !== 0 && (known & ~1) === key) return (known & 1) === 1;
         let blocks = true;
         if ($gameMap.isPassable(x, y, 2) || $gameMap.isPassable(x, y, 4) || $gameMap.isPassable(x, y, 6) || $gameMap.isPassable(x, y, 8)) blocks = false;
@@ -2391,6 +2395,62 @@
     const highVariance = (damage, variance) => { const amp = Math.floor(Math.max(Math.abs(damage) * variance / 100, 0)); return damage >= 0 ? damage + amp : damage - amp; };
     const estimate = { hit: 1, critical: 0, min: 0, max: 0, heals: false, hp: true };
 
+    // An estimate must not change the battle, and a damage formula may be written to: `b.addState(5); 100`,
+    // `v[10] += 1; a.atk`. The forecast and the AI's weighing (twice per target per cell) run the formula against
+    // stand-ins instead: each reads through to the real object, takes no writes, and answers a method named for a
+    // change (addState, gainHp, setValue...) with nothing. What a stand-in's method hands back is a stand-in too,
+    // and one passed to a method goes in as the real object, so comparing and searching still work. It is a guard
+    // against the usual ways, not a wall: a method under another name, or a change made inside a callback, still
+    // happens. Only the engine's own evaluation is replaced; a plugin's, or a sequence step's, is left to run.
+    const stockFormula = Game_Action.prototype.evalDamageFormula;
+    const CHANGES = /^(?:add|remove|erase|clear|gain|lose|set|change|recover|die|revive|learn|forget|consume|pay|use|refresh|transform|escape|hide|appear|request|start|perform|force|reserve|init|setup|on)(?=[A-Z_]|$)/;
+    const standIns = new WeakMap(), standsFor = new WeakMap();
+    const nothing = () => undefined;
+    const realOf = value => standsFor.get(value) || value;
+    const standInHandler = {
+        get(target, key) {
+            const value = Reflect.get(target, key, target);
+            if (value === null || (typeof value !== "object" && typeof value !== "function")) return value;
+            // A frozen property must be answered with its very value.
+            const own = Reflect.getOwnPropertyDescriptor(target, key);
+            if (own && !own.configurable && !own.writable && !own.get) return value;
+            if (typeof value !== "function" || key === "constructor") return standIn(value);
+            if (typeof key === "string" && CHANGES.test(key)) return nothing;
+            return function() {
+                const args = Array.prototype.map.call(arguments, realOf);
+                return standIn(value.apply(target, args));
+            };
+        },
+        set() { return true; },
+        defineProperty() { return true; },
+        deleteProperty() { return true; }
+    };
+    function standIn(value) {
+        if (!value || typeof value !== "object" || standsFor.has(value)) return value;
+        let made = standIns.get(value);
+        if (!made) { made = new Proxy(value, standInHandler); standIns.set(value, made); standsFor.set(made, value); }
+        return made;
+    }
+    // The game objects a formula can name, shadowed by their stand-ins. `eval` inside sees the parameters as the
+    // engine's own evaluation sees its locals, so a formula of several statements gives the same value.
+    const SHADOWED = ["$gameVariables", "$gameSwitches", "$gameSelfSwitches", "$gameParty", "$gameTroop", "$gameActors",
+        "$gameTemp", "$gameSystem", "$gameMap", "$gamePlayer", "$gameScreen", "$gameMessage", "$gameTimer"];
+    const shadowed = new Function("return [" + SHADOWED.map(name => "typeof " + name + " !== \"undefined\" ? " + name + " : undefined").join(", ") + "];");
+    const evalShielded = new Function("a", "b", "v", "item", "target", ...SHADOWED, "$rrFormula", "return eval($rrFormula);");
+    function shieldedFormula(target) {
+        try {
+            const item = this.item(), b = standIn(target);
+            const sign = [3, 4].includes(item.damage.type) ? -1 : 1;
+            const args = [standIn(this.subject()), b, standIn($gameVariables._data), item, b];
+            for (const object of shadowed()) args.push(standIn(object));
+            args.push(item.damage.formula);
+            const value = Math.max(evalShielded.apply(this, args), 0) * sign;
+            return isNaN(value) ? 0 : value;
+        } catch (e) {
+            return 0;
+        }
+    }
+
     /** What an action would do to a battler, with F._strike already set: its chances and its least and most. */
     function estimateAction(action, battler) {
         const item = action.item();
@@ -2400,7 +2460,9 @@
         estimate.hp = !item.damage || item.damage.type === 0 || action.isHpEffect();
         if (item.damage && item.damage.type > 0) {
             let low = 0, high = 0;
+            const shield = action.evalDamageFormula === stockFormula;
             try {
+                if (shield) action.evalDamageFormula = shieldedFormula;
                 action.applyVariance = lowVariance;
                 low = action.makeDamageValue(battler, false);
                 action.applyVariance = highVariance;
@@ -2409,6 +2471,7 @@
                 low = 0; high = 0;
             } finally {
                 delete action.applyVariance;
+                if (shield) delete action.evalDamageFormula;
             }
             estimate.heals = low < 0 || high < 0 || (low === 0 && high === 0 && action.isRecover());
             estimate.min = Math.min(Math.abs(low), Math.abs(high));
@@ -2840,7 +2903,7 @@
             case "ready":
                 if (this.awaitView(character, F.BEAT_AIM) || --act.beat > 0) break;
                 // Whoever it meant to strike may have fallen or moved meanwhile: then it only turns to the fight.
-                if (!this.beginAction(unit, act.plan.kind, act.plan.id, act.plan.cx, act.plan.cy)) { this.faceNearest(unit); act.stage = "done"; }
+                if (!this.beginAction(unit, act.plan.kind, act.plan.id, act.plan.cx, act.plan.cy, act.plan.via)) { this.faceNearest(unit); act.stage = "done"; }
                 break;
             case "rest":
                 if (--act.beat <= 0) this.finishAct();
@@ -2893,6 +2956,11 @@
         act.path = steps;
         delete act.grappleOnly; delete act.grappleFrom;
         // A grapple on the way is counted now; one that takes the action leaves nothing to do on arriving.
+        // What was counted before is kept (null for nothing), so Undo Move can give the use and the cooldown back.
+        if (unit && steps && steps.some(step => step.kind === "grapple")) {
+            const grapples = this.tac().grapples;
+            act.grappleWas = (grapples && grapples[unit.id]) || null;
+        } else delete act.grappleWas;
         act.spent = this.noteGrapple(unit, steps);
         act.through = character.isThrough();
         act.speed = character.moveSpeed();
@@ -3367,7 +3435,12 @@
         const P = root.ReactorPhysics;
         if (P && P.isAirborne && P.isAirborne(character)) return true;
         character._rrDrop = undefined;
-        if (loss > 0) this.hurtByFall(unit, loss);
+        if (loss > 0) {
+            this.hurtByFall(unit, loss);
+            // A walk that cost HP is not taken back: Undo Move returned the unit to its place with the HP still gone,
+            // and the move range kept from before still called the same drop survivable.
+            if (this._act && this._act.unitId === unit.id) this._act.locked = true;
+        }
         return false;
     };
 
@@ -3382,7 +3455,7 @@
                 this.setCursor(plan.cx, plan.cy);
                 return;
             }
-            if (this.beginAction(unit, plan.kind, plan.id, plan.cx, plan.cy)) return;
+            if (this.beginAction(unit, plan.kind, plan.id, plan.cx, plan.cy, plan.via)) return;
         }
         if (!(plan && plan.kind === "watch" && this.armOverwatch(unit))) this.faceNearest(unit);
         // A walk that was watched is taken in before the next unit begins.
@@ -4375,6 +4448,12 @@
         if (G.is3D()) character._reactorGround = origin.height;
         this._inside[String(unit.id)] = [origin.x, origin.y];
         act.moved = false;
+        // A grapple taken on the way that is undone was not used: its count and cooldown go back to what they were.
+        if (act.grappleWas !== undefined) {
+            const grapples = this.tac().grapples;
+            if (grapples) { if (act.grappleWas) grapples[unit.id] = act.grappleWas; else delete grapples[unit.id]; }
+            delete act.grappleWas;
+        }
         act.stage = "move";
         this.setCursor(origin.x, origin.y, G.is3D() ? origin.height : undefined);
         this.focusOn(origin.x, origin.y);
@@ -4772,7 +4851,7 @@
         serial: -1, unitId: 0, turn: -1, ready: false, preset: "aggressive", move: 0, count: 0, index: 0,
         x: new Int16Array(AI_CELLS), y: new Int16Array(AI_CELLS), cost: new Float32Array(AI_CELLS), height: new Float32Array(AI_CELLS),
         loss: new Float32Array(AI_CELLS), spent: new Uint8Array(AI_CELLS), mhp: 1,
-        actions: [], foes: [], friends: [], threat: [], front: [], shoots: false,
+        actions: [], foes: [], friends: [], threat: [], front: [], closers: [], shoots: false,
         bestScore: -Infinity, bestX: 0, bestY: 0, bestKind: "", bestId: 0, bestCx: 0, bestCy: 0
     };
     // What a cell in an opponent's reach costs the unit, by how it fights.
@@ -4867,18 +4946,22 @@
         }
         if (ai.friends.length > AI.POOL) ai.friends.sort((a, b) => far(a) - far(b) || a.id - b.id);
         // How near the nearest friend who closes in stands to each foe, and whether this unit has anything to shoot.
+        // The friends who close in, and where they stand: found once, not once per foe. A unit that closes in
+        // itself never reads the answer (positionScore), so it is not worked out for one.
+        const closers = ai.closers;
+        closers.length = 0;
+        if (ai.preset !== "aggressive") for (const friend of ai.friends) {
+            if (!fight.isAlive(friend)) continue;
+            const fb = fight.battler(friend);
+            if (F.tactics(fb, $dataSkills[fb.attackSkillId()]).max >= 2 || F.aiOf(friend) !== "aggressive") continue;
+            const c = AI.at(fight, friend);
+            if (c) closers.push(c);
+        }
         ai.front.length = 0;
         for (const foe of ai.foes) {
             const fc = AI.at(fight, foe);
-            if (!fc) { ai.front.push(0); continue; }
             let nearest = Infinity;
-            for (const friend of ai.friends) {
-                if (!fight.isAlive(friend)) continue;
-                const reach = F.tactics(fight.battler(friend), $dataSkills[fight.battler(friend).attackSkillId()]).max;
-                if (reach >= 2 || F.aiOf(friend) !== "aggressive") continue;
-                const c = AI.at(fight, friend);
-                if (c) nearest = Math.min(nearest, F.stepsTo(foe, fc.x, fc.y, c.x, c.y));
-            }
+            if (fc) for (const c of closers) nearest = Math.min(nearest, F.stepsTo(foe, fc.x, fc.y, c.x, c.y));
             ai.front.push(nearest === Infinity ? 0 : nearest);
         }
         ai.shoots = ai.actions.some(entry => entry.action.isForOpponent() && entry.tactics.max >= 2);
@@ -5403,7 +5486,7 @@
         // The enemies in reach of the party's middle, nearest first; with none in reach, the nearest one.
         let ex = 0, ey = 0, en = 0, nearest = null, least = Infinity;
         for (const unit of fight._units) {
-            const c = unit.gone || unit.team !== "enemy" || !fight.isAlive(unit) ? null : fight.character(unit);
+            const c = unit.gone || !F.isFoeTeam(unit.team) || !fight.isAlive(unit) ? null : fight.character(unit);
             if (!c) continue;
             const far = Math.hypot(c.x - ax, c.y - ay);
             if (far < least) { least = far; nearest = c; }
@@ -6478,7 +6561,9 @@
         shared.rrOpenLow.value = least;
         for (const prop of cut.props.values()) {
             const value = prop.e <= 0 ? 1e9 : prop.top + (prop.low - prop.top) * smooth(prop.e);
+            // (Each update of a battle: the materials are stamped only when the height changed.)
             for (const uniform of prop.uniforms) uniform.value = value;
+            if (prop.value !== value) { prop.value = value; Reactor3D.touchMaterial(prop.materials); }
         }
     }
 
@@ -6637,12 +6722,13 @@
                 let prop = cut.props.get(object);
                 if (!hides) continue;
                 if (!prop) {
-                    prop = { uniforms: [], e: 0, goal: 1, last: frame, wanted: stamp, low, top: box.y1 + 0.3 };
+                    prop = { uniforms: [], materials: [], value: 1e9, e: 0, goal: 1, last: frame, wanted: stamp, low, top: box.y1 + 0.3 };
                     object.traverse(node => {
                         const materials = Array.isArray(node.material) ? node.material : node.material ? [node.material] : EMPTY;
                         for (const material of materials) {
                             material.userData = material.userData || {};
                             prop.uniforms.push(material.userData.rrFightStump || (material.userData.rrFightStump = { value: 1e9 }));
+                            prop.materials.push(material);
                         }
                     });
                     cut.props.set(object, prop);
@@ -6686,7 +6772,7 @@
         if (cut.scene !== scene) {
             for (const cluster of cut.open) { shutBuilding(cluster); cluster.e = 0; cluster.goal = 0; }
             for (const mesh of cut.caps) mesh.geometry.dispose();
-            for (const prop of cut.props.values()) for (const uniform of prop.uniforms) uniform.value = 1e9;
+            for (const prop of cut.props.values()) { for (const uniform of prop.uniforms) uniform.value = 1e9; Reactor3D.touchMaterial(prop.materials); }
             cut.open.length = 0; cut.caps.length = 0; cut.props.clear(); cut.memo.clear();
             cut.scene = scene; cut.ex = 1e9; cut.due = Infinity; cut.easing = false; cut.capsDue = false;
             cut.entryCluster.length = 0; cut.entryRun.length = 0;
@@ -7259,7 +7345,7 @@
         if (act.stage === "pick" || act.stage === "move") {
             const pointed = fight.focusedUnit();
             if (fight.tac().threatAll) danger = fight.threatOfAll();
-            else if (pointed && pointed.team === "enemy" && fight.isAlive(pointed)) { const known = fight.threatOf(pointed); tread = known.tread; danger = known.reach; }
+            else if (pointed && F.isFoeTeam(pointed.team) && fight.isAlive(pointed)) { const known = fight.threatOf(pointed); tread = known.tread; danger = known.reach; }
         } else if (fight.tac().threatAll && (act.stage === "command" || act.stage === "skill" || act.stage === "item")) danger = fight.threatOfAll();
         if (act.stage === "pick") { const pending = fight.pendingUnits(); move = fight.withFootprints(pending.map(unit => fight.character(unit)), pending); }
         else if (act.stage === "move") { move = fight.moveCells(); path = fight.pathCells(); grapple = move.filter(cell => cell.grapple); }
@@ -7413,7 +7499,7 @@
         const all = menace.all, seen = menace.seen || (menace.seen = new Set());
         all.length = 0; seen.clear();
         for (const unit of this._units) {
-            if (unit.gone || unit.team !== "enemy" || !this.isAlive(unit)) continue;
+            if (unit.gone || !F.isFoeTeam(unit.team) || !this.isAlive(unit)) continue;
             menaceOf(this, unit, menace.tread, menace.reach);
             for (const list of [menace.tread, menace.reach]) for (const cell of list) {
                 const id = cell.y * gw + cell.x;
@@ -7782,7 +7868,7 @@
             uox[i] = f.ox + f.w / 2; uoy[i] = f.oy + f.h / 2;
             ut[i] = F.unitHeight(unit);
             uw[i] = f.w; ud[i] = f.h;
-            uteam[i] = unit.team === "ally" ? 0 : unit.team === "enemy" ? 1 : 2;
+            uteam[i] = unit.team === "ally" ? 0 : F.isFoeTeam(unit.team) ? 1 : 2;
             uhp[i] = battler && unit.team !== "neutral" ? clamp(battler.hpRate(), 0, 1) : -1;
             // Acted: in a side's turn, one of that side that is done; watch: on overwatch.
             uflags[i] = (tac.acted[unit.id] && (team === "any" || unit.team === team) ? U.ACTED_FLAG : 0) | (tac.watch && tac.watch[unit.id] ? U.WATCH_FLAG : 0);
@@ -8378,6 +8464,9 @@
     Rope.grapplerOf = function(holder) {
         if (!holder || !holder.object) return null;
         if (holder._reactorGrappler !== undefined) return holder._reactorGrappler;
+        // A worn grappler drawn as merged pieces (Reactor3D.LayeredParts.WORN) is put on again as its pieces: its
+        // harpoon is hidden on its own while it flies.
+        if (typeof Reactor3D !== "undefined" && Reactor3D.Worn && Reactor3D.Worn.apart) Reactor3D.Worn.apart(holder, /^grapple[\s_]?spike/i);
         let mesh = null;
         // By its name: the mesh's own (a skinned character file), or the part's a flattened file keeps (a worn prop).
         const named = child => /^grapple[\s_]?spike/i.test(child.name || "") || (child.userData && Array.isArray(child.userData.parts) && child.userData.parts.some(part => /^grapple[\s_]?spike/i.test(part && part.name || "")));
@@ -8617,7 +8706,7 @@
             // End Turn asks first when units that could still act would lose their turn.
             command.setHandler("endTurn", () => W.askEndTurn(scene));
             // Auto hands every unit still to act to itself: asked first.
-            command.setHandler("auto", () => W.openMenu(scene, "auto", "command"));
+            command.setHandler("auto", () => W.openMenu(scene, "auto"));
             command.setHandler("cancel", () => { ate(); fight().commandCancel(); });
             // (A row of the vehicle the unit rides is the vehicle's to use: the list says whose each is.)
             skills.setHandler("ok", () => {

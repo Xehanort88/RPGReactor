@@ -226,7 +226,10 @@ class ModelPropsManager {
         return {
             name: prop.name, ext: prop.ext, file: prop.file, texture: prop.texture,
             ...(prop.variant ? { variant: prop.variant } : null),
-            size: prop.size, scale: prop.scale, stretch: prop.stretch, yaw: prop.yaw, pitch: prop.pitch, roll: prop.roll
+            size: prop.size, scale: prop.scale, stretch: prop.stretch, yaw: prop.yaw, pitch: prop.pitch, roll: prop.roll,
+            // An event's model says which way is its front (the Model panel's faces): without it the 2D view
+            // turned the model about its file's own axes, and it faced another way than in 3D and in the game.
+            ...(prop.faces ? { faces: prop.faces } : null)
         };
     }
 
@@ -308,6 +311,8 @@ class ModelPropsManager {
         if (list.length) elevation.ensure(this.currentMap).props = list;
         else if (this.currentMap.reactor3d) delete this.currentMap.reactor3d.props;
         if (this.selectedId && !this.prop(this.selectedId)) this.selectedId = null;
+        // The view shows what is selected now: a model made later with the old id must not come back in rings.
+        this.mapEditor3D()?.selectProp?.(this.selectedId || null);
         this._changed();
     }
 
@@ -335,6 +340,8 @@ class ModelPropsManager {
         if (!prop) return false;
         const copy = JSON.parse(JSON.stringify(prop));
         delete copy.id;
+        // A copy is the map's own, not the stamped building's: removing or re-stamping that building took copies too.
+        delete copy.structure;
         ModelPropsManager.clipboard = copy;
         return true;
     }
@@ -376,12 +383,17 @@ class ModelPropsManager {
             x, y, z: this.fields.z, direction: this.fields.direction,
             yaw: options.yaw ?? this.fields.yaw, pitch: this.fields.pitch, roll: this.fields.roll,
             size: options.size ?? this.fields.size, scale: this.fields.scale, passable: this.fields.passable,
-            animations: this.fields.animations.slice(), repeat: this.fields.repeat, effects: this.fields.effects.slice()
+            // The stretch and the speed too: the ghost under the pointer shows them, so what lands has them.
+            stretch: (this.fields.stretch || [1, 1, 1]).slice(),
+            animations: this.fields.animations.slice(), repeat: this.fields.repeat, animationSpeed: this.fields.animationSpeed ?? 100,
+            effects: this.fields.effects.slice()
         });
         // What was put down is not selected: the fields stay the next placement's,
         // so changing them does not reach back into the one just placed.
         if (id) {
             this.selectedId = null;
+            // The 3D view lets go of the one it showed selected too (its rings stayed, while Delete did nothing).
+            this.mapEditor3D()?.selectProp?.(null);
             this._changed([id]);
         }
         return id;
@@ -420,7 +432,7 @@ class ModelPropsManager {
         this.pushUndo();
         const removed = elevation.removeProp(this.currentMap, id);
         if (removed) {
-            if (this.selectedId === id) this.selectedId = null;
+            if (this.selectedId === id) { this.selectedId = null; this.mapEditor3D()?.selectProp?.(null); }
             this._changed([id]);
         }
         return removed;

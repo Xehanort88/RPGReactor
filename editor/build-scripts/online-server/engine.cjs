@@ -13,6 +13,11 @@ const config = JSON.parse(fs.readFileSync(path.join(dir, 'engine.json'), 'utf8')
 const { secret, settings = {} } = config;
 const engine = settings.engine || {};
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+const RELAY_BYTES = 16384, MAX_RELAYS_PER_SECOND = 120;
+// What one player's relays may send in a second, counted once per message whatever the number of recipients: a
+// host's real-time battle is tens of kilobytes a second (apos ten times a second), and 120 relays of 16 KB to 32
+// slots (about 60 MB a second) would back up everyone. At most 32 copies of this budget leave the server a second.
+const RELAY_BYTES_PER_SECOND = 262144;
 const RECORD = 12, REMOVED = 0xffffffff, REPLACED = 0xfffffffe;
 const NEIGHBOURS = 64, SNAPSHOT_HZ = Math.max(5, Math.min(30, Number(engine.rate) || 15));
 const IDLE_MS = Number(config.idleMs) || 600000;
@@ -89,9 +94,13 @@ function idList(text) {
 }
 
 const sharedSwitches = idList(settings.world?.switches), sharedVariables = idList(settings.world?.variables);
+// The events the project shares ("map,event"), listed at deploy; a server deployed before the list takes any.
+const sharedEvents = Array.isArray(settings.world?.events) ? new Set(settings.world.events.map(String)) : null;
 
 /** One change to the world, in the order it arrived. Returns what every game should now hold. */
 function applyChange(change) {
+    // Anything a game sends reaches here: an entry that is no object is passed over, never read (it ended this process).
+    if (!change || typeof change !== 'object') return null;
     const kind = String(change.kind || ''), id = String(change.id || '');
     if (kind === 's' && sharedSwitches.has(+id)) return (world.s[+id] = !!change.value, { kind, id, value: world.s[+id] });
     if (kind === 'v' && sharedVariables.has(+id)) {
@@ -106,7 +115,7 @@ function applyChange(change) {
         }
         return { kind, id, value: world.v[+id] };
     }
-    if (kind === 'e' && /^\d{1,4},\d{1,6},[A-Da-d]$/.test(id) && (id in world.e || Object.keys(world.e).length < 5000)) return (world.e[id] = !!change.value, { kind, id, value: world.e[id] });
+    if (kind === 'e' && /^\d{1,4},\d{1,6},[A-Da-d]$/.test(id) && (!sharedEvents || sharedEvents.has(id.slice(0, id.lastIndexOf(',')))) && (id in world.e || Object.keys(world.e).length < 5000)) return (world.e[id] = !!change.value, { kind, id, value: world.e[id] });
     return null;
 }
 
@@ -193,7 +202,6 @@ function allowed(player, map, x, y, flags, now) {
 function onPlace(player, data) {
     const now = Date.now(), flags = data[1], map = data.readUInt16LE(2), x = data.readUInt16LE(4), y = data.readUInt16LE(6), clock = data.readUInt32LE(8);
     if (!allowed(player, map, x, y, flags, now)) {
-        player.refused = (player.refused || 0) + 1;
         if (now - (player.fixedAt || 0) > 500) { player.fixedAt = now; sendText(player.socket, { t: 'fix', map: player.map, x: player.x, y: player.y }); }
         return;
     }
@@ -314,6 +322,47 @@ function withinSetLimit(player) {
     return ++player.sets <= MAX_SETS_PER_SECOND;
 }
 
+/** A real-time battle's messages, straight to the players in it. The game that hosts the battle decides what is true; this only carries. */
+function relay(player, message) {
+    const out = { t: 'bf', from: player.slot, m: message.m };
+    const size = JSON.stringify(out).length;
+    const second = Math.floor(Date.now() / 1000);
+    if (player.relayBytesSecond !== second) { player.relayBytesSecond = second; player.relayBytes = 0; }
+    // The budget counts what the sender sends, once per message: counted per recipient, a host of a large battle
+    // (apos ten times a second to every guest) ran out each second and the guests last in `to` lost the rest of it.
+    // What one message can cost the server is held by the 32 recipients at most and the relay count.
+    if (player.relayBytes + size > RELAY_BYTES_PER_SECOND) return;
+    player.relayBytes += size;
+    for (const slot of new Set(message.to.slice(0, 32))) {
+        const other = players.get(slot);
+        if (!other || other === player) continue;
+        // A recipient already backed up misses this one, rather than being cut off for someone else's traffic.
+        if (other.socket.writableLength > MAX_QUEUE / 2) continue;
+        sendText(other.socket, out);
+    }
+}
+
+function withinRelayLimit(player) {
+    const second = Math.floor(Date.now() / 1000);
+    if (player.relaySecond !== second) { player.relaySecond = second; player.relays = 0; }
+    return ++player.relays <= MAX_RELAYS_PER_SECOND;
+}
+
+/** The nonce the API kept for the slot's current visit (nonce.bin, 8 bytes a slot), or '' when none was kept. */
+function slotNonce(slot) {
+    let handle = null;
+    try {
+        handle = fs.openSync(path.join(dir, 'nonce.bin'), 'r');
+        const bytes = Buffer.alloc(8);
+        const read = fs.readSync(handle, bytes, 0, 8, slot * 8);
+        return read === 8 && bytes.some(byte => byte !== 0) ? bytes.toString('hex') : '';
+    } catch (error) {
+        return '';
+    } finally {
+        if (handle !== null) fs.closeSync(handle);
+    }
+}
+
 function welcome(socket) {
     let player = null;
     const timer = setTimeout(() => socket.destroy(), 5000);
@@ -323,6 +372,9 @@ function welcome(socket) {
             try { hello = opcode === 1 ? JSON.parse(payload.toString()) : null; } catch (error) { hello = null; }
             const slot = Number(hello?.slot), token = Buffer.from(String(hello?.token || '')), right = Number.isInteger(slot) && slot >= 0 ? Buffer.from(tokenFor(slot, String(hello?.nonce || ''))) : Buffer.alloc(0);
             if (!right.length || token.length !== right.length || !crypto.timingSafeEqual(token, right)) { sendText(socket, { t: 'refused' }); socket.end(); return; }
+            // A token from an earlier visit to this slot (the slot given to someone else since) is refused, as the API refuses it.
+            const current = slotNonce(slot);
+            if (current && current !== String(hello?.nonce || '').toLowerCase()) { sendText(socket, { t: 'refused' }); socket.end(); return; }
             clearTimeout(timer);
             players.get(slot)?.socket.destroy();
             player = { socket, slot, map: 0, x: 0, y: 0, flags: 0, clock: 0, heard: Date.now(), lastMessage: Date.now(), seen: false };
@@ -337,7 +389,11 @@ function welcome(socket) {
         else if (opcode === 1) {
             let message = null;
             try { message = JSON.parse(payload.toString()); } catch (error) { message = null; }
-            if (message?.t === 'set' && withinSetLimit(player)) applyChanges(message.changes);
+            // One player's malformed message must not end the Engine for everyone.
+            try {
+                if (message?.t === 'set' && withinSetLimit(player)) applyChanges(message.changes);
+                else if (message?.t === 'bf' && Array.isArray(message.to) && payload.length <= RELAY_BYTES && withinRelayLimit(player)) relay(player, message);
+            } catch (error) { console.error('message refused:', error && error.message); }
         }
     });
     socket.on('data', read);
@@ -369,8 +425,9 @@ function local(request, response) {
         request.on('data', chunk => { body += chunk; if (body.length > 65536) request.destroy(); });
         request.on('end', () => {
             let changes = [];
-            try { changes = JSON.parse(body).changes; } catch (error) { changes = []; }
-            response.end(JSON.stringify({ count: applyChanges(changes) }));
+            let count = worldCount;
+            try { changes = JSON.parse(body).changes; count = applyChanges(changes); } catch (error) { count = worldCount; }
+            response.end(JSON.stringify({ count }));
         });
         return;
     }

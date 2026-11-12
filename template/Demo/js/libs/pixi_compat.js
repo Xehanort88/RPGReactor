@@ -108,90 +108,15 @@
 
     // -------------------------------------------------------------------------
     // v5's TexturePool handed a full-screen filter a texture of exactly the
-    // screen size (FilterSystem called setScreenSize, and getOptimalTexture
-    // skipped the power-of-two rounding for that one size). v8 rounds every
-    // request up to a power of two, and the filter vertex shader computes
-    // vTextureCoord = aPosition * (uOutputFrame.zw * uInputSize.zw), frame
-    // over source, so a full-screen filter's uv now spans 0..0.8 x 0..0.6 at
-    // 816x624 instead of 0..1. Every hand-written MV/MZ shader that hardcodes
-    // 0.5 as the screen centre (encounter irises, shatters, wipes) lands down
-    // and to the right. Shaders that normalise by filterArea/uInputSize are
-    // unaffected either way. Restore the v5 rule at the pool: a request that
-    // matches the canvas backing store gets an exactly sized texture; every
-    // other size takes v8's native path. Non-power-of-two render textures are
-    // unconditional on WebGL2 and WebGPU, v8's only backends.
-    //
-    // Graphics does not exist when this file loads (pixi_compat runs before
-    // the corescript), so the screen size is read lazily per call; without a
-    // Graphics canvas (the editor) nothing changes. Full-screen textures use
-    // negative pool keys, which v8's non-negative key formula can never
-    // produce; returnTexture and clear() look keys up by texture uid and
-    // iterate the pool with for..in, so they round-trip. A pooled texture
-    // whose backing no longer matches the screen (the canvas was resized) is
-    // destroyed instead of reused.
+    // screen size, so its uv spanned 0..1 and hand-written MV/MZ shaders that
+    // hardcode 0.5 as the screen centre (encounter irises, shatters, wipes)
+    // landed in the middle. v8 up to 8.20 rounded every request up to a power
+    // of two, and this file wrapped the pool to put the v5 rule back. Since
+    // 8.21 the pool does it itself: the renderer registers its screen
+    // (TexturePool.setScreenSize) and a request that fits the screen gets a
+    // screen-sized texture. The wrap read pool fields 8.22 no longer has, so
+    // it is gone; nothing replaces it.
     // -------------------------------------------------------------------------
-    if (PIXI.TextureSource && PIXI.TexturePool &&
-        typeof PIXI.TexturePool.getOptimalTexture === "function" &&
-        typeof PIXI.TexturePool.createTexture === "function" &&
-        !PIXI.TexturePool.__reactorFullScreenTextures) {
-        const nativeGetOptimalTexture = PIXI.TexturePool.getOptimalTexture;
-        const screenPixels = function() {
-            const graphics = window.Graphics;
-            const canvas = graphics && graphics._canvas;
-            if (!canvas || !(canvas.width > 0) || !(canvas.height > 0)) return null;
-            return { width: canvas.width, height: canvas.height };
-        };
-        PIXI.TexturePool.getOptimalTexture = function(frameWidth, frameHeight, resolution, antialias, autoGenerateMipmaps) {
-            if (resolution === undefined) resolution = 1;
-            const screen = screenPixels();
-            const pixelWidth = Math.ceil(frameWidth * resolution - 1e-6);
-            const pixelHeight = Math.ceil(frameHeight * resolution - 1e-6);
-            if (!screen || pixelWidth !== screen.width || pixelHeight !== screen.height) {
-                return nativeGetOptimalTexture.call(this, frameWidth, frameHeight, resolution, antialias, !!autoGenerateMipmaps);
-            }
-            const key = -1 - ((autoGenerateMipmaps ? 1 : 0) << 1) - (antialias ? 1 : 0);
-            if (!this._texturePool[key]) this._texturePool[key] = [];
-            let texture = this._texturePool[key].pop();
-            if (texture && (texture.source.pixelWidth !== pixelWidth ||
-                            texture.source.pixelHeight !== pixelHeight)) {
-                // Destroying here fires "[BindGroup] ... destroyed while still
-                // bound to a shader": the filter that used this texture last
-                // frame keeps it in a bind group until it re-binds, and this
-                // code runs mid-render. The texture is out of circulation the
-                // moment it is popped — nothing returns it to the pool — so
-                // wait two frames (every filter has re-bound by then) and
-                // destroy it quietly.
-                const stale = texture;
-                PIXI.TexturePool.__reactorStaleRetired =
-                    (PIXI.TexturePool.__reactorStaleRetired || 0) + 1;
-                const retire = function() {
-                    try { stale.destroy(true); } catch (e) { /* already gone */ }
-                };
-                if (typeof requestAnimationFrame === "function") {
-                    requestAnimationFrame(function() { requestAnimationFrame(retire); });
-                } else {
-                    retire();
-                }
-                texture = null;
-            }
-            if (!texture) {
-                texture = this.createTexture(pixelWidth, pixelHeight, antialias, !!autoGenerateMipmaps);
-            }
-            texture.source._resolution = resolution;
-            texture.source.width = pixelWidth / resolution;
-            texture.source.height = pixelHeight / resolution;
-            texture.source.pixelWidth = pixelWidth;
-            texture.source.pixelHeight = pixelHeight;
-            texture.frame.x = 0;
-            texture.frame.y = 0;
-            texture.frame.width = frameWidth;
-            texture.frame.height = frameHeight;
-            texture.updateUvs();
-            this._poolKeyHash[texture.uid] = key;
-            return texture;
-        };
-        PIXI.TexturePool.__reactorFullScreenTextures = true;
-    }
 
     /**
      * Whether this class is a window layer, whose MZ render must not run here.
@@ -1643,9 +1568,9 @@
         };
         PIXI.ParticleContainer.__reactorLegacyContainer = true;
     }
-    // The MV location for the same class. reactor_mv_compat defines this too,
-    // but it is switched off for MZ projects ($reactorMvCompat = false) and an
-    // MZ project can still carry an MV-era plugin.
+    // The MV location for the same class. This file loads first, so the
+    // fallback of the same name in reactor_mv_compat only ever runs where
+    // this one did not (a test that loads that file alone).
     if (_isV8Pixi && PIXI.ParticleContainer) {
         PIXI.particles = PIXI.particles || {};
         if (!PIXI.particles.ParticleContainer) {
@@ -2542,6 +2467,16 @@
             const deadReason = _deadSpriteReason(sprite);
             if (deadReason) {
                 _warnDestroyedOnce(sprite, "SpritePipe.updateRenderable", deadReason);
+                return;
+            }
+            // A sprite asked to update that no batch holds (taken off the display list and put back, or shown again,
+            // between two builds of the list): PIXI reads its batcher, finds none and the game stops ("Cannot read
+            // properties of null (reading 'updateElement')", North Haven's square, 2026-11-10). It is passed over and
+            // the list is built again, which gives it a batch.
+            const gpuSprite = this._getGpuSprite ? this._getGpuSprite(sprite) : null;
+            if (gpuSprite && !gpuSprite._batcher) {
+                const group = sprite.parentRenderGroup || sprite.renderGroup;
+                if (group) group.structureDidChange = true;
                 return;
             }
             return origUpdate.call(this, sprite);
@@ -4014,6 +3949,10 @@
                     return containerVisible.get.call(this);
                 },
                 set: function(value) {
+                    // Every write marks the draw list changed, a change or not, and that is relied on: with the mark
+                    // left to real changes only (tried 2026-11-10, runtime .11), a walk into North Haven's square
+                    // stopped the game in PIXI's SpritePipe.updateRenderable (a sprite updated that the list no
+                    // longer held). Something else changes the list without saying so; until it is found, keep this.
                     containerVisible.set.call(this, value);
                     this._syncSubtreeDisplayStatus();
                     const renderGroup = this.renderGroup || this.parentRenderGroup;
@@ -4072,5 +4011,80 @@
         patchCharacterUpdate();
         patchSpritesetUpdate();
     };
+})();
+
+/*
+ * A container shown and hidden again before the next render (or hidden and shown) leaves the draw list as it was.
+ * PIXI 8 marks the stage's draw list changed on every write of `visible` that differs from the value before it, and
+ * builds the whole list afresh at the next render. MZ plugins write it twice an update: MOG_VariableHud sets its
+ * HUD visible in updateSprites and hidden again in update, every update, and the Demo's stage was rebuilt every
+ * frame for it (0.5 ms of the laptop's frame, i5-1145G7, 2026-11-08). Now the first write since the last render
+ * notes what the container showed then, and the render marks the list changed only for a container that ends up
+ * different. `PIXI.rrDeferVisibility = false` (before the next write) marks it at every write, as PIXI does.
+ *
+ * OFF since runtime 20261111.2. With it on, what was switched on or off between two draws could stay as it was
+ * drawn: a message box opened with its frame and name and no face or text, and a hidden follower stayed in view
+ * (seen in the Demo's first room under NW.js on the RTX 5070, runtimes 20261108.1 to 20261111.1; with this off,
+ * both are right). Telling the draw lists earlier (before _updateCachedRenderGroups, and before the game's own
+ * "does this refresh draw" check) did not cure it, so the cause is not known. Turn it on again only with a check
+ * of a message with a face in the running game.
+ */
+(function() {
+    if (typeof PIXI === "undefined" || !PIXI.Container || !PIXI.RenderGroupSystem) return;
+    const proto = PIXI.Container.prototype;
+    const visible = Object.getOwnPropertyDescriptor(proto, "visible");
+    const system = PIXI.RenderGroupSystem.prototype;
+    if (!visible || !visible.get || !visible.set || typeof system._updateRenderGroups !== "function" || proto.__rrDeferVisibility) return;
+    // PIXI 8's UPDATE_VISIBLE flag; checked against how the setter it replaces reads.
+    if (!/localDisplayStatus/.test(String(visible.set)) || !/_onUpdate/.test(String(visible.set))) return;
+    const UPDATE_VISIBLE = 4;
+    const pending = new Set();
+    PIXI.rrDeferVisibility = false;
+    Object.defineProperty(proto, "visible", {
+        configurable: true,
+        enumerable: visible.enumerable,
+        get: visible.get,
+        set(value) {
+            if (!PIXI.rrDeferVisibility) { visible.set.call(this, value); return; }
+            const bit = value ? 2 : 0;
+            if ((this.localDisplayStatus & 2) === bit) return;
+            if (this.parentRenderGroup && this._rrDrawnVisible === undefined) {
+                this._rrDrawnVisible = this.localDisplayStatus & 2;
+                pending.add(this);
+            }
+            this._updateFlags |= UPDATE_VISIBLE;
+            this.localDisplayStatus ^= 2;
+            this._onUpdate();
+            this.emit("visibleChanged", value);
+        }
+    });
+    // The draw lists are told before anything reads `structureDidChange`. A render reads it first for the groups
+    // kept as a picture (_updateCachedRenderGroups, before _updateRenderGroups): told only in the second, a window
+    // whose inside was switched on as it opened kept its old picture, and a message box opened with no face and
+    // no text (runtimes 20261108.1 to 20261111.1). The game's own "does this refresh draw" check reads it too,
+    // before any render (Graphics._stageWork), so it asks through `PIXI.rrSettleVisibility`.
+    const settle = function() {
+        if (!pending.size) return;
+        for (const container of pending) {
+            const group = container.parentRenderGroup;
+            if (group && (container.localDisplayStatus & 2) !== container._rrDrawnVisible) group.structureDidChange = true;
+            container._rrDrawnVisible = undefined;
+        }
+        pending.clear();
+    };
+    PIXI.rrSettleVisibility = settle;
+    const cached = system._updateCachedRenderGroups;
+    if (typeof cached === "function") {
+        system._updateCachedRenderGroups = function() {
+            settle();
+            return cached.apply(this, arguments);
+        };
+    }
+    const update = system._updateRenderGroups;
+    system._updateRenderGroups = function(renderGroup) {
+        settle();
+        return update.call(this, renderGroup);
+    };
+    proto.__rrDeferVisibility = true;
 })();
 

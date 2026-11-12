@@ -125,8 +125,9 @@ class PluginManager {
                 }
             };
             document.addEventListener('keydown', this._keyHandler);
-        } else if (!shownBefore) {
-            // Raising an open manager keeps edits; reopening a closed one reloads from disk.
+        } else if (!shownBefore && !this.isDirty()) {
+            // Raising an open manager keeps edits; reopening a closed one reloads from disk, unless it holds edits
+            // not yet saved (closing the window does not ask; reloading threw them away without a word).
             this.loadPlugins();
         }
 
@@ -164,39 +165,12 @@ class PluginManager {
     onProjectChanged() {
         this.hide();
         this.plugins = [];
+        this._pluginsBaseline = null;
         this.availablePlugins = [];
         this._pluginsFilePath = null;
         this._pluginProjectPath = null;
         this._pluginsLoadError = null;
         this.clearPluginSelection();
-    }
-
-    /**
-     * Recursively parse nested JSON strings
-     */
-    deepParseJSON(value) {
-        if (typeof value === 'string') {
-            // Try to parse as JSON
-            try {
-                const parsed = JSON.parse(value);
-                // Recursively parse the result
-                return this.deepParseJSON(parsed);
-            } catch (e) {
-                // Not JSON, return as-is
-                return value;
-            }
-        } else if (Array.isArray(value)) {
-            // Recursively parse array elements
-            return value.map(item => this.deepParseJSON(item));
-        } else if (value && typeof value === 'object') {
-            // Recursively parse object properties
-            const result = {};
-            for (const [k, v] of Object.entries(value)) {
-                result[k] = this.deepParseJSON(v);
-            }
-            return result;
-        }
-        return value;
     }
 
     getStructName(type) {
@@ -1397,7 +1371,8 @@ class PluginManager {
             const dirPath = this.path.join(project.path, dir);
             if (this.fs.existsSync(dirPath)) {
                 const imageExts = ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.apng'];
-                const validExts = String(dir).includes('img') ? imageExts : RRAssetFiles.AUDIO_EXTENSIONS;
+                // A folder other than img/ or audio/ (movies, effects, fonts, data) lists its own files: every one.
+                const validExts = String(dir).includes('img') ? imageExts : String(dir).includes('audio') ? RRAssetFiles.AUDIO_EXTENSIONS : [];
                 for (const fileName of RRAssetFiles.listNames(dirPath, validExts)) {
                     const opt = document.createElement('option');
                     opt.value = fileName;
@@ -1457,7 +1432,8 @@ class PluginManager {
             const falseOpt = document.createElement('option');
             falseOpt.value = 'false';
             falseOpt.textContent = fieldSchema.off || 'false';
-            falseOpt.selected = value === 'false' || value === false;
+            // Anything but true reads as false in a plugin (no value, no @default): show what it gets.
+            falseOpt.selected = value !== 'true' && value !== true;
 
             select.appendChild(trueOpt);
             select.appendChild(falseOpt);
@@ -1515,7 +1491,10 @@ class PluginManager {
             button.addEventListener('click', (e) => {
                 // Open nested struct editor
                 // Get the current value or initialize as empty object
-                const currentValue = structData[fieldName] || {};
+                // An empty value is an empty list for a list type (`|| {}` turned it into an object, which opened as
+                // "[object Object]" and was saved as that text), and an empty struct otherwise.
+                const stored = structData[fieldName];
+                const currentValue = stored !== undefined && stored !== null && stored !== '' ? stored : (String(type).endsWith('[]') ? [] : {});
 
                 // We need to pass the struct definitions and avoid re-reading the plugin file
                 // So we'll handle nested structs differently - without loading from file
@@ -1756,7 +1735,7 @@ class PluginManager {
                 title: this._tt('Delete Element'), ok: this._tt('Delete'), danger: true
             });
             // The question was about the element this editor shows; the editor may have closed meanwhile.
-            if (!confirmed || arrayData[index] !== element || overlay.parentNode !== document.body) return;
+            if (!confirmed || arrayData[index] !== element || !overlay.isConnected) return;
             arrayData.splice(index, 1);
             overlay.remove();
             onSave();
@@ -1826,7 +1805,7 @@ class PluginManager {
         `;
 
         const cancel = () => {
-            if (overlay.parentNode !== document.body) return;
+            if (!overlay.isConnected) return;
             if (index < arrayData.length) arrayData[index] = original;
             overlay.remove();
         };
@@ -2133,6 +2112,7 @@ class PluginManager {
                 console.warn(`No plugins file found; ${defaultFile} will be created on first save`);
                 this._pluginsFilePath = this.path.join(projectPath, 'js', defaultFile);
                 this.plugins = [];
+                this._markPluginsSaved();
                 this.clearPluginSelection();
                 await this.scanAvailablePlugins(projectPath);
                 this.renderPluginList();
@@ -2170,6 +2150,7 @@ class PluginManager {
             } else {
                 this.plugins = [];
             }
+            this._markPluginsSaved();
 
             // Load available plugins from js/plugins folder
             await this.scanAvailablePlugins(projectPath);
@@ -3091,10 +3072,6 @@ class PluginManager {
         return RRPluginAnnotations.normalizeLine(line);
     }
 
-    cleanAnnotationValue(value) {
-        return RRPluginAnnotations.cleanValue(value);
-    }
-
     splitAnnotationLine(line) {
         return RRPluginAnnotations.splitLine(line);
     }
@@ -3868,7 +3845,8 @@ class PluginManager {
             const falseOpt = document.createElement('option');
             falseOpt.value = 'false';
             falseOpt.textContent = metadata.off || 'false';
-            falseOpt.selected = value === 'false';
+            // Anything but true reads as false in a plugin (no value, no @default): show what it gets.
+            falseOpt.selected = value !== 'true' && value !== true;
 
             select.appendChild(trueOpt);
             select.appendChild(falseOpt);
@@ -4195,10 +4173,20 @@ class PluginManager {
 
         const lines = commentBlock[0].split('\n');
         let currentParam = null;
+        // The last tag applied to the parameter: a line without a tag after `@desc` carries the description on.
+        let lastTag = null;
 
         for (const line of lines) {
-            const tokens = this.splitAnnotationLine(this.normalizeAnnotationLine(line));
+            const text = this.normalizeAnnotationLine(line);
+            const tokens = this.splitAnnotationLine(text);
+            if (!tokens.length) {
+                const more = currentParam && metadata[currentParam] ? RRPluginAnnotations.descContinuation(text, lastTag) : '';
+                if (more) this.applyAnnotationToSchema(metadata[currentParam], 'desc', more);
+                else lastTag = null;
+                continue;
+            }
             for (const token of tokens) {
+                lastTag = token.tag;
                 if (token.tag === 'command' || token.tag === 'arg') {
                     currentParam = null;
                     continue;
@@ -4222,15 +4210,36 @@ class PluginManager {
     }
 
 
+    /** What a save would write, to tell an edited list from the one on disk. */
+    _pluginsSignature() {
+        const file = this._pluginsFilePath ? this.path.basename(this._pluginsFilePath) : '';
+        return JSON.stringify(file === 'plugins.js' ? this.serializeRpgMakerPlugins(this.plugins) : this.serializeReactorPlugins(this.plugins));
+    }
+
+    _markPluginsSaved() {
+        this._pluginsBaseline = this._pluginsSignature();
+    }
+
     /**
-     * Save plugins to the project's plugins file (reactor_plugins.js or plugins.js)
+     * Edits not yet saved (parameters, on/off, order, added or removed plugins). The manager is a floating window
+     * whose list lives until Save Changes: closing the editor or opening another project asks about these
+     * (ProjectController.hasUnsavedChanges) instead of dropping them.
      */
-    async savePlugins() {
+    isDirty() {
+        if (this._pluginsBaseline == null || this._pluginsLoadError) return false;
+        return this._pluginsSignature() !== this._pluginsBaseline;
+    }
+
+    /**
+     * Save plugins to the project's plugins file (reactor_plugins.js or plugins.js). `quiet`: no "saved" message
+     * (a save of everything). True when it was written.
+     */
+    async savePlugins({ quiet = false } = {}) {
         try {
             const currentProject = this.projectController.getCurrentProject();
             if (!currentProject || !currentProject.path) {
                 await RRDialog.alert(this._tt('No project loaded'), { title: this._tt('Plugin Manager'), kind: 'warning' });
-                return;
+                return false;
             }
 
             if (this._pluginsLoadError) {
@@ -4258,10 +4267,13 @@ ${JSON.stringify(pluginsToWrite, null, 4)};
 `;
 
             this._writeFileAtomic(this.fs, pluginsPath, content, 'utf8');
-            await RRDialog.alert(this._tt('Plugins saved successfully!'), { title: this._tt('Plugin Manager') });
+            this._markPluginsSaved();
+            if (!quiet) await RRDialog.alert(this._tt('Plugins saved successfully!'), { title: this._tt('Plugin Manager') });
+            return true;
         } catch (err) {
             console.error('Error saving plugins:', err);
             await RRDialog.alert(`${this._tt('Error saving plugins:')} ${err.message}`, { title: this._tt('Plugin Manager'), kind: 'error' });
+            return false;
         }
     }
 

@@ -484,6 +484,20 @@ Utils.hasEncryptedAudio = function() {
  * @param {string} url - The relative URL that failed to load.
  * @returns {?string} The corrected URL, or null if no distinct match exists.
  */
+/**
+ * Whether a file is on disk, a yes kept for the session: a sound effect asked the disk two to four times each time
+ * it played (its case, its extension, whether it is there), 1-2 ms each in a Dropbox folder on the owner's laptop,
+ * on the main thread mid-play (a door opening, 2026-11-05). A no is asked again each time, so a file added while
+ * the game runs is found.
+ */
+Utils._onDisk = new Set();
+Utils.existsOnDisk = function(file) {
+    if (this._onDisk.has(file)) return true;
+    const there = require("fs").existsSync(file);
+    if (there) { if (this._onDisk.size > 8192) this._onDisk.clear(); this._onDisk.add(file); }
+    return there;
+};
+
 Utils.correctFileCase = function(url) {
     if (!this.isNwjs()) return this.correctFileCaseFromIndex(url);
     try {
@@ -496,7 +510,7 @@ Utils.correctFileCase = function(url) {
         if (segments.some(s => s === "..")) return null;
         // One stat keeps the common exactly-cased case off the directory
         // walk below, so this is cheap enough to run before every request.
-        if (fs.existsSync(path.join(base, ...segments))) return null;
+        if (this.existsOnDisk(path.join(base, ...segments))) return null;
         let dir = base;
         const corrected = [];
         for (const segment of segments) {
@@ -750,7 +764,7 @@ Utils.resolveAudioExtension = function(url, suffix) {
             if (/^([a-z][a-z0-9+.-]*:|\/)/i.test(clean)) return url;
             const segments = clean.split("/").filter(s => s && s !== ".");
             if (segments.some(s => s === "..")) return url;
-            if (fs.existsSync(path.join(base, ...segments))
+            if (this.existsOnDisk(path.join(base, ...segments))
                 || this.correctFileCase(candidateUrl + suffix)) {
                 return candidateUrl;
             }
@@ -1156,6 +1170,14 @@ Graphics._updateReactor3DCanvas = function() {
 Graphics._reactorBeforeRender = Graphics._reactorBeforeRender || new Set();
 
 /**
+ * Scenes drawn on every refresh, update or not, as a 3D map is: each entry is asked, and one that answers true has
+ * the composite drawn on a refresh that ran no update (`_frameChanged`), its before-render hooks first. The battle
+ * screen is one (reactor_battle_presentation.js): the game's updates stay at 60 a second, and the frame counter
+ * shows what a frame of the battle really costs instead of standing at 60.
+ */
+Graphics._reactorEveryRefresh = Graphics._reactorEveryRefresh || new Set();
+
+/**
  * A refresh that ran no update draws the composite only when something
  * changed since the last one. On a screen faster than the game's sixty
  * updates (three refreshes an update at 180 Hz) the refreshes between
@@ -1201,24 +1223,29 @@ Graphics._stageWork = function(stage, into) {
     const root = stage && stage.renderGroup;
     if (!root) return null;
     into.groups = 0; into.pending = 0;
-    const visit = group => {
-        into.groups++;
-        if (group.structureDidChange) into.pending++;
-        if (group.isCachedAsTexture && group.textureNeedsUpdate) into.pending++;
-        if (group.childrenRenderablesToUpdate) into.pending += group.childrenRenderablesToUpdate.index || 0;
-        const byDepth = group.childrenToUpdate;
-        if (byDepth) for (const depth in byDepth) into.pending += (byDepth[depth] && byDepth[depth].index) || 0;
-        const children = group.renderGroupChildren;
-        if (children) for (let i = 0; i < children.length; i++) visit(children[i]);
-    };
-    visit(root);
+    // Containers shown or hidden since the last draw have not marked their draw lists yet (pixi_compat.js).
+    if (typeof PIXI !== "undefined" && PIXI.rrSettleVisibility) PIXI.rrSettleVisibility();
+    this._groupWork(root, into);
     return into;
+};
+
+/** One render group's share of `_stageWork` and its child groups' (a method: this runs twice a refresh). */
+Graphics._groupWork = function(group, into) {
+    into.groups++;
+    if (group.structureDidChange) into.pending++;
+    if (group.isCachedAsTexture && group.textureNeedsUpdate) into.pending++;
+    if (group.childrenRenderablesToUpdate) into.pending += group.childrenRenderablesToUpdate.index || 0;
+    const byDepth = group.childrenToUpdate;
+    if (byDepth) for (const depth in byDepth) into.pending += (byDepth[depth] && byDepth[depth].index) || 0;
+    const children = group.renderGroupChildren;
+    if (children) for (let i = 0; i < children.length; i++) this._groupWork(children[i], into);
 };
 
 /** Whether this refresh draws: `updates` is what the tick handler returned. */
 Graphics._frameChanged = function(updates) {
     const last = this._lastComposite;
     if (!this.skipUnchangedFrames || updates !== 0 || this._redrawWanted || !last) return true;
+    for (const wanted of this._reactorEveryRefresh) if (wanted()) return true;
     if (this._textureUpdates !== last.textures) return true;
     if (PIXI.__reactorPendingTextureUploads && PIXI.__reactorPendingTextureUploads() > 0) return true;
     const now = this._stageWork(this._app.stage, this._workNow || (this._workNow = { groups: 0, pending: 0 }));
@@ -1270,7 +1297,7 @@ Graphics.FramePacing = {
     _active: false, _index: 0,
     _chars: [], _prev: new Float64Array(256), _prevCount: 0, _capturedAt: -1, _live: new Float64Array(256),
     _display: new Float64Array(2), _camera: new Float64Array(8), _cameraValid: false,
-    _poses: [], _poseRoots: [], _posePrev: new Float64Array(2560), _poseLive: new Float64Array(2560), _poseCache: new WeakMap(), _poseApplied: false, _poseTick: -1, _poseSpan: 1,
+    _poses: [], _poseRoots: [], _poseEnds: [], _poseMoved: [], _posePrev: new Float64Array(2560), _poseLive: new Float64Array(2560), _poseCache: new WeakMap(), _poseApplied: false, _poseTick: -1, _poseSpan: 1,
     _applied: false, _objects: [], _objectCount: 0, _sprites: [], _spriteCount: 0, _spriteAt: new Float64Array(64),
     _cameraSaved: new Float64Array(8), _cameraObject: null, _origin: null,
 
@@ -1278,8 +1305,6 @@ Graphics.FramePacing = {
     ratio() {
         return this.frameMs > 0 ? (1000 / 60) / this.frameMs : 0;
     },
-    /** Every available refresh can show a new position. */
-    every() { return 1; },
     noteInterval(now) {
         const interval = now - this._last;
         this._last = now;
@@ -1351,6 +1376,10 @@ Graphics.FramePacing = {
         if (spriteset._reactor3dPending) return null;
         return spriteset;
     },
+    /** A border crossing without a break is under way (Reactor3D.Neighbors). */
+    crossing() {
+        return typeof Reactor3D !== "undefined" && !!(Reactor3D.Neighbors && Reactor3D.Neighbors.crossing);
+    },
     /** Whether this frame's map can be paced at all. */
     allowed() {
         if (!this.enabled || typeof SceneManager === "undefined" || SceneManager.trueSpeed === false) return false;
@@ -1359,6 +1388,7 @@ Graphics.FramePacing = {
     },
     /** A frame begins: its interval, and whether its map is paced (drawn by `draw`, not in the update). */
     begin(now) {
+        this._frameStart = now;
         this.noteInterval(now);
         const allowed = this.allowed();
         this._active = allowed && (this._paced || this._ease > 0);
@@ -1369,7 +1399,9 @@ Graphics.FramePacing = {
         if (this._active) {
             this._index++;
             if (Graphics.frameCount === 0) this._ease = this.EASE_FRAMES;
-        } else this._ease = 0;
+        } else if (!this.crossing()) this._ease = 0;
+        // (Over a border crossed without a break the pacing stands as it was: eased in again from nothing, the
+        // entered map's first frames were drawn at each update's own moment, up to an update ahead, and slid back.)
     },
     /** Whether `spriteset`'s world waits for a paced frame rather than drawing in its update. */
     drawsWorld(spriteset) {
@@ -1388,12 +1420,27 @@ Graphics.FramePacing = {
     /** How far between the update before last and the last this frame stands: 1 at the last. */
     alpha() {
         if (this._capturedAt !== Graphics.frameCount - 1) return 1;
-        // An update is made a tenth of a tick early (SceneManager.determineRepeatNumber).
-        const phase = (SceneManager._elapsedTime || 0) + 0.1;
+        // An update is made a tenth of a tick early (SceneManager.determineRepeatNumber). The picture is drawn when
+        // the frame's own work is done, not when the frame began: on a frame carrying an update that is 3 to 4 ms
+        // later, and a picture timed for the frame's start showed a fast camera turn 0.6 degrees behind, then
+        // caught up (owner's screen, 2026-11-07). So it is timed for now.
+        const late = Graphics.REAL_CLOCK && this._frameStart > 0 ? Math.max(0, performance.now() - this._frameStart) * 0.06 : 0;
+        const phase = (SceneManager._elapsedTime || 0) + 0.1 + late;
         const at = phase <= 0 ? 0 : phase >= 1 ? 1 : phase;
         // Eased from the updates' own moment (1) to the paced one over EASE_FRAMES, and back.
         const ease = this._ease / this.EASE_FRAMES;
         return 1 - ease * (1 - at);
+    },
+    /**
+     * `alpha` for a scene the pacing does not draw itself (a battle room, which keeps its own places before each
+     * update): how far between the update before last and the last this moment stands, 1 at the last. `ease` from
+     * 0 (the updates' own moment) to 1 (the paced one).
+     */
+    alphaNow(ease) {
+        const late = Graphics.REAL_CLOCK && this._frameStart > 0 ? Math.max(0, performance.now() - this._frameStart) * 0.06 : 0;
+        const phase = (SceneManager._elapsedTime || 0) + 0.1 + late;
+        const at = phase <= 0 ? 0 : phase >= 1 ? 1 : phase;
+        return 1 - Math.max(0, Math.min(1, ease)) * (1 - at);
     },
     /** The characters the engine places, in a list kept between updates. */
     gather() {
@@ -1448,7 +1495,12 @@ Graphics.FramePacing = {
         if (models) for (const holder of models.values()) {
             const root = holder.object;
             if (!root) continue;
-            roots[rootCount++] = root;
+            // A body out of view or small on screen (Reactor3D.animationDue) shows the update's own pose and place:
+            // blending each of its bones, and walking them twice a draw, was most of a crowd's presentation cost
+            // (62 players online, 2.5 to 4 ms a frame), for a figure under a twentieth of the view's height.
+            // A body whose matrices are held (still, its pose settled: a sleeper) has nothing to blend either.
+            if (holder.blendPose === false || holder.matricesHeld) continue;
+            roots[rootCount] = root;
             let nodes = this._poseCache.get(root);
             if (!nodes || nodes._childCount !== root.children?.length) {
                 nodes = [];
@@ -1468,8 +1520,9 @@ Graphics.FramePacing = {
                 poses[count] = node;
                 this.readPose(node, this._posePrev, count++ * 10);
             }
+            this._poseEnds[rootCount++] = count;
         }
-        poses.length = count; roots.length = rootCount;
+        poses.length = count; roots.length = rootCount; this._poseEnds.length = rootCount;
     },
     readPose(node, into, k) {
         const p = node.position, q = node.quaternion, s = node.scale;
@@ -1477,13 +1530,28 @@ Graphics.FramePacing = {
         into[k + 3] = q?.x || 0; into[k + 4] = q?.y || 0; into[k + 5] = q?.z || 0; into[k + 6] = q?.w ?? 1;
         into[k + 7] = s?.x ?? 1; into[k + 8] = s?.y ?? 1; into[k + 9] = s?.z ?? 1;
     },
+    /** Whether the draw under way shows a model at a place between two updates (swapPoses moved one). */
+    movedNow() {
+        if (!this._poseApplied) return false;
+        const moved = this._poseMoved;
+        for (let r = 0; r < this._poseRoots.length; r++) if (moved[r]) return true;
+        return false;
+    },
     /** A draw's local transforms, then the authoritative transforms restored before any game update. */
     swapPoses(alpha, into) {
-        const prev = this._posePrev, live = this._poseLive, nodes = this._poses;
+        const prev = this._posePrev, live = this._poseLive, nodes = this._poses, ends = this._poseEnds, moved = this._poseMoved;
+        let root = 0;
+        if (into) for (let r = 0; r < ends.length; r++) moved[r] = false;
         for (let i = 0; i < nodes.length; i++) {
             const node = nodes[i], k = i * 10;
+            while (root < ends.length - 1 && i >= ends[root]) root++;
             if (into) {
                 this.readPose(node, live, k);
+                // A part the update left where it was has nothing to blend, and its model's matrices stand.
+                let same = true;
+                for (let j = 0; j < 10; j++) if (live[k + j] !== prev[k + j]) { same = false; break; }
+                if (same) continue;
+                moved[root] = true;
                 if (node.matrixAutoUpdate === false) continue;
                 if (Math.abs(live[k] - prev[k]) > this.JUMP || Math.abs(live[k + 1] - prev[k + 1]) > this.JUMP || Math.abs(live[k + 2] - prev[k + 2]) > this.JUMP) continue;
                 node.position.set(prev[k] + (live[k] - prev[k]) * alpha, prev[k + 1] + (live[k + 1] - prev[k + 1]) * alpha, prev[k + 2] + (live[k + 2] - prev[k + 2]) * alpha);
@@ -1498,6 +1566,7 @@ Graphics.FramePacing = {
                 }
                 if (node.scale) node.scale.set(prev[k + 7] + (live[k + 7] - prev[k + 7]) * alpha, prev[k + 8] + (live[k + 8] - prev[k + 8]) * alpha, prev[k + 9] + (live[k + 9] - prev[k + 9]) * alpha);
             } else {
+                if (!moved[root]) continue;
                 node.position.set(live[k], live[k + 1], live[k + 2]);
                 if (node.quaternion) node.quaternion.set(live[k + 3], live[k + 4], live[k + 5], live[k + 6]);
                 if (node.scale) node.scale.set(live[k + 7], live[k + 8], live[k + 9]);
@@ -1506,7 +1575,9 @@ Graphics.FramePacing = {
         this._poseApplied = into;
         // The viewport caches the rest of the scene's matrices by logic tick.
         // Publish these intermediate transforms on every draw, including bones.
-        for (const root of this._poseRoots) root.updateMatrixWorld?.(true);
+        // Only the models that moved: a crowd standing still was every bone's matrices twice a draw.
+        const roots = this._poseRoots;
+        for (let r = 0; r < roots.length; r++) if (moved[r]) roots[r].updateMatrixWorld?.(true);
     },
     camera() {
         const spriteset = this.spriteset(), state = spriteset && spriteset._reactor3d;
@@ -1603,7 +1674,11 @@ Graphics.FramePacing = {
         this.swapCharacters(alpha, true);
         this.moveSprites(screenOf);
         const tilemap = spriteset._tilemap, parallax = spriteset._parallax;
-        this._origin = { tx: tilemap ? tilemap.origin.x : 0, ty: tilemap ? tilemap.origin.y : 0, px: parallax ? parallax.origin.x : 0, py: parallax ? parallax.origin.y : 0, tilemap, parallax };
+        // One record, filled again each refresh.
+        const origin = this._origin = this._originHeld || (this._originHeld = { tx: 0, ty: 0, px: 0, py: 0, tilemap: null, parallax: null });
+        origin.tx = tilemap ? tilemap.origin.x : 0; origin.ty = tilemap ? tilemap.origin.y : 0;
+        origin.px = parallax ? parallax.origin.x : 0; origin.py = parallax ? parallax.origin.y : 0;
+        origin.tilemap = tilemap; origin.parallax = parallax;
         if (tilemap) { tilemap.origin.x = map.displayX() * map.tileWidth(); tilemap.origin.y = map.displayY() * map.tileHeight(); }
         // MZ's parallaxOx reads _parallaxX, which a tick sets and this pass does not blend, so the
         // tick's origin stands. Recomputing it here put every 2000/2003 panorama, which follows the
@@ -1688,6 +1763,7 @@ Graphics.FramePacing = {
         if (origin) {
             if (origin.tilemap) { origin.tilemap.origin.x = origin.tx; origin.tilemap.origin.y = origin.ty; }
             if (origin.parallax) { origin.parallax.origin.x = origin.px; origin.parallax.origin.y = origin.py; }
+            origin.tilemap = null; origin.parallax = null;
             this._origin = null;
         }
     }
@@ -1696,7 +1772,293 @@ Graphics.FramePacing = {
 /** The screen refreshes ticked so far: work that may wait for a refresh with no update reads it. */
 Graphics.refreshCount = 0;
 
+/**
+ * The frame's step in updates by the clock the picture is shown by (`performance.now`), not the frame callback's
+ * timestamp. With no vsync those timestamps bunch and spread: a frame 1.1 ms after the last was stepped as if
+ * 4.9 ms had passed, one 9.3 ms after as if 1.2 ms, and the place drawn between updates (FramePacing.alpha, from
+ * the elapsed steps) wandered off the time it was shown at: a fast turn of the camera jittered by up to 0.4
+ * degrees (owner's screen, 2026-11-07; 14% of the frames between updates). A long gap (a pause, a stall) keeps
+ * the callback's own capped step. `REAL_CLOCK` false steps as before.
+ */
+Graphics.REAL_CLOCK = true;
+Graphics.realClockDelta = function(tickerDelta) {
+    const now = performance.now(), last = this._realTickAt;
+    this._realTickAt = now;
+    if (!this.REAL_CLOCK || !(last > 0)) return tickerDelta;
+    const real = (now - last) * 60 / 1000;
+    return real >= 0 && real <= 6 ? real : tickerDelta;
+};
+
+/**
+ * A machine that stalls when it draws as fast as it can is held to the game's own rate.
+ *
+ * Games run with no vsync and no frame limit, so a screen faster than 60 Hz shows every frame it can (the owner's
+ * 180 Hz desktop: 530 a second, and vsync there held 58 frames a second for two refreshes each). A machine whose
+ * processor and graphics share one small budget pays for that: the Iris Xe laptop drew 137 frames a second for its
+ * 60 Hz screen in the Reactor Room, the browser's graphics process and five threads flat out, and about once a second
+ * an ordinary WebGL call waited 150 to 250 ms for that process (26 to 28 frames over 50 ms in 20 s, the longest 236;
+ * 2026-11-11). Held near 60 by the ticker, the same 20 s had none over 31 ms, twice in turn. Those stalls also read
+ * to Auto as a machine out of its depth, and took its picture to the last levels.
+ *
+ * Nothing is assumed from the machine's name. Frames are counted in windows of WINDOW_MS of play (not while a map is
+ * being made ready, a scene changes, or the window is away): WINDOWS windows running at over FAST frames a second
+ * with STALLS frames of STALL_MS or more in each, and the ticker is held to a rate that delivers the hold's rate
+ * (its own count runs a little under what it is asked, so the number is trimmed by what comes out). A machine that
+ * draws fast without stalling is never held.
+ *
+ * No machine is held under what its screen shows: the rate held is the game's 60 and a little (HOLD), or the screen's
+ * refresh and a little where that is more (`screenHz`, asked of the system once as the game boots: reactor_main.js).
+ * Where the refresh is known the verdict is kept with the browser profile (the machine's own), so the next session
+ * starts held. Where it is not known, the hold lasts until another map opens and is judged again there, and nothing
+ * is kept. `Graphics.FrameGovernor.release()` forgets it, and `enabled = false` never holds.
+ */
+Graphics.FrameGovernor = {
+    enabled: true,
+    WINDOW_MS: 4000,
+    WINDOWS: 3,
+    STALLS: 2,
+    STALL_MS: 50,
+    FAST: 75,
+    HOLD: 63,
+    /** The most the ticker is asked for to get HOLD out of it. */
+    MOST: 96,
+    /** Frames the screen's refresh is waited for before a machine is judged without it. */
+    WAIT_FRAMES: 600,
+    /** The frames a second Auto quality asks of a held machine (Quality.wantedPerSecond): what the hold delivers, less its wobble. */
+    wanted: 57,
+    held: false,
+    /** The screen's refresh a second where the system said (0: not known). */
+    screenHz: 0,
+    _cap: 0, _loaded: false, _from: 0, _last: 0, _frames: 0, _stalls: 0, _run: 0, _map: 0, _waited: 0,
+    /** The frames a second a held machine is to deliver. */
+    rate() { return Math.max(this.HOLD, this.screenHz > 0 ? this.screenHz + 3 : 0); },
+    key() {
+        const Q = typeof Reactor3D !== "undefined" && Reactor3D.Quality;
+        return "rrFrameHold2:" + (Q && Q.device ? Q.device() : "");
+    },
+    /** Whether this frame is play to be judged: a map being made ready, a scene on its way and a window left are not. */
+    judged() {
+        try {
+            if (typeof document !== "undefined" && (document.hidden === true || (typeof document.hasFocus === "function" && !document.hasFocus()))) return false;
+            if (typeof SceneManager !== "undefined" && SceneManager.isSceneChanging && SceneManager.isSceneChanging()) return false;
+            const Q = typeof Reactor3D !== "undefined" && Reactor3D.Quality;
+            if (Q && typeof Q.loading === "function" && Q.loading()) return false;
+        } catch (error) { return false; }
+        return true;
+    },
+    tick(now) {
+        if (!this.enabled) return;
+        if (!(this.screenHz > 0) && globalThis.RPG_REACTOR_SCREEN_HZ > 0) this.screenHz = globalThis.RPG_REACTOR_SCREEN_HZ;
+        if (!this._loaded) {
+            // Once the renderer says what it is (the verdict is this graphics device's), and the screen's refresh is in
+            // or has had its time to come.
+            if (!(typeof Graphics !== "undefined" && Graphics.gpuDescription)) return;
+            if (!(this.screenHz > 0) && ++this._waited < this.WAIT_FRAMES) return;
+            this._loaded = true;
+            try { if (this.screenHz > 0 && typeof localStorage !== "undefined" && localStorage.getItem(this.key()) === "1") this.hold(false); } catch (error) { /* no storage: found again this session */ }
+        }
+        // The refresh not known: a hold is this map's, and is judged again on the next.
+        if (this.held && !(this.screenHz > 0) && typeof $gameMap !== "undefined" && $gameMap && typeof $gameMap.mapId === "function") {
+            const map = $gameMap.mapId();
+            if (this._map && map !== this._map) { this.held = false; this._cap = 0; this._run = 0; this.apply(); }
+            this._map = map;
+        }
+        const gap = now - this._last;
+        this._last = now;
+        if (!(gap > 0) || gap > 1000 || !this.judged()) { this._from = now; this._frames = 0; this._stalls = 0; return; }
+        if (!this._from) this._from = now - gap;
+        this._frames++;
+        if (gap >= this.STALL_MS) this._stalls++;
+        const span = now - this._from;
+        if (span < this.WINDOW_MS) return;
+        const rate = this._frames * 1000 / span, stalls = this._stalls;
+        this._from = now; this._frames = 0; this._stalls = 0;
+        if (this.held) {
+            // What the ticker delivers for what it is asked, trimmed toward HOLD.
+            const want = this.rate(), most = Math.max(this.MOST, want * 1.5);
+            const next = Math.max(want, Math.min(most, this._cap + Math.max(-4, Math.min(4, (want - rate) * 0.5))));
+            if (Math.abs(next - this._cap) >= 0.5) { this._cap = next; this.apply(); }
+            return;
+        }
+        // Fast is past the game's rate and past the screen's: frames nobody is shown.
+        if (rate > Math.max(this.FAST, this.rate() * 1.15) && stalls >= this.STALLS) { if (++this._run >= this.WINDOWS) this.hold(this.screenHz > 0); }
+        else this._run = 0;
+    },
+    hold(keep) {
+        this.held = true;
+        this._run = 0;
+        if (!(this._cap >= this.rate())) this._cap = this.rate() * 1.12;
+        if (typeof $gameMap !== "undefined" && $gameMap && typeof $gameMap.mapId === "function") this._map = $gameMap.mapId();
+        this.apply();
+        if (keep) {
+            try { localStorage.setItem(this.key(), "1"); } catch (error) { /* kept for this session only */ }
+            // Found just now: the levels Auto gave up for those stalls were not the picture's fault. It starts again
+            // from where a machine of this kind starts, and judges the held frames.
+            const Q = typeof Reactor3D !== "undefined" ? Reactor3D.Quality : null;
+            if (Q && typeof Q.startFresh === "function" && Q.enabled !== false && Q.setting() === "auto") {
+                const g = Q._gpu, c = Q._cpu;
+                Q.startFresh(true);
+                // Never to a poorer picture than it had: levels are only given back.
+                if (Q._gpu > g || Q._cpu > c) { Q._gpu = Math.min(Q._gpu, g); Q._cpu = Math.min(Q._cpu, c); Q._taken = []; for (let i = 0; i < Q._gpu; i++) Q._taken.push("gpu"); for (let i = 0; i < Q._cpu; i++) Q._taken.push("cpu"); Q.keep(); }
+                Q._stalls = 0; Q.clearWindow(); Q.rest();
+            }
+        }
+    },
+    /** As fast as the machine draws again, and the verdict forgotten. */
+    release() {
+        this.held = false; this._cap = 0; this._run = 0;
+        this.apply();
+        try { localStorage.removeItem(this.key()); } catch (error) { /* nothing kept */ }
+    },
+    apply() {
+        const ticker = typeof Graphics !== "undefined" && Graphics._app ? Graphics._app.ticker : null;
+        if (ticker) ticker.maxFPS = this.held ? this._cap : 0;
+    }
+};
+
+/**
+ * No frame is begun while the graphics card still owes two.
+ *
+ * With no vsync and no frame limit nothing paces a game but the machine. Where the processor is what a frame waits
+ * for, that is as it should be. Where the graphics card is, the game hands it frames faster than it finishes them,
+ * the browser lets the commands pile up, and about once a second everything stops while the backlog is shown: in a
+ * browser trace of the Iris Xe laptop (2026-11-11, OpenGL, the Reactor Room before its distance levels were made) the
+ * graphics process spent 570 to 830 ms of every second inside one `SwapBuffers`, and the game's thread that long
+ * waiting for room in its command buffer (`WaitForAvailableEntries`); drawing 137 frames a second in the settled
+ * room, the same for 150 to 250 ms. Every map's first half minute ran like that, and so did any view the card could
+ * not keep up with.
+ *
+ * A marker (a WebGL sync object) is left after each frame's drawing. A tick that finds MOST markers the card has not
+ * reached yet does nothing at all, updates included: the game's clock is the real one, so the next tick that runs
+ * makes the updates owed. A card that keeps up has reached every marker by the next tick, and nothing ever waits.
+ * A marker never reached (a lost context) is given up after GIVE_UP_MS. `enabled = false`: as before.
+ *
+ * With two frames allowed in flight they are begun in pairs, about 10 ms apart and then 25 (half the gaps over one
+ * and a half times the middle one, at 63 frames a second in the Reactor Room). `EVEN` holds each frame back to that
+ * share of the pace frames have lately been begun at; at 0.6, 0.75 and 0.92 alike the game settled into one frame at
+ * a time, evenly, at 42 a second (a marker is only seen reached as the next frame is sent). It is off (0): a third
+ * more frames in uneven pairs, with no frame over 33 ms either way.
+ *
+ * Only on a machine that shows the trouble (`armed`, runtime 20261111.17). A marker and its flush after every frame
+ * is not free where frames come by the thousand: on an RTX 5070 the Demo's first room ran 176 to 185 frames a second
+ * with every frame marked and 1,070 to 1,230 with none (turn about in one session, 2026-11-11), and that card never
+ * owes a frame. So frames are marked, and ticks made to wait, only while frames come slower than UNDER_MS apart
+ * (under 100 a second: a machine near what it can do, where a marker costs nothing that shows), or for ARM_MS after
+ * STALLS stops of STALL_MS or more inside STALL_WINDOW of play (the backlog shown at once, as on the Iris Xe drawing
+ * 137 a second); each time the stops come back the hold is twice as long, up to ARM_MOST. Paced, frames come as fast
+ * as the card finishes them, so a held machine whose frames then come under FAST_MS apart for a second is let go: its
+ * stops were something else (a map arriving). A fast machine pays for nothing; one that stalls is paced within seconds.
+ */
+Graphics.GpuPace = {
+    enabled: true,
+    /** Frames the card may still owe when another is begun. */
+    MOST: 2,
+    GIVE_UP_MS: 400,
+    /** The share of the going time between frames that must have passed since the last frame was begun. */
+    EVEN: 0,
+    /** Ticks that did nothing, and frames marked, since the game began (for whoever measures). */
+    waited: 0, marked: 0,
+    /** Frames further apart than this are paced; closer, only after stops (see above). */
+    UNDER_MS: 10,
+    /** Paced frames closer than this for a second: the card keeps up, and a hold after stops is let go. */
+    FAST_MS: 5,
+    STALL_MS: 50, STALLS: 2, STALL_WINDOW: 4000, ARM_MS: 30000, ARM_MOST: 600000,
+    _gl: null, _pending: [], _since: 0, _period: 0, _begunAt: 0, _stalls: [], _armedUntil: 0, _armFor: 0, _rate: 0, _rateHeld: false, _secStart: 0, _secCount: 0,
+    /** A frame is begun now: the pace they come at, smoothed (a pause is not a pace), and the stops between them. */
+    begun(now) {
+        const gap = now - this._begunAt;
+        if (this._begunAt > 0 && gap > 0 && gap < 250) this._period = this._period > 0 ? this._period * 0.85 + gap * 0.15 : gap;
+        // A stop in play (not a map being made ready, a scene on its way or the window left: FrameGovernor.judged).
+        if (this._begunAt > 0 && gap >= this.STALL_MS && gap < 2000 && this.judged()) {
+            const stalls = this._stalls;
+            stalls.push(now);
+            while (stalls.length && now - stalls[0] > this.STALL_WINDOW) stalls.shift();
+            if (stalls.length >= this.STALLS && now >= this._armedUntil) {
+                this._secHeld = false; this._rateHeld = false;
+                // Back after a hold: held twice as long this time. Calm for a minute since: from the start again.
+                this._armFor = this._armFor > 0 && now - this._armedUntil < 60000 ? Math.min(this.ARM_MOST, this._armFor * 2) : this.ARM_MS;
+                this._armedUntil = now + this._armFor;
+                stalls.length = 0;
+            }
+        }
+        this._begunAt = now;
+        // Frames begun in the last whole second, and whether that second was spent held after stops.
+        this._secCount++;
+        if (now - this._secStart >= 1000) { this._rate = this._secStart > 0 ? this._secCount * 1000 / (now - this._secStart) : 0; this._rateHeld = this._secHeld === true; this._secStart = now; this._secCount = 0; this._secHeld = now < this._armedUntil; }
+    },
+    judged() {
+        const governor = typeof Graphics !== "undefined" ? Graphics.FrameGovernor : null;
+        try { return !governor || typeof governor.judged !== "function" || governor.judged() !== false; } catch (error) { return true; }
+    },
+    /** Whether frames are marked and waited for now: this machine is near what it can do, or it has been stopping. */
+    armed(now) {
+        if (!this.enabled) return false;
+        if (now < this._armedUntil) {
+            // Paced, frames come as fast as the card finishes them: one that finishes over 200 a second for a
+            // second running was not what stopped (a fast machine's stops as a map arrives), and is let go.
+            // (Counted over a whole second: paced frames come in uneven pairs, and the smoothed gap swings with them.)
+            if (this._rateHeld && this._rate >= 1000 / this.FAST_MS) { this._armedUntil = 0; this._armFor = 0; }
+            if (now < this._armedUntil) return true;
+        }
+        // (Nothing known of its pace yet: paced, as a slow machine's first frames are.)
+        return !(this._period > 0) || this._period >= this.UNDER_MS;
+    },
+    context() {
+        const renderer = typeof Graphics !== "undefined" && Graphics._app ? Graphics._app.renderer : null;
+        const gl = renderer && renderer.gl;
+        if (!gl || typeof gl.fenceSync !== "function") return null;
+        if (gl !== this._gl) { this._gl = gl; this._pending.length = 0; this._since = 0; }
+        return gl;
+    },
+    /** Whether this tick should do nothing: the card has not reached the marker MOST frames back. */
+    behind(now) {
+        if (!this.enabled) return false;
+        const pending = this._pending;
+        if (!this.armed(now)) {
+            // Not paced: the markers still out are let go, and nothing waits.
+            if (pending.length) { const gl = this._gl; for (const sync of pending) { try { gl.deleteSync(sync); } catch (error) { /* gone with its context */ } } pending.length = 0; this._since = 0; }
+            this.begun(now);
+            return false;
+        }
+        if (!pending.length) { this.begun(now); return false; }
+        const gl = this.context();
+        if (!gl || (typeof gl.isContextLost === "function" && gl.isContextLost())) { pending.length = 0; return false; }
+        try {
+            while (pending.length && gl.getSyncParameter(pending[0], gl.SYNC_STATUS) === gl.SIGNALED) gl.deleteSync(pending.shift());
+        } catch (error) { pending.length = 0; return false; }
+        if (pending.length < this.MOST) {
+            this._since = 0;
+            // Still owed a frame: the next keeps the going pace, so frames are begun evenly and not in pairs.
+            if (pending.length > 0 && this.EVEN > 0 && this._period > 0 && this._begunAt > 0 && now - this._begunAt < this._period * this.EVEN) { this.waited++; return true; }
+            this.begun(now);
+            return false;
+        }
+        if (!this._since) this._since = now;
+        // Never reached: not a card that is behind, a marker that is lost.
+        if (now - this._since > this.GIVE_UP_MS) {
+            for (const sync of pending) { try { gl.deleteSync(sync); } catch (error) { /* gone with its context */ } }
+            pending.length = 0; this._since = 0; this.begun(now);
+            return false;
+        }
+        this.waited++;
+        return true;
+    },
+    /** A frame's drawing has been handed over: its marker. */
+    mark() {
+        // (By the clock of the tick this frame was begun in: `behind` runs first.)
+        if (!this.enabled || !this.armed(this._begunAt)) return;
+        const gl = this.context();
+        if (!gl || this._pending.length > 8) return;
+        try {
+            const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+            if (sync) { this._pending.push(sync); this.marked++; gl.flush(); }
+        } catch (error) { /* no markers on this context: nothing is paced */ }
+    }
+};
+
 Graphics._onTick = function(deltaTime) {
+    // The graphics card still owes two frames: this tick is left to it (GpuPace).
+    if (this.GpuPace.behind(performance.now())) return;
     const prof = ReactorProfiler._active ? ReactorProfiler : null;
     if (prof) prof.frameBegin();
     this._fpsCounter.startTick();
@@ -1727,12 +2089,12 @@ Graphics._onTick = function(deltaTime) {
     if (this._tickHandler) {
         // v5/v6/v7: callback receives delta as a number.
         // v8: callback receives the Ticker instance; extract its deltaTime.
-        const dt =
+        const dt = this.realClockDelta(
             typeof deltaTime === "number"
                 ? deltaTime
                 : (deltaTime && typeof deltaTime.deltaTime === "number"
                     ? deltaTime.deltaTime
-                    : 1);
+                    : 1));
         const tUpdate = prof ? performance.now() : 0;
         updates = this._tickHandler(dt);
         // Send any batched canvas->GPU uploads now that the frame's drawing is
@@ -1762,6 +2124,7 @@ Graphics._onTick = function(deltaTime) {
                 composited = true;
             } finally { this._compositing = false; }
             this._noteComposite();
+            this.GpuPace.mark();
             if (prof) prof.phase("render", performance.now() - tRender);
             // v8: Sprite_Animation._render runs via the onRender bridge, which v8
             // invokes BEFORE the actual GPU draws happen. Effekseer's draws would
@@ -1784,6 +2147,8 @@ Graphics._onTick = function(deltaTime) {
     const world = pacing.spriteset()?._reactor3d;
     this._fpsCounter.endTick(composited && (!world || (this.worldFrameCount || 0) !== worldBefore));
     if (quality) quality.tickEnd(performance.now());
+    // A machine that stalls drawing as fast as it can is held to the game's rate (FrameGovernor).
+    this.FrameGovernor.tick(performance.now());
     if (prof) prof.frameEnd();
 };
 
@@ -1835,6 +2200,11 @@ ReactorProfiler.start = function() {
     this._spikes = [];
     this._acc = {};
     this._hits = {};
+    // Every frame, not only the spikes: how long frames took from one to the next (what the screen shows), how
+    // much of that was the game's own work, and how much was waiting outside it (the browser, the GPU, Windows).
+    this._hist = { interval: {}, work: {}, wait: {} };
+    this._presentedAtStart = Graphics._fpsCounter ? Graphics._fpsCounter._presentedTotal || 0 : 0;
+    this._pacedFrames = 0;
     this._active = true;
     console.info(
         "[ReactorProfiler] Recording frame timings... " +
@@ -1868,6 +2238,14 @@ ReactorProfiler.frameEnd = function() {
     const heap = performance.memory ? performance.memory.usedJSHeapSize : 0;
     const heapDelta = this._lastHeap ? heap - this._lastHeap : 0;
     this._lastHeap = heap;
+    const bucket = ms => ms < 7.5 ? "<7.5" : ms < 9 ? "7.5-9" : ms < 14.5 ? "9-14.5" : ms < 21.5 ? "14.5-21.5" : ms < 34 ? "21.5-34" : ms < 50 ? "34-50" : ">50";
+    if (this._hist) {
+        const h = this._hist, interval = total + gap;
+        if (gap > 0) h.interval[bucket(interval)] = (h.interval[bucket(interval)] || 0) + 1;
+        h.work[bucket(total)] = (h.work[bucket(total)] || 0) + 1;
+        if (gap > 0) h.wait[bucket(gap)] = (h.wait[bucket(gap)] || 0) + 1;
+        if (Graphics.FramePacing && Graphics.FramePacing._paced) this._pacedFrames++;
+    }
     const isSpike = total > this.frameThreshold || gap > this.gapThreshold;
     if (isSpike && this._spikes.length < 400) {
         const phases = {};
@@ -2005,6 +2383,31 @@ ReactorProfiler._install = function() {
     }
 };
 
+/** What the machine and the game were set to while recording: read with the report, so a slow run can be told from a slow machine. */
+ReactorProfiler.context = function(elapsed) {
+    const c = {};
+    try {
+        const counter = Graphics._fpsCounter;
+        if (counter) c.newPicturesPerSecond = Math.round(((counter._presentedTotal || 0) - (this._presentedAtStart || 0)) / Math.max(0.001, elapsed));
+        c.pacedShare = this._frames ? Math.round(100 * (this._pacedFrames || 0) / this._frames) / 100 : null;
+        c.revision = globalThis.RPG_REACTOR_RUNTIME_REVISION;
+        c.gpu = Graphics.gpuDescription || null;
+        c.window = [window.innerWidth, window.innerHeight, window.devicePixelRatio];
+        c.canvas = Graphics._canvas ? [Graphics._canvas.width, Graphics._canvas.height] : null;
+        c.fullscreen = !!document.fullscreenElement;
+        c.test = !!(Utils.isOptionValid && Utils.isOptionValid("test"));
+        c.quality = typeof ConfigManager !== "undefined" ? ConfigManager.graphicsQuality : null;
+        const Q = typeof Reactor3D !== "undefined" && Reactor3D.Quality;
+        if (Q) c.levels = { gpu: Q.g, cpu: Q.c, refreshMs: Q._refreshMs };
+        c.online = !!(typeof ReactorOnline !== "undefined" && ReactorOnline.config && ReactorOnline.config());
+        c.hidden = document.hidden, c.focused = document.hasFocus ? document.hasFocus() : null;
+        c.cores = navigator.hardwareConcurrency || null;
+        c.heapMB = performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null;
+        c.followers = typeof $gamePlayer !== "undefined" && $gamePlayer && $gamePlayer.followers ? $gamePlayer.followers()._data.filter(f => f.isVisible()).length : null;
+    } catch (e) { c.error = String(e); }
+    return c;
+};
+
 ReactorProfiler.dump = function() {
     const elapsed = (performance.now() - this._t0) / 1000;
     const report = {
@@ -2018,6 +2421,8 @@ ReactorProfiler.dump = function() {
         frameThresholdMs: this.frameThreshold,
         gapThresholdMs: this.gapThreshold,
         spikeCount: this._spikes.length,
+        histograms: this._hist || null,
+        context: this.context(elapsed),
         spikes: this._spikes
     };
     console.info(
@@ -2894,85 +3299,6 @@ Graphics._setupPixi = function() {
     }
 };
 
-// Console-callable diagnostic: bypasses MZ Sprite_Animation entirely and
-// replicates AnimationPicker's known-good draw flow directly on the overlay.
-// Usage from devtools: testEffekseerOverlay("AnyEffectName") — pick any
-// loaded effect name shown in [EffekseerLifecycle] logs.
-// If this draws pixels → MZ Sprite_Animation flow is the bug.
-// If this draws nothing → overlay/Effekseer setup itself is broken.
-window.testEffekseerOverlay = function(effectName) {
-    const efx = Graphics._effekseer;
-    const efxGL = Graphics._effekseerGL;
-    const overlay = Graphics._effekseerCanvas;
-    if (!efx || !efxGL || !overlay) {
-        console.log("testEffekseerOverlay: missing Effekseer context/overlay", { efx: !!efx, efxGL: !!efxGL, overlay: !!overlay });
-        return;
-    }
-    // Try to find the effect in EffectManager's cache
-    const cache = (typeof EffectManager !== "undefined") ? EffectManager._cache : null;
-    let effect = null;
-    if (cache) {
-        const key = Object.keys(cache).find(k => k.includes(effectName || ""));
-        if (key) effect = cache[key];
-    }
-    if (!effect) {
-        console.log("testEffekseerOverlay: no loaded effect matches:", effectName, "cache keys:", cache ? Object.keys(cache) : "no cache");
-        return;
-    }
-    const handle = efx.play(effect);
-    if (!handle) {
-        console.log("testEffekseerOverlay: efx.play() returned null");
-        return;
-    }
-    // AnimationPicker-style positioning
-    handle.setLocation(0, 0, 0);
-    handle.setRotation(0, 0, 0);
-    handle.setScale(1, 1, 1);
-    let frameCount = 0;
-    const tick = () => {
-        if (frameCount++ > 180) return; // 3 seconds at 60fps
-        efx.update();
-        // Read overlay pixels before draw for diff
-        const pre = new Uint8Array(overlay.width * overlay.height * 4);
-        efxGL.readPixels(0, 0, overlay.width, overlay.height, efxGL.RGBA, efxGL.UNSIGNED_BYTE, pre);
-        // AnimationPicker's exact draw flow
-        efxGL.viewport(0, 0, overlay.width, overlay.height);
-        efxGL.clearColor(0, 0, 0, 0);
-        efxGL.clear(efxGL.COLOR_BUFFER_BIT | efxGL.DEPTH_BUFFER_BIT);
-        const viewportSize = overlay.height * 1.2;
-        const p = -(viewportSize / overlay.height);
-        efx.setProjectionMatrix([1, 0, 0, 0,   0, 1, 0, 0,   0, 0, 1, p,   0, 0, 0, 1]);
-        efx.setCameraMatrix     ([1, 0, 0, 0,   0,  1, 0, 0,   0, 0, 1, 0,   0, 0, -10, 1]);
-        efx.beginDraw();
-        if (handle.exists) efx.drawHandle(handle);
-        efx.endDraw();
-        Graphics.settleEffekseerState();
-        // Count changed pixels
-        if (frameCount === 5 || frameCount === 30 || frameCount === 60) {
-            const post = new Uint8Array(overlay.width * overlay.height * 4);
-            efxGL.readPixels(0, 0, overlay.width, overlay.height, efxGL.RGBA, efxGL.UNSIGNED_BYTE, post);
-            let changed = 0, fx = -1, fy = -1, fp = null;
-            for (let i = 0; i < post.length; i += 4) {
-                if (post[i] !== pre[i] || post[i+1] !== pre[i+1] ||
-                    post[i+2] !== pre[i+2] || post[i+3] !== pre[i+3]) {
-                    if (fx === -1) {
-                        const px = i >> 2;
-                        fx = px % overlay.width; fy = (px / overlay.width) | 0;
-                        fp = [post[i], post[i+1], post[i+2], post[i+3]];
-                    }
-                    changed++;
-                }
-            }
-            console.log("[testEffekseerOverlay] frame " + frameCount +
-                ": changed=" + changed + "/" + (overlay.width * overlay.height) +
-                " first=" + (fx === -1 ? "none" : "(" + fx + "," + fy + ") " + JSON.stringify(fp)) +
-                " handle.exists=" + handle.exists);
-        }
-        requestAnimationFrame(tick);
-    };
-    tick();
-};
-
 /**
  * Draw the composited scene — the 3D canvas when a map renders in 3D, then
  * the game canvas — into the Effekseer overlay's framebuffer. Effects with
@@ -3162,6 +3488,8 @@ Graphics._restoreEffekseerContext = function() {
     const gl = this._effekseerGL;
     if (!gl || !window.effekseer || gl.isContextLost()) return;
     globalThis.ReactorHdrOverlay?.contextRestored();
+    // The copy pass's program, buffer and texture belonged to the lost context: made again at its next use.
+    this._efxBlit = null;
     try {
         const context = effekseer.createContext();
         if (!context) return;
@@ -3205,7 +3533,7 @@ Graphics.FPSCounter.prototype.startTick = function() {
 // Count new pictures, rather than ticker callbacks which can reuse the same world frame.
 Graphics.FPSCounter.prototype.endTick = function(presented = true) {
     const time = performance.now();
-    if (presented) this._presented++;
+    if (presented) { this._presented++; this._presentedTotal = (this._presentedTotal || 0) + 1; }
     const elapsed = time - this._sampleStart;
     if (elapsed >= 500) {
         this.fps = this._presented * 1000 / elapsed;
@@ -3292,8 +3620,34 @@ Graphics.FPSCounter.prototype._update = function() {
     // The PIXI app initializes asynchronously, so the mode is read here
     // (every 15 ticks) rather than once at creation. Blank until known.
     const app = Graphics.app;
-    const mode = app && app.renderer ? Graphics.rendererModeName(app.renderer) : "";
+    let mode = app && app.renderer ? Graphics.rendererModeName(app.renderer) : "";
+    // And what draws it: a graphics card, or the browser drawing in software when it could not get one
+    // (SwiftShader, llvmpipe), which runs a quiet map fast and a crowd at a crawl.
+    const device = mode ? Graphics.graphicsDeviceName(app.renderer) : "";
+    if (device) mode += " · " + device;
     if (this._modeDiv.textContent !== mode) this._modeDiv.textContent = mode;
+};
+
+/** The graphics device's name, short ("RTX 5070", "SwiftShader"), read once; "" when it will not say. */
+Graphics.graphicsDeviceName = function(renderer) {
+    if (this._deviceName !== undefined) return this._deviceName;
+    let name = "";
+    try {
+        const gl = renderer && (renderer.gl || (renderer.context && renderer.context.gl));
+        if (!gl) return "";
+        const info = gl.getExtension("WEBGL_debug_renderer_info");
+        name = String((info && gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) || gl.getParameter(gl.RENDERER) || "");
+    } catch (e) {
+        name = "";
+    }
+    const software = /SwiftShader|llvmpipe|softpipe|Software/i.exec(name);
+    if (software) return (this._deviceName = "software (" + software[0] + ")");
+    // "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070/PCIe/SSE2, OpenGL 4.5.0)" -> "RTX 5070".
+    const inner = /^ANGLE \((.*)\)$/.exec(name);
+    if (inner) { const parts = inner[1].split(", "); name = parts.length > 1 ? parts[1] : parts[0]; }
+    name = name.replace(/\/PCIe.*$|\(R\)|\(TM\)|NVIDIA |GeForce |AMD |Intel |Mesa |Direct3D11 vs_5_0 ps_5_0|, D3D11.*$|\(0x[0-9A-Fa-f]+\)/g, "").replace(/\s+/g, " ").trim();
+    this._deviceName = name.slice(0, 32);
+    return this._deviceName;
 };
 
 /**
@@ -4360,6 +4714,9 @@ Bitmap.prototype._startLoading = function() {
     this._revokeObjectUrl();
     this._triedMvEncrypted = false;
     this._triedPlain = false;
+    // A retry (the stall watchdog's included) lets the earlier request go: its late answer
+    // would otherwise finish this load with the new, still empty image.
+    this._dropPendingRequest();
     this._image = new Image();
     this._image.onload = this._onLoad.bind(this);
     this._image.onerror = this._onError.bind(this);
@@ -4411,8 +4768,19 @@ Bitmap.prototype._startDecrypting = function() {
     this._requestEncrypted(this._url + "_");
 };
 
+Bitmap.prototype._dropPendingRequest = function() {
+    if (this._image) { this._image.onload = null; this._image.onerror = null; }
+    const xhr = this._xhr;
+    this._xhr = null;
+    if (xhr) {
+        xhr.onload = null;
+        xhr.onerror = null;
+        try { xhr.abort(); } catch (error) { /* already settled */ }
+    }
+};
+
 Bitmap.prototype._requestEncrypted = function(url) {
-    const xhr = new XMLHttpRequest();
+    const xhr = this._xhr = new XMLHttpRequest();
     xhr.open("GET", url);
     xhr.responseType = "arraybuffer";
     xhr.onload = () => this._onXhrLoad(xhr);
@@ -4422,7 +4790,7 @@ Bitmap.prototype._requestEncrypted = function(url) {
 
 Bitmap.prototype._requestBytes = function(url) {
     this._animationDecodeUrl = url;
-    const xhr = new XMLHttpRequest();
+    const xhr = this._xhr = new XMLHttpRequest();
     xhr.open("GET", url);
     xhr.responseType = "arraybuffer";
     xhr.onload = () => {
@@ -4453,6 +4821,9 @@ Bitmap.prototype._onImageBytes = function(arrayBuffer) {
     // name. Hand it to the browser as any other image.
     const blob = new Blob([arrayBuffer], { type: Bitmap._mimeType(this._url) });
     this._objectUrl = URL.createObjectURL(blob);
+    // These bytes have been looked at: _onLoad must not ask for the file again
+    // (decrypted bytes came from another address, and the plain file is not shipped).
+    this._animationDecodeUrl = this._url;
     this._image.src = this._objectUrl;
 };
 

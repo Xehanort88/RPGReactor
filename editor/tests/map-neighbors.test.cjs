@@ -23,6 +23,18 @@ test('neighbors are read back as written, and only sides that name a map are kep
     assert.deepEqual(R.neighborsOf(map), { west: { map: 2, shift: -3 } });
     assert.deepEqual(R.surroundOf(map).neighbors, { west: { map: 2, shift: -3 } });
     assert.deepEqual(R.neighborsOf({ width: 4, height: 4 }), {});
+    // The frame's loop keeps the checked list on the map while what it was read from stands.
+    const N = R.Neighbors, kept = N.sidesOf(map);
+    assert.deepEqual(kept, { west: { map: 2, shift: -3 } });
+    assert.equal(N.sidesOf(map), kept, 'the same record while nothing changed');
+    map.reactor3d.surround.neighbors.west.shift = 5;
+    assert.deepEqual(N.sidesOf(map), { west: { map: 2, shift: 5 } }, 'an entry changed in place is read again');
+    map.reactor3d.surround.neighbors.north = 4;
+    assert.deepEqual(N.sidesOf(map), { north: { map: 4 }, west: { map: 2, shift: 5 } }, 'and a side named since');
+    map.reactor3d.surround.neighbors = { east: { map: 9 } };
+    assert.deepEqual(N.sidesOf(map), { east: { map: 9 } }, 'and another list');
+    assert.deepEqual(N.sidesOf({ width: 4, height: 4 }), {});
+    assert.deepEqual(N.sidesOf(null), {});
 });
 
 test('a border with a neighbor and no land is kept, and lays nothing', () => {
@@ -242,4 +254,23 @@ test('a 2D map takes a neighbor: the panel\'s map and shift controls are live th
     const exit = R.neighborExit({ width: 12, height: 8, note: '', reactor3d: { version: 1, surround: { style: 'none', neighbors: { east: { map: 91, shift: 2 } } } } }, 11, 3, 6);
     assert.deepEqual({ ...exit }, { mapId: 91, side: 'east', along: 1, d: 6, inset: 0 });
     assert.deepEqual({ ...R.neighborArrival(exit, 12, 8, () => true) }, { x: 0, y: 1 });
+});
+
+test('a neighbouring map takes the pass its host takes: no ground in the above, overlay or lights passes', () => {
+    const groups = () => ({ _belowGroup: { visible: true }, _aboveGroup: { visible: true }, _modelsGroup: { visible: true }, _lightGroup: { visible: true } });
+    const near = Object.assign(Object.create(R.MapScene.prototype), groups());
+    const far = Object.assign(Object.create(R.MapScene.prototype), groups());
+    near._neighborBodies = { east: { scene: far } };
+    const host = Object.assign(Object.create(R.MapScene.prototype), groups(), { _neighborBodies: { north: { scene: near } } });
+    far._neighborBodies = { west: { scene: near } };   // two worlds that name each other do not pass it round forever
+    host.setPass('above');
+    for (const scene of [near, far]) {
+        assert.equal(scene._belowGroup.visible, false, 'no ground over the player');
+        assert.equal(scene._aboveGroup.visible, true, 'its own star tiles, as the host\'s');
+        assert.equal(scene._lightGroup.visible, false);
+    }
+    host.setPass('lights');
+    assert.deepEqual([near._belowGroup.visible, near._lightGroup.visible, far._lightGroup.visible], [false, true, true], 'only lamps added in');
+    host.setPass('below');
+    assert.deepEqual([near._belowGroup.visible, near._modelsGroup.visible, near._lightGroup.visible], [true, true, false]);
 });

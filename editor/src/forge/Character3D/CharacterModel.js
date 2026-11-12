@@ -179,6 +179,9 @@
         cache.wardrobe.pictureSize = o.static ? o.atlasSize || 256 : small?.picture || 1024;
         cache.wardrobe.atlasSize = o.atlasSize || (o.static?256:small?.atlas || 2048);
         cache.wardrobe.quality = o.quality === 'preview' || o.static ? 'preview' : 'save';
+        // A catalog picture (`thumb`): a still, drawn a hundred pixels high. What cannot be seen at that size is left
+        // out of its build: sewn details, the last pass that keeps knuckles under gloves, and every rig.
+        cache.wardrobe.thumb = !!o.thumb;
         cache.wardrobe.anatomy = r.anatomy; cache.wardrobe.female = Body.sexOf(r) === 'female';
         const outfit = Wardrobe.build(pack, built, r.outfit, cache.wardrobe);
         if (outfit.texture) textures[outfit.texture.name] = outfit.texture;
@@ -309,7 +312,8 @@
         if (headSkin) { parts.push(headSkin, HeadMesh.lidPart(headSkin)); if (headSkin.normalTexture === 'face-detail.png') textures['face-detail.png'] = HeadMesh.detailTexture(); }
         // The lips: their own patch and picture, for every humanoid. Left out where a mask or a muzzle hides the mouth.
         if (!Expressions?.mouthCovered?.(pack, outfit.hidden) && !o.noLips) {
-            const size = o.static ? 256 : o.quality === 'save' ? 1024 : 768, lipColor = r.skinPattern?.lips || '';
+            // (The pictures' default under test, as the outfit's and the skin's: tests/helpers/small-pictures.cjs.)
+            const size = o.static ? 256 : globalThis.RR_DEFAULT_PICTURES?.picture || (o.quality === 'save' ? 1024 : 768), lipColor = r.skinPattern?.lips || '';
             const fit = headSkin ? HeadMesh.lipFit(pack, built.shaped, r, headSkin) : Detail.lipFit(pack, built.shaped), lipKey = textureKey('lips', [r.skin, lipColor, size, fit && fit.up.join(), fit && fit.low.join(), fit && fit.bend.toFixed(2)]);
             if (headSkin) mouthFit = fit;
             if (cache.lipKey !== lipKey) { cache.lips = Detail.lipTexture(pack, r.skin, { size, relief: !o.static, color: lipColor, fit }); cache.lipKey = lipKey; }
@@ -477,9 +481,10 @@
         Object.assign(textures,props.textures);
         parts.push(...outfit.parts, ...hair, ...props.parts, ...features.parts);
         const bones = built.bones.concat(features.bones.map(b => ({ ...b })));
-        Body.rigSoftTissue(pack, parts, bones, built.shaped, r);
         // Merfolk hook: the leg bones carry no skin; what they held, the hips hold.
+        // Before the soft tissue: skin and tail then share the same bindings along the cut.
         if (mer) parts.splice(0, parts.length, ...Merfolk.liftLegs(parts, bones));
+        if (!o.thumb) Body.rigSoftTissue(pack, parts, bones, built.shaped, r);
         // Centaur hook: the person onto a horse's body at the waist; the horse's bones first, the person's under its chest.
         const horse = cen ? Centaur.build(pack, built, r, parts, bones, { skinNormals, quality: o.quality || 'save', hairBudget: o.hairBudget, textures, cache }) : null;
         if (horse) Object.assign(textures, horse.textures);
@@ -497,11 +502,12 @@
         }
         // Loose cloth (a cape, a skirt, a robe, a coat's tails) on cloth bones of its own, the cape settled where it hangs.
         const hung = Cloth ? { plan: 'human', parts, bones } : null;
-        if (hung && Cloth.rig(hung)) parts.splice(0, parts.length, ...hung.parts);
+        if (hung && !o.thumb && Cloth.rig(hung)) parts.splice(0, parts.length, ...hung.parts);
         let height = 0;
         for (const p of parts) for (let i = 1; i < p.positions.length; i += 3) height = Math.max(height, p.positions[i]);
         // Occlusion in the vertex colors: always in a file, in the view once the sliders rest (`shade`).
-        if (o.quality === 'save' || o.shade) shade(parts, pack);
+        // (`shade: false` leaves it out of a build made only to be measured: the shading changes colours, never a shape.)
+        if ((o.quality === 'save' && o.shade !== false) || o.shade) shade(parts, pack);
         const result = { recipe: r, parts, bones, height, bodyHeight: built.height - Math.min(0, floor), textures, clips: o.static ? [] : clipsFor(bones, r, built, pack), plan: 'human', built, cloth: hung ? hung.cloth : null };
         // Expressions hook: a saved file carries the expressions and visemes as named morph targets.
         if (Expressions && (o.quality === 'save' || o.quality == null || o.morphs)) result.morphs = Expressions.morphTargets(pack, result);

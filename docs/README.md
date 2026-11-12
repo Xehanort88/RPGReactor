@@ -4,6 +4,9 @@ Guides for authoring with the engine, the current verified state, and maintainer
 
 ## Start here
 
+- [0.99.4 itch.io devlog](https://psychronic.itch.io/rpg-reactor/devlog/1746509/rpg-reactor-0994-released): published announcement; [Markdown copy](posts/itch-devlog-0.99.4.md) and [plain text](posts/itch-devlog-0.99.4-plain.txt).
+- 0.99.5 itch.io devlog, drafted and not posted: [Markdown](posts/itch-devlog-0.99.5.md) and [plain text](posts/itch-devlog-0.99.5-plain.txt).
+- [0.99.5 release notes](posts/release-notes-0.99.5.md): shared battles and parties, Character Groups, interface pictures and motion, speed on weak and strong machines.
 - [0.99.4 release notes](posts/release-notes-0.99.4.md): online worlds, player creation, Forge movement and current screenshots.
 - [0.99.3 release notes](posts/release-notes-0.99.3.md): Builder exports, model previews, complete Structures editing, worn equipment and grappling.
 - [Current status](STATUS.md): the verified state of the tree, runtime defaults that supersede older notes, and open work. Read this before the handoff.
@@ -34,14 +37,14 @@ Guides for authoring with the engine, the current verified state, and maintainer
 - [Runtime events](RUNTIME-EVENTS.md): the `ReactorEvents` feed a plugin can observe instead of wrapping battle methods; the test holds the page to the source.
 - [HDR effect overlay](HDR-EFFECT-OVERLAY.md): opt-in HDR rendering for Effekseer effects: the sidecar file, the normally graded twin, tuning, and what it does not cover.
 - [Effekseer effects in the scene](EFFEKSEER-IN-SCENE.md): screen animations drawn inside PIXI 8's scene instead of on the overlay canvas: what changes for a game (windows above effects, tint and filters, distortion), when it applies, how to switch it off, and what plugins see.
-- [Performance checks](PERFORMANCE.md): reproducible CPU/GPU profiling and image comparisons, with measured results per pass.
+- [Performance checks](PERFORMANCE.md): reproducible CPU/GPU profiling and image comparisons, with measured results per pass. The second pass's working notes and harness recipes are in [perf-round2/](perf-round2/lead.md).
 - [Importing older RPG Maker projects](IMPORTING-LEGACY-PROJECTS.md): RPG Maker 2000, 2003, XP, VX and VX Ace games into a new project; the report, the import, what converts exactly, what the MZ format cannot hold, and what is still to come.
 - [Demo: assets not on disk](demo-missing-se.md): art the bundled Demo references but does not ship, kept current while originals are authored.
 
 ## Maintainers
 
 - [Release checklist](RELEASE-CHECKLIST.md): clean validation, signed candidates, GitHub and itch publication, rollback.
-- Changelogs are one file per release: [`changelog/`](../changelog/) is the release body (keep it short), [`editor/changelog/`](../editor/changelog/) holds contributor detail. Each folder's `CHANGELOG.md` is the index. A new cycle adds `<version>.md` in both, titled `# RPG Reactor <version> (in development)`, and its line at the top of both indexes.
+- Changelogs are one file per release: [`changelog/`](../changelog/) is the release body (keep it short), [`editor/changelog/`](../editor/changelog/) holds contributor detail. The `CHANGELOG.md` beside each folder is its index. A new cycle adds `<version>.md` in both, titled `# RPG Reactor <version> (in development)`, and its line at the top of both indexes.
 
 ## Keeping STATUS and HANDOFF short
 
@@ -66,7 +69,7 @@ Each session writes notes, and nothing removes them unless a rule does. These ar
 
 ## Release history
 
-- [posts/](posts/): release notes and itch devlogs per release, 0.98.5 onward.
+- [posts/](posts/): release notes and itch devlogs per release, 0.98.5 onward, plus a few earlier ones back to 0.94.1.
 - [devlogs/](devlogs/): longer release stories, 0.94.1 onward, plus mid-cycle notes such as [3D objects on the map](devlogs/2026-08-02-3d-objects-on-the-map.md) and [Build in the world](devlogs/2026-09-20-build-in-the-world.md).
 
 Devlogs, posts and released changelog sections describe their named release and keep their historical counts; use the status and guide pages for current defaults.

@@ -95,9 +95,9 @@ test('a water sheet\'s look survives both the runtime\'s and the editor\'s readi
 
 test('the capture is taken after the shadow maps, in the game and in the editor', () => {
     const core = fs.readFileSync(path.join(repoRoot, 'runtime', 'reactor_3d.js'), 'utf8');
-    assert.match(core, /Reactor3D\.prepareWorldFrame\(this\._renderer, mapScene, scene, this\._camera, undefined, this\.upscaled\(\) \? this\._scale : 1\);/, 'the map\'s frame step');
+    assert.match(core, /scale = this\.upscaled\(\) \? this\._scale : 1;[\s\S]{0,2400}?Reactor3D\.prepareWorldFrame\(this\._renderer, mapScene, scene, this\._camera, undefined, scale\);/, 'the map\'s frame step');
     assert.match(core, /if \(shadows !== false && mapScene\.renderShadows\) mapScene\.renderShadows\([^\n]+\n\s*Reactor3D\.prepareReflections\(renderer, mapScene, scene, camera, scale\);/, 'the capture and the mirrors after the shadow maps');
-    assert.match(core, /Reactor3D\.prepareReflections = function[\s\S]{0,1900}if \(capture \|\| mirrors\.length\) renderer\.resetState\(\);/, 'three forgets the texture units PIXI unbound before the capture and the mirrors draw');
+    assert.match(core, /Reactor3D\.prepareReflections = function[\s\S]{0,2600}if \(capture \|\| mirrors\.length\) renderer\.resetState\(\);/, 'three forgets the texture units PIXI unbound before the capture and the mirrors draw');
     assert.match(core, /const probe = mapScene\.reflectionProbe \? mapScene\.reflectionProbe\(camera\) : null;\n\s*if \(probe\) F\.update\(renderer, scene, probe\.position, probe\.hidden, probe\.toward, probe\.radius, probe\.reach\);/);
     // A face left for a refresh with no update is taken the same way, after three forgets its state.
     assert.match(fs.readFileSync(path.join(repoRoot, 'runtime', 'reactor_3d_lighting.js'), 'utf8'), /const probe = mapScene\.reflectionProbe\(owed\.camera\);\n\s*if \(!probe\) return;\n\s*renderer\.resetState\(\);\n\s*this\.update\(renderer, scene, probe\.position, probe\.hidden, probe\.toward, probe\.radius, probe\.reach\);/);
@@ -280,7 +280,7 @@ test('a capture sees no underwater wash, the ground at the feet is never cut, an
 test('the battle room reflects and casts through the map\'s own frame step, its props and lead actor included', () => {
     const main = fs.readFileSync(path.join(repoRoot, 'runtime', 'reactor_3d.js'), 'utf8');
     const battle = fs.readFileSync(path.join(repoRoot, 'runtime', 'reactor_battle_room.js'), 'utf8');
-    assert.match(main, /Reactor3D\.prepareWorldFrame\(this\._renderer, mapScene, scene, this\._camera, undefined, this\.upscaled\(\) \? this\._scale : 1\);/, 'the map viewport');
+    assert.match(main, /scale = this\.upscaled\(\) \? this\._scale : 1;[\s\S]{0,2400}?Reactor3D\.prepareWorldFrame\(this\._renderer, mapScene, scene, this\._camera, undefined, scale\);/, 'the map viewport');
     assert.match(battle, /R\.prepareWorldFrame\(this\.renderer,this\.world,this\.scene,this\.camera,shadowed\?\{mapData:this\.map,lights:this\.uniforms,focus\}:false\);\s*(this\.renderer\.setRenderTarget\(this\.target\);\s*)?R\.cacheUniformArrays\?\.\(this\.renderer\);\s*this\.renderer\.render\(this\.scene,this\.camera\);/, 'the battle room, right before its draw');
     assert.match(battle, /this\.world\.guestModels = \(\) => this\.models\.values\(\);/);
     const scene = Object.create(Reactor3D.MapScene.prototype);
@@ -315,7 +315,7 @@ test('battle shadows: the room\'s lights become shadow candidates with their own
     assert.match(battle, /id:'room:'\+index/, 'room lights: names repeat, so rows would swap between them');
     assert.match(battle, /R\.Shadows\.markCaster\(object, !key\.startsWith\('prop:'\) \|\| R\.modelCasterMoves\?\./, 'animated props and battlers cast moving shadows');
     assert.match(battle, /key\.call\(this\) \+ '\|battle-room' \+ \(view\._shadowed \? '\|room-shadows' : ''\)/, 'programs follow whether the room holds the rows');
-    assert.match(battle, /if\(m\.__battleRoomLight\)\{m\.dispose\(\);m\.needsUpdate=true;\}/, 'and are compiled again, never reused, when that changes');
+    assert.match(battle, /if\(m\.__battleRoomLight\)\{m\.dispose\(\);m\.needsUpdate=true;[^}]*\}/, 'and are compiled again, never reused, when that changes');
 });
 
 test('a second owner takes the shadow rows only once the map has left them', () => {
@@ -369,7 +369,7 @@ test('a lake seen from a rooftop: the sky is never clipped out of a mirror, noth
 test('a mirror earns a picture by how much of the screen it covers, not a distance guess', () => {
     const lighting = fs.readFileSync(path.join(repoRoot, 'runtime', 'reactor_3d_lighting.js'), 'utf8');
     assert.match(lighting, /const cover = box => \{[\s\S]{0,900}return w > 0 && h > 0 \? \(w \* h\) \/ 4 : 0;/, 'the projected box, clipped to the view');
-    assert.match(lighting, /const share = 1000 \* cover\(worldBox\) \* facing;\s*scored\.push\(\{ normal, point, d: normal\.dot\(point\), score: shows \* 1e6 \+ \(inView \? 1e3 : 0\) \+ share, share: inView \? share : 0,/);
+    assert.match(lighting, /const share = 1000 \* cover\(worldBox\) \* facing;\s*(?:\/\/[^\n]*\n\s*)?scored\.push\(\{ normal: normal\.clone\(\), point: point\.clone\(\), d: normal\.dot\(point\), score: shows \* 1e6 \+ \(inView \? 1e3 : 0\) \+ share, share: inView \? share : 0,/);
     assert.match(lighting, /if \(p\.primary && !known\(p\) && p\.share >= 5\) planes\.push\(p\);/, 'past the first two, half a percent of the screen');
     assert.doesNotMatch(lighting, /far \* far \/ 400/, 'the distance falloff that left a plain wall 150 tiles off to the capture is gone');
 });
@@ -433,7 +433,7 @@ test('the reflection capture waits while nothing shiny is on screen, and goes on
     F._frame++;
     assert.equal(F.idle(), true);
     const core = require('./helpers/runtime-3d-source.cjs').source3D();
-    assert.match(core, /if \(reflections\) F\._frame\+\+;\n\s+const wanted = reflections && !F\.idle\(\);/);
+    assert.match(core, /if \(reflections\) F\._frame\+\+;\n[\s\S]{0,400}?const turn = !F\._ready \|\| !\(F\.UPDATES_PER_FACE > 1\) \|\| \(\(F\._turn = \(F\._turn \|\| 0\) \+ 1\) % F\.UPDATES_PER_FACE\) === 0;\n\s+const wanted = reflections && !F\.idle\(\) && turn;/);
     assert.match(core, /const capture = wanted && \(/);
     // The editor waits the same way.
     const editor = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'MapEditor3D.js'), 'utf8');

@@ -315,7 +315,7 @@ class DatabaseSystem1Editor {
         const currencySection = this.keyedSection('currency-display', tt('Currency & Display'), `
             <div class="form-row">
                 <label class="database-field-label">${tt('Currency Unit:')}</label>
-                <input type="text" class="database-field-value system-text-field" style="width: 120px;" value="${rrEscapeHtml(system.currencyUnit || 'G')}" data-system-field="currencyUnit">
+                <input type="text" class="database-field-value system-text-field" style="width: 120px;" value="${rrEscapeHtml(system.currencyUnit ?? 'G')}" data-system-field="currencyUnit">
             </div>
             <div style="margin-top: 10px;">
                 <label class="database-field-label" style="margin-bottom: 6px; display: block;">${tt('Window Tone:')}</label>
@@ -508,11 +508,11 @@ class DatabaseSystem1Editor {
                     ${tt('Enable Autosave')}
                 </label>
                 <label style="display: flex; align-items: center; gap: 8px; color: var(--color-text); font-size: 12px; cursor: pointer;">
-                    <input type="checkbox" class="system-checkbox" data-field="optSplashScreen">
+                    <input type="checkbox" class="system-checkbox" ${system.optSplashScreen ? 'checked' : ''} data-field="optSplashScreen">
                     ${tt('Show Splash Screen')}
                 </label>
                 <label style="display: flex; align-items: center; gap: 8px; color: var(--color-text); font-size: 12px; cursor: pointer;">
-                    <input type="checkbox" class="system-checkbox" data-field="optMessageSkip">
+                    <input type="checkbox" class="system-checkbox" ${system.optMessageSkip ? 'checked' : ''} data-field="optMessageSkip">
                     ${tt('Enable Message Skip')}
                 </label>
                 <label style="display: flex; align-items: center; gap: 8px; color: var(--color-text); font-size: 12px; cursor: pointer;" title="${rrEscapeHtml(tt('A Show Text with no face picture shows the face of whoever speaks: an actor or an event of that name.'))}">
@@ -758,7 +758,7 @@ class DatabaseSystem1Editor {
         const held = battle && typeof battle === 'object' ? battle.heightReach : null;
         const levels = Math.trunc(Number(held && held.levels)), most = Math.trunc(Number(held && held.most));
         if (!Number.isFinite(levels) || !Number.isFinite(most)) return { levels: 2, most: 3 };
-        return { levels: Math.max(1, Math.min(10, levels)), most: Math.max(0, Math.min(10, most)) };
+        return { levels: Math.max(1, Math.min(10, levels)), most: Math.max(0, Math.min(50, most)) };
     }
 
     /** A stored `reactorBattle.partySize` as the game reads it: 1 to 99, or 0 for none. */
@@ -955,7 +955,7 @@ class DatabaseSystem1Editor {
                 </span>
                 <label for="system-battle-height-most" data-tactical${tactical}${keyed('db.battles.heightMost')}</label>
                 <span class="system-battle-inline" data-tactical${tactical}>
-                    <input type="number" id="system-battle-height-most" class="database-field-value system-battle-height-most" min="0" max="10" step="1" value="${height.most}">
+                    <input type="number" id="system-battle-height-most" class="database-field-value system-battle-height-most" min="0" max="50" step="1" value="${height.most}">
                     <span${keyed('db.battles.heightTiles')}</span>
                 </span>
                 <div class="system-battle-mode-hint" data-tactical${tactical}${keyed('db.battles.heightHint')}</div>
@@ -1065,7 +1065,7 @@ class DatabaseSystem1Editor {
             const value = raw === undefined || String(raw).trim() === '' ? fallback : Math.trunc(Number(raw));
             return Number.isFinite(value) ? Math.max(low, Math.min(high, value)) : fallback;
         };
-        const height = { levels: number('.system-battle-height-levels', 1, 10, 2), most: number('.system-battle-height-most', 0, 10, 3) };
+        const height = { levels: number('.system-battle-height-levels', 1, 10, 2), most: number('.system-battle-height-most', 0, 50, 3) };
         const ownHeight = height.levels !== 2 || height.most !== 3;
         // Those who fell in a battle won on the map get up unless the game keeps them down.
         const revive = container.querySelector('.system-battle-revive')?.checked !== false;
@@ -1491,14 +1491,6 @@ class DatabaseSystem1Editor {
         overlay._rrModalKeys?.enter();
     }
 
-    updateSystemField(fieldName, value) {
-        const system = this.databaseManager.getSystem();
-        if (!system) return;
-
-        system[fieldName] = value;
-        console.debug(`Updated system field ${fieldName} to:`, value);
-    }
-
     /**
      * The game's own screen size, so a title preview is cropped and letterboxed
      * the way the running game would crop and letterbox it.
@@ -1802,7 +1794,7 @@ class DatabaseSystem1Editor {
 
         const files = RRAssetFiles.listUnique(audioPath, RRAssetFiles.AUDIO_EXTENSIONS);
 
-        this.showAudioPickerModal(system, files, audioPath, musicType, 'bgm', folderName);
+        this.showAudioPickerModal(system, files, musicType, folderName);
     }
 
     showSoundPicker(system, soundIndex) {
@@ -1843,14 +1835,11 @@ class DatabaseSystem1Editor {
         });
     }
 
-    showAudioPickerModal(system, files, audioPath, identifier, audioType, folderName) {
+    /** The picker for one music slot; the sound slots have their own (RRSystemSoundSlotModal). */
+    showAudioPickerModal(system, files, identifier, folderName) {
         const tt = text => window.I18n ? window.I18n.tText(text) : text;
-        const isMusic = audioType === 'bgm';
-        const slot = isMusic
-            ? DatabaseSystem1Editor.resolveMusicSlot(system, identifier) : null;
-        const current = isMusic
-            ? (slot?.get() || {})
-            : (system.sounds?.[identifier] || {});
+        const slot = DatabaseSystem1Editor.resolveMusicSlot(system, identifier);
+        const current = slot?.get() || {};
 
         RRAudioPickerModal.open({
             title: `${tt('Select')} ${folderName} ${tt('File')}`,
@@ -1862,25 +1851,15 @@ class DatabaseSystem1Editor {
                 pitch: current.pitch !== undefined ? current.pitch : 100,
                 pan: current.pan !== undefined ? current.pan : 0
             },
-            loopDefault: isMusic,
+            loopDefault: true,
             onOk: result => {
-                if (isMusic) {
-                    if (slot) Object.assign(slot.ensure(), result);
-                } else {
-                    if (!system.sounds) {
-                        system.sounds = [];
-                    }
-                    system.sounds[identifier] = { ...system.sounds[identifier], ...result };
-                }
+                if (slot) Object.assign(slot.ensure(), result);
 
                 const detailEl = document.getElementById('database-detail');
                 if (detailEl) {
                     detailEl.innerHTML = '';
                     this.showSystem1Detail(detailEl);
-                    const selector = isMusic
-                        ? `.music-row[data-music-type="${identifier}"]`
-                        : `.sound-row[data-sound-index="${identifier}"]`;
-                    setTimeout(() => detailEl.querySelector(selector)?.focus(), 0);
+                    setTimeout(() => detailEl.querySelector(`.music-row[data-music-type="${identifier}"]`)?.focus(), 0);
                 }
             }
         });

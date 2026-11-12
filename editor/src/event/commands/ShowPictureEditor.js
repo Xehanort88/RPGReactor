@@ -338,7 +338,10 @@ class ShowPictureEditor {
         this.scaleX = values.scaleX;
         this.scaleY = values.scaleY;
         this.opacity = values.opacity;
+        const byVariables = this.designationType === 1;
         this.designationType = 0;
+        // X and Y were built with the limits of variable ids: drawn again, they take a position's.
+        if (byVariables && this.modal) { this.renderContent(); return; }
         this.syncPictureField('origin');
         this.syncPictureField('x');
         this.syncPictureField('y');
@@ -746,7 +749,7 @@ class ShowPictureEditor {
         ]));
         content.appendChild(this.createNumberInput(
             this.pictureIdSource === 'variable' ? 'Variable:' : 'Picture Number:',
-            'pictureId', 1, 9999));
+            'pictureId', 1, this.pictureIdSource === 'variable' ? 9999 : 100));
 
         // Picture Name
         const imageRow = this.createTextInput('Image:', 'pictureName', 'Enter picture filename');
@@ -852,6 +855,19 @@ class ShowPictureEditor {
         input.addEventListener('input', (e) => {
             this[property] = Number(e.target.value) || 0;
         });
+        // When the field is left (OK blurs it first): within its range, and whole where the game wants a whole number.
+        // A cleared picture number saved 0, an opacity over 255 or a period under 1 left the picture undrawn.
+        const whole = ['pictureId', 'x', 'y', 'opacity', 'scaleX', 'scaleY'].includes(property);
+        let kept = Number(this[property]) || 0;
+        input.addEventListener('change', (e) => {
+            let value = Number(e.target.value);
+            // Emptied or unreadable: the last value it had.
+            if (e.target.value === '' || !Number.isFinite(value)) value = kept;
+            value = Math.max(Number(min), Math.min(Number(max), value));
+            if (whole) value = Math.round(value);
+            this[property] = kept = value;
+            e.target.value = String(value);
+        });
 
         section.appendChild(labelEl);
         section.appendChild(input);
@@ -916,6 +932,10 @@ class ShowPictureEditor {
         }
         select.addEventListener('change', event => {
             this[property] = event.target.value;
+            // The game has 100 pictures: a variable id past that is not a picture number.
+            if (property === 'pictureIdSource' && this.pictureIdSource !== 'variable') {
+                this.pictureId = Math.max(1, Math.min(100, Number(this.pictureId) || 1));
+            }
             if (property === 'pictureIdSource') this.renderContent();
         });
         section.appendChild(labelEl);

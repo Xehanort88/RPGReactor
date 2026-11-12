@@ -83,12 +83,6 @@
         }
         return boxes;
     }
-    /** The bounds of all of a floor's rooms and their walls together, or null with no rooms. */
-    function buildingBox(rooms, size) {
-        const boxes = buildingBoxes(rooms, size);
-        if (!boxes.length) return null;
-        return [Math.min(...boxes.map(b => b[0])), Math.min(...boxes.map(b => b[1])), Math.max(...boxes.map(b => b[2])), Math.max(...boxes.map(b => b[3]))];
-    }
     const roomAt = (rooms, x, y) => {
         for (const name of Object.keys(rooms)) if (inRoom(rooms[name], x, y)) return name;
         return null;
@@ -323,13 +317,6 @@
 
     const FACING_YAW = { south: 0, east: 90, north: 180, west: 270 };
     /**
-     * Put a stamp's effects on the map: screens as media-surface rows and
-     * lights as map lights, each marked with the group so a re-stamp or a
-     * removal takes only its own; animations come back as event requests
-     * for `placeEvents`, each a parallel event that shows its animation on
-     * itself again and again.
-     */
-    /**
      * Whether a light is a stamped building's: marked with the group's number (`structure`), or, on a map
      * stamped before lights carried that mark, tagged with it. The tag is the author's to change.
      */
@@ -338,6 +325,13 @@
         return !!light && (Number(light.structure) === group || light.tag === 'structure:' + group);
     }
 
+    /**
+     * Put a stamp's effects on the map: screens as media-surface rows and
+     * lights as map lights, each marked with the group so a re-stamp or a
+     * removal takes only its own; animations come back as event requests
+     * for `placeEvents`, each a parallel event that shows its animation on
+     * itself again and again.
+     */
     function placeEffects(mapData, group, wanted) {
         if (!mapData) return [];
         const sidecar = mapData.reactor3d || (mapData.reactor3d = { version: 1 });
@@ -719,7 +713,9 @@
         for (const [xa, xb] of [[bx0 - o, bx0 + 1], [bx1, bx1 + 1 + o]]) {
             slope(xa, xb, by0 + 1, 1, roofZ + 1, pitch - 1);
             slope(xa, xb, by1, -1, roofZ + 1, pitch - 1);
-            if (flat1 > flat0) box((xa + xb) / 2, (flat0 + flat1) / 2, roofZ + pitch - 0.25, [xb - xa, 0.25 + 0.1 + LIFT, flat1 - flat0]);
+            // A hair longer than the flat top at each end: the gable's top slabs end there, and faces in one plane
+            // took turns as the view moved (a plaster line flickering across the verge's end).
+            if (flat1 > flat0) box((xa + xb) / 2, (flat0 + flat1) / 2, roofZ + pitch - 0.25, [xb - xa, 0.25 + 0.1 + LIFT, flat1 - flat0 + 0.04]);
         }
     }
 
@@ -899,7 +895,7 @@
                 } else piece.rot = ((Number(piece.rot) || 0) + 1) % 4;
             }
             // Lights and screens stand anywhere in the plot, not in cells: (x, y) turns about the plot, a screen's facing with it.
-            for (const light of out.lights || []) { [light.x, light.y] = [H - light.y, light.x]; if (Number(light.yaw)) light.yaw = ((Number(light.yaw) || 0) + 270) % 360; }
+            for (const light of out.lights || []) { [light.x, light.y] = [H - light.y, light.x]; if (light.yaw !== undefined || light.type === 'spot' || light.type === 'beam') light.yaw = ((Number(light.yaw) || 0) + 270) % 360; }
             for (const row of out.surfaces || []) { [row.x, row.y] = [H - row.y, row.x]; row.rotationY = ((Number(row.rotationY) || 0) + 270) % 360; }
             // Models stand on cells (the event's cell) and face one of four ways: the cell turns and the facing with it.
             for (const prop of out.props || []) { [prop.x, prop.y] = [H - 1 - Number(prop.y), Number(prop.x)]; prop.direction = PROP_TURN[Number(prop.direction)] || 4; }
@@ -1009,7 +1005,7 @@
         return { start, report, states: seen.size };
     }
 
-    const api = { shedRoof, SHED_ANGLE, doorPiece, doorOptions, windowRot, turnWater, growWater, PROP_TURN, build, buildOwn, spots, eventsOf, effectsOf, placeEffects, addEffects, removeGroupEffects, placeEvents, removeGroupEvents, eventTag, EVENT_TAG, transform, validate, entrance, doorCells, doorWall, sharedWall, isWallCell, isOuterWallCell, canWindow, buildingBox, buildingBoxes, DIRS };
+    const api = { shedRoof, SHED_ANGLE, doorPiece, doorOptions, windowRot, turnWater, growWater, PROP_TURN, build, buildOwn, spots, eventsOf, effectsOf, placeEffects, addEffects, removeGroupEffects, placeEvents, removeGroupEvents, eventTag, EVENT_TAG, transform, validate, entrance, doorCells, doorWall, sharedWall, isWallCell, isOuterWallCell, canWindow, buildingBoxes, DIRS };
     root.RRStructurePlan = api;
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : window);

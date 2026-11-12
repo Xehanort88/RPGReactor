@@ -248,6 +248,17 @@ Sprite_Character.prototype.update = function() {
         this.updatePosition();
         return;
     }
+    // A character a 3D map draws as its own model (or a prop) never shows this sprite, and nothing reads its
+    // frame (a billboard, which does, is a character with no model): as when culled, only the position is kept,
+    // for plugins that read it. On the laptop (i5-1145G7) the Reactor Room's 30 sprites cost 3.4 ms a frame
+    // doing a picture's work for nobody (2026-11-08). Its bitmap is still kept: plugins measure a character's
+    // sprite by it (GALV_CharacterFramesMZ's patternWidth reads bitmap.width), and a sprite culled later asks.
+    if ((this._rrDrawnByModel = this._reactor3dDrawnByModel())) {
+        if (this.visible) this.visible = false;
+        this.updateBitmap();
+        this.updatePosition();
+        return;
+    }
     Sprite.prototype.update.call(this);
     this.updateBitmap();
     this.updateFrame();
@@ -256,11 +267,102 @@ Sprite_Character.prototype.update = function() {
     this.updateVisibility();
 };
 
-Sprite_Character.prototype.updateVisibility = function() {
-    Sprite.prototype.updateVisibility.call(this);
-    if (this.isEmptyCharacter() || this._character.isTransparent()) {
-        this.visible = false;
+/**
+ * At a Quality level that asks it (Reactor3D.Quality.spriteEvery), a sprite its model draws is updated every few
+ * updates instead of every one, through every plugin's wrapper: it is never shown, and what plugins read off it (its
+ * place, its picture) is that much older. Installed outermost once the plugins have wrapped the method (the map's
+ * first 3D update), and again if one wraps it later. The Reactor Room's 30 such sprites were 2.5 ms of the laptop's
+ * frame while walking (i5-1145G7, 2026-11-08).
+ */
+Sprite_Character.throttleModelSprites = function() {
+    const inner = Sprite_Character.prototype.update;
+    if (inner.__rrThrottle) return;
+    const wrapped = function() {
+        const Q = typeof Reactor3D !== "undefined" ? Reactor3D.Quality : null;
+        let every = Q && Q.spriteEvery ? Q.spriteEvery() : 1;
+        // A vehicle parked on another map is never shown here at any level: its sprite is looked at twice a second.
+        const elsewhere = typeof Game_Vehicle !== "undefined" && this._character instanceof Game_Vehicle && typeof $gameMap !== "undefined" && $gameMap
+            && this._character._mapId !== $gameMap.mapId() && !this.visible;
+        if (elsewhere) every = Math.max(every, 30);
+        // A body out of view, drawn by its model (Reactor3D.CrowdTiers): every few updates whatever the level, culled or not.
+        const crowd = this._rrDrawnByModel && Q && Reactor3D.CrowdTiers ? Reactor3D.CrowdTiers.spriteEvery(this._character) : 1;
+        const offView = crowd > 1;
+        if (crowd > every) every = crowd;
+        // A frame that carries several updates (a machine catching up) shows only the last: a sprite its model draws
+        // mirrors a place nobody reads before then. A crowd of 120 at 17 frames a second ran 3.5 updates a frame and
+        // every sprite's plugins in each (2026-11-10: 4.5 ms a frame).
+        if (this._rrDrawnByModel && typeof SceneManager !== "undefined" && SceneManager._finalUpdateOfFrame === false) return;
+        // On a 3D map, any character's sprite in an update that is not its frame's last (`catchUpSkips`).
+        if (Sprite_Character.ONCE_A_FRAME && typeof SceneManager !== "undefined" && SceneManager._finalUpdateOfFrame === false && this.catchUpSkips()) return;
+        // Installed twice (a plugin wrapped the method after the first): the outer one has already decided this update
+        // is due and stamped it, so the inner one must not find it "updated this very update" and stop it for good.
+        if (every > 1 && !this._rrThrottlePassed && (this._rrDrawnByModel || elsewhere) && (!this._rrCulled || offView) && typeof Graphics !== "undefined") {
+            // Due `every` updates after its last (not on a beat of the update count, which the skipped updates above
+            // would miss); each sprite's first is put back by its own share so a crowd's are spread.
+            const now = Graphics.frameCount, last = this._rrThrottledAt;
+            if (last !== undefined && now >= last && now - last < every) return;
+            const seed = this._rrThrottleSeed || (this._rrThrottleSeed = (Sprite_Character._throttleSeed = (Sprite_Character._throttleSeed || 0) + 1));
+            this._rrThrottledAt = last === undefined ? now - (seed % every) : now;
+        }
+        this._rrUpdatedAt = typeof Graphics !== "undefined" ? Graphics.frameCount : 0;
+        const passed = this._rrThrottlePassed;
+        this._rrThrottlePassed = true;
+        const result = inner.apply(this, arguments);
+        this._rrThrottlePassed = passed;
+        return result;
+    };
+    wrapped.__rrThrottle = true;
+    Sprite_Character.prototype.update = wrapped;
+};
+
+/**
+ * A frame that carries several updates (a machine below the game's 60 a second) draws once, after the last of
+ * them. A character sprite's update is a picture's work, done from what its character says at that moment: its
+ * sheet, its frame, its place, its tint. In the updates before the last that work is thrown away. With the
+ * processor slowed three times (a weak CPU stood in for), walking North Haven ran 3.7 updates a frame and the
+ * sprites' and the culling's work in each was a fifth of the main thread (2026-11-10). Only on a 3D map, and never
+ * a sprite that has something hanging on it (a plugin's label, an MV animation: those count updates), nor one not
+ * yet updated once. `ONCE_A_FRAME = false` updates every sprite in every update, as before.
+ */
+Sprite_Character.ONCE_A_FRAME = true;
+Sprite_Character.prototype.catchUpSkips = function() {
+    if (this._rrUpdatedAt === undefined || (this.children && this.children.length) || (this._animationSprites && this._animationSprites.length)) return false;
+    // Asked once an update for the whole map, not once a sprite.
+    const count = typeof Graphics !== "undefined" ? Graphics.frameCount : -1;
+    if (Sprite_Character._on3DAt !== count) {
+        Sprite_Character._on3DAt = count;
+        Sprite_Character._on3D = typeof Reactor3D !== "undefined" && typeof $dataMap !== "undefined" && !!$dataMap && !!Reactor3D.shouldRender3D && !!Reactor3D.shouldRender3D($dataMap);
     }
+    return Sprite_Character._on3D;
+};
+
+/** Whether a 3D map is drawing this character as its own model (or it is a prop): its sprite is never shown. */
+Sprite_Character.prototype._reactor3dDrawnByModel = function() {
+    const character = this._character;
+    if (!character || typeof Reactor3D === "undefined" || typeof $dataMap === "undefined" || !Reactor3D.shouldRender3D($dataMap)) return false;
+    if (typeof character.eventId === "function" && Reactor3D.isEventProp(character.eventId())) return true;
+    return !!(Reactor3D.hasCharacterModel && Reactor3D.hasCharacterModel(character));
+};
+
+/**
+ * `visible` is written once a frame. Set true and then false again in one update, as the base and the 3D layer
+ * below used to do for every hidden character, PIXI 8 marks the stage's draw list changed on each write and
+ * builds it afresh on the next render: once every update on any map with a hidden character sprite (measured
+ * 2026-11-05: every update, on the laptop 0.1-0.2 ms). The 3D layer's own decision (`_reactor3dHides`) is taken
+ * here first, so its later writes find the value already in place; every wrapper still runs and sees the same
+ * result. A plugin that replaced `Sprite.prototype.updateVisibility` is called as before.
+ */
+Sprite_Character._spriteUpdateVisibility = Sprite.prototype.updateVisibility;
+Sprite_Character.prototype.updateVisibility = function() {
+    const hide = this.isEmptyCharacter() || this._character.isTransparent()
+        || (typeof this._reactor3dHides === "function" && this._reactor3dHides());
+    if (Sprite.prototype.updateVisibility === Sprite_Character._spriteUpdateVisibility) {
+        const visible = !this._hidden && !hide;
+        if (this.visible !== visible) this.visible = visible;
+        return;
+    }
+    Sprite.prototype.updateVisibility.call(this);
+    if (hide) this.visible = false;
 };
 
 Sprite_Character.prototype.isTile = function() {
@@ -543,29 +645,27 @@ Sprite_Character.prototype.updateReactor3DPosition = function() {
  * position it last had and slid about the screen as the camera moved. Six of
  * them on Moletown looked exactly like sprites trailing the party.
  */
+/** Whether the 3D layer below hides this sprite (its world draws it, or it is a prop): asked by the base first. */
+Sprite_Character.prototype._reactor3dHides = function() {
+    if (typeof Reactor3D === "undefined" || typeof $dataMap === "undefined") return false;
+    const character = this._character;
+    if (!character || !Reactor3D.shouldRender3D($dataMap)) return false;
+    if (Reactor3D.hasEventModels($dataMap)) return true;
+    if (typeof character.eventId === "function" && Reactor3D.isEventProp(character.eventId())) return true;
+    return Reactor3D.hasCharacterModel(character);
+};
 Sprite_Character.prototype._reactor3dBaseVisibility = Sprite_Character.prototype.updateVisibility;
 Sprite_Character.prototype.updateVisibility = function() {
+    // The base has asked `_reactor3dHides` already: what a 3D scene draws itself
+    // (a prop, a character with a model, an event-model map) is hidden there, once.
     this._reactor3dBaseVisibility();
-    if (typeof Reactor3D === "undefined") return;
-    const character = this._character;
-    if (!character) return;
-    const isEvent = typeof character.eventId === "function";
-    if (isEvent && Reactor3D.isEventProp(character.eventId())
-        && typeof $dataMap !== "undefined" && Reactor3D.shouldRender3D($dataMap)) {
-        this.visible = false;
-        return;
-    }
-    // Only a 3D scene draws these itself; on a flat map a model-bound
-    // character is a rendered sprite (updateMapModelSprite) and the others
-    // are ordinary sprites.
-    const inScene = typeof $dataMap !== "undefined" && Reactor3D.shouldRender3D($dataMap);
-    if (inScene && Reactor3D.hasCharacterModel(character)) this.visible = false;
-    if (inScene && Reactor3D.hasEventModels($dataMap)) this.visible = false;
-    // A model-bound character has no sheet name, which the base class reads
+    const character = this._character, model = this._reactorMapModel;
+    if (!model || !model.ready || !character || typeof Reactor3D === "undefined") return;
+    // On a flat map a model-bound character is a rendered sprite
+    // (updateMapModelSprite). It has no sheet name, which the base class reads
     // as an empty character; its rendered model is the picture.
-    if (!inScene && this._reactorMapModel && this._reactorMapModel.ready) {
-        this.visible = !(character.isTransparent && character.isTransparent());
-    }
+    const inScene = typeof $dataMap !== "undefined" && Reactor3D.shouldRender3D($dataMap);
+    if (!inScene) this.visible = !(character.isTransparent && character.isTransparent());
 };
 
 Sprite_Character.prototype.reactor3DScale = function() {
@@ -662,6 +762,9 @@ Sprite_Character.prototype.update = function() {
     }
     // Applied last: plugins replace updatePosition wholesale, and a model
     // sprite's frame is only right once updateMapModelSprite has set it.
+    // (A sprite its model draws instead is never shown: no order or stand to work out. A culled
+    // sprite left the base update before the flag was set this time, and goes on as it always did.)
+    if (this._rrDrawnByModel && !this._rrCulled) return;
     if (!this._rrCulled && this.reactorSortedZ) this.z = this.reactorSortedZ();
     const stand = this.reactor3DScale();
     if (!stand) return;
@@ -2520,6 +2623,8 @@ Sprite_Enemy.prototype.destroyParticleCollapse = function() {
     if (state.fragments) {
         if (state.mesh.parent) state.mesh.parent.removeChild(state.mesh);
         state.mesh.destroy({ children: false, texture: true, textureSource: false });
+        // PIXI's Mesh.destroy only lets go of its geometry: the buffers are this collapse's own.
+        state.geometry.destroy(true);
         return;
     }
     // Each shard holds a Texture of its own, and a v8 Texture subscribes to its
@@ -3048,6 +3153,29 @@ Sprite_Animation.SceneLayer = {
         if (!effect) return false;
         this.deadlines.set(name, performance.now() + EffectManager.PRELOAD_WAIT_MS);
         return true;
+    },
+    /**
+     * EffectManager.clear's in-scene counterpart, after a transfer: the loaded
+     * effects go, but for the ones the new map names (`keep`) and any an
+     * animation still holds. One still loading stays too: Effekseer cannot
+     * release it yet, and it would finish loading into nothing.
+     */
+    clear(keep) {
+        if (!this.context || !this.cache.size) return;
+        const held = new Set();
+        for (const sprite of this.live) if (sprite._effect) held.add(sprite._effect);
+        try {
+            for (const [name, effect] of this.cache) {
+                if (!effect || !effect.isLoaded || held.has(effect) || (keep && keep.has(name))) continue;
+                this.context.releaseEffect(effect);
+                this.cache.delete(name);
+                this.deadlines.delete(name);
+            }
+        } finally {
+            // Its textures were deleted on PIXI's context: PIXI is reset before the next render.
+            this.dirty = true;
+            Graphics.effekseer?._makeContextCurrent?.();
+        }
     },
     isReady() {
         const now = performance.now();
@@ -5819,7 +5947,26 @@ Spriteset_Map.prototype.update = function() {
     // visible=true inside their own update, so hiding must win afterwards
     // — the render pass is what the hide targets. Character-sprite flags
     // are consumed on the NEXT frame's update; the margin absorbs the lag.
-    this.updateOffscreenCulling();
+    // Which sprites are parked off screen is a picture's question too: asked in the frame's last update (it places
+    // every character on screen to answer). `Spriteset_Map.CULL_ONCE_A_FRAME = false` asks in every update.
+    if (!Spriteset_Map.CULL_ONCE_A_FRAME || !this._reactor3d || typeof SceneManager === "undefined" || SceneManager._finalUpdateOfFrame !== false) this.updateOffscreenCulling();
+    else this.updateParkedWindows();
+};
+
+/**
+ * In an update that leaves the culling pass to the frame's last: windows parked off the display list still take their
+ * update, as those on it just did, so a plugin label's fade or timer runs at the game's pace whether parked or not.
+ */
+Spriteset_Map.prototype.updateParkedWindows = function() {
+    const holder = this._rrCullHolder;
+    if (!holder || !holder.children.length) return;
+    for (let i = holder.children.length - 1; i >= 0; i--) {
+        const child = holder.children[i];
+        if (!(child instanceof Window_Base) || !child.update) continue;
+        child._rrCulled = false;
+        child.update();
+        child._rrCulled = true;
+    }
 };
 
 // Scale only the map, its weather and native world lighting. Pictures,
@@ -5858,6 +6005,7 @@ Spriteset_Map.prototype.updateReactor2DCamera = function() {
 // re-enter exactly where their game object says. The margin keeps
 // oversized sprites and fast scrolls safe. Set
 // `window.$reactorDisableCulling` to true to turn this off for debugging.
+Spriteset_Map.CULL_ONCE_A_FRAME = true;
 Spriteset_Map.prototype.updateOffscreenCulling = function() {
     const disabled = typeof window !== "undefined" && window.$reactorDisableCulling;
     if (!this._rrCullHolder) {
@@ -5872,8 +6020,15 @@ Spriteset_Map.prototype.updateOffscreenCulling = function() {
     const minY = -margin;
     const maxY = Graphics.height / cameraZoom + margin;
     let reattachedToTilemap = false;
+    // Counted in passes of this function, not updates: on a 3D map it runs once a frame, and a frame of two or four
+    // updates would land the update count on the same beat every time, so half or more of the sprites were never asked.
+    const tick = (this._rrCullPass = ((this._rrCullPass || 0) + 1) & 0xffff);
     for (const sprite of this._characterSprites) {
         const character = sprite._character;
+        // A sprite its model draws is never shown either way: whether it is parked is asked every fourth update, not
+        // every one (each asks where the character stands on screen, a 3D projection: 0.5 ms an update for the
+        // Reactor Room's 30 on the laptop while walking, 2026-11-08). One not yet updated is asked as before.
+        if (!disabled && sprite._rrDrawnByModel && sprite.z !== undefined && ((tick + (sprite._rrCullSeed || (sprite._rrCullSeed = 1 + (this._rrCullSeeds = (this._rrCullSeeds || 0) + 1)))) & 3) !== 0) continue;
         let culled = false;
         if (!disabled && character && character !== $gamePlayer) {
             const sx = character.screenX();
@@ -6349,10 +6504,6 @@ Spriteset_Map.prototype.updateReactor3DTexture = function(pass, from) {
     else if (source) source.needsUpdate = true;
 };
 
-Spriteset_Map.prototype.reactor3D = function() {
-    return this._reactor3d;
-};
-
 /**
  * Whoever may stand as a model: the events, the player and the visible followers (an actor bound to a
  * model in the database sidecar walks the map as that model). One list, refilled in place each frame; the
@@ -6467,6 +6618,8 @@ Spriteset_Map.prototype.updateReactor3D = function() {
 
     const state = this._reactor3d;
     if (!state) return;
+    // Outermost over every plugin's wrapper, once they have all wrapped it (a flag check after that).
+    if (!Sprite_Character.prototype.update.__rrThrottle) Sprite_Character.throttleModelSprites();
     // The map started before its world was all laid (a readiness check that passed over the wait): the rest now.
     // (An update while it still loads, which a plugin may ask for, leaves the laying to the wait.)
     if (state.arrival && !state.warming && !this.isReactor3DArrivalTime()) this.finishReactor3DArrival();
@@ -6592,7 +6745,10 @@ Spriteset_Map.prototype.drawReactor3D = function(state) {
         this.keepReactor3DLightsOnTop();
     }
 
-    if (!state.warming) Graphics.worldFrameCount = (Graphics.worldFrameCount || 0) + 1;
+    if (!state.warming) {
+        Graphics.worldFrameCount = (Graphics.worldFrameCount || 0) + 1;
+        if (Reactor3D.FramePressure) Reactor3D.FramePressure.frame();
+    }
 
 };
 
@@ -6616,6 +6772,12 @@ Spriteset_Map.prototype.drawReactor3D = function(state) {
  */
 Spriteset_Map.prototype.updateReactor3DLights = function(state) {
     const wants = Reactor3D.wantsLights3D($dataMap);
+    // A Quality level may gather and place the lights every few updates (Quality.lightsEvery): what was placed last
+    // stands meanwhile, a carried torch a step behind.
+    // Counted in its own calls (one a drawn frame), not in updates: at 1.4 updates a frame those were mostly two apart.
+    const Q = Reactor3D.Quality, every = Q && Q.lightsEvery ? Q.lightsEvery() : 1;
+    this._rrLightsSkip = every > 1 && wants === this._reactor3dLit ? ((this._rrLightsSkip || 0) + 1) % every : 0;
+    if (this._rrLightsSkip !== 0) return;
     // The lighting is this spriteset's until another takes it: one left behind gives back only its own.
     Reactor3D._lightingOwner = this;
     // Near a border with a neighboring map's world past it, the two maps' lighting meets (Neighbors.lightBlend).
@@ -6832,6 +6994,8 @@ Spriteset_Map.prototype.keepReactorLighting2DOnTop = function() {
 Spriteset_Map.prototype.suppressReactor3DGroundParallaxes = function(hide) {
     if (!this._tilemap || typeof TilingSprite === "undefined") return;
     const taken = hide ? this.reactor3DGroundParallaxNames() : null;
+    // Asked with every drawn picture: a map whose ground took no parallax has nothing to hide.
+    if (hide && !taken.size) return;
     for (const child of this._tilemap.children) {
         if (!(child instanceof TilingSprite)) continue;
         if (!hide) {
@@ -6845,8 +7009,13 @@ Spriteset_Map.prototype.suppressReactor3DGroundParallaxes = function(hide) {
 
 /** The parallaxes this map's 3D ground was built from, by name. */
 Spriteset_Map.prototype.reactor3DGroundParallaxNames = function() {
+    // Kept until what the list is read from changes: the map's record, its note and its own parallax.
+    const map = $dataMap, held = this._rrGroundParallaxNames;
+    if (held && map && held.map === map && held.note === map.note && held.parallax === map.parallaxName
+        && held.loopX === map.parallaxLoopX && held.loopY === map.parallaxLoopY) return held.names;
     const names = new Set();
     for (const layer of Reactor3D.parallaxGroundLayers($dataMap)) names.add(layer.name);
+    if (map) this._rrGroundParallaxNames = { map, note: map.note, parallax: map.parallaxName, loopX: map.parallaxLoopX, loopY: map.parallaxLoopY, names };
     return names;
 };
 

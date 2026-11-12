@@ -16,7 +16,7 @@
  */
 'use strict';
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto'), { spawnSync } = require('node:child_process');
-const Graph = require('./helpers/test-graph.cjs');
+const Graph = require('./helpers/test-graph.cjs'), Inputs = require('./helpers/test-inputs.cjs');
 
 const here = __dirname, editor = path.dirname(here);
 
@@ -52,17 +52,43 @@ function storeDir() {
     return dir;
 }
 
+/** Merges the last run's seconds into times.json; files not in that run keep their earlier record. */
+function keepTimes(dir, lastFile) {
+    let last = null, times = {};
+    try { last = JSON.parse(fs.readFileSync(lastFile, 'utf8')); } catch (error) { return; }
+    try { times = JSON.parse(fs.readFileSync(path.join(dir, 'times.json'), 'utf8')); } catch (error) { /* first run */ }
+    fs.writeFileSync(path.join(dir, 'times.json'), JSON.stringify(Object.assign(times, last), null, 1));
+}
+
+/** What each test file read at its last pass, as { file: { reads, probes, partial, hash } }. */
+function loadInputs(dir = storeDir()) {
+    try { return JSON.parse(fs.readFileSync(path.join(dir, 'inputs.json'), 'utf8')); } catch (error) { return {}; }
+}
+
+/**
+ * Whether a test that passed is proven unchanged by what it read then: every file it read or loaded holds the same
+ * bytes, every folder it listed the same names, and every path it asked after is there or not as before. A record
+ * marked `partial` (the test started another process or thread, which reads unseen) proves nothing by itself.
+ */
+function unchangedSince(record, cache) {
+    return !!record && !record.partial && Array.isArray(record.reads) && Inputs.hashOf(record, cache) === record.hash;
+}
+
 /** Passes as { file: fingerprint }, taking in whatever the last run recorded before it ended, however it ended. */
 function loadPasses(dir = storeDir()) {
     const store = path.join(dir, 'passed.json'), journal = path.join(dir, 'run.jsonl'), plan = path.join(dir, 'run.json');
     const passes = fs.existsSync(store) ? JSON.parse(fs.readFileSync(store, 'utf8')) : {};
+    const inputsStore = path.join(dir, 'inputs.json'), recorded = loadInputs(dir);
     if (fs.existsSync(journal) && fs.existsSync(plan)) {
         const fingerprints = JSON.parse(fs.readFileSync(plan, 'utf8'));
         for (const line of fs.readFileSync(journal, 'utf8').split('\n').filter(Boolean)) {
             let row; try { row = JSON.parse(line); } catch (_) { continue; }
             if (row.code === 0 && fingerprints[row.file]) passes[row.file] = fingerprints[row.file]; else delete passes[row.file];
+            // What the file read while it passed (helpers/test-inputs.cjs), or nothing for a failure.
+            if (row.code === 0 && row.inputs) recorded[row.file] = row.inputs; else delete recorded[row.file];
         }
         fs.writeFileSync(store, JSON.stringify(passes));
+        fs.writeFileSync(inputsStore, JSON.stringify(recorded));
         fs.renameSync(journal, path.join(dir, 'last-run.jsonl')); fs.rmSync(plan);
     }
     return passes;
@@ -72,9 +98,17 @@ function loadPasses(dir = storeDir()) {
  * The tests a run still owes: everything whose code changed since it last passed. `whole` adds the tests with inputs
  * the fingerprint can't see (they read folders or project data), which `changed` leaves to a whole run.
  */
-function owed(whole, files = allTestFiles(), passes = loadPasses(), { nodes, salt } = graphOf()) {
-    const facts = files.map(file => Graph.describe(nodes, file, salt));
-    return { facts, run: facts.filter(fact => passes[fact.file] !== fact.fingerprint || (whole && fact.open)) };
+function owed(whole, files = allTestFiles(), passes = loadPasses(), { nodes, salt } = graphOf(), recorded = loadInputs()) {
+    const facts = files.map(file => Graph.describe(nodes, file, salt)), cache = new Map();
+    // A test with a record of what it read is judged by that record alone: exact where the graph of names is a guess
+    // (it tied nearly every test to nearly every file), and it sees folders and project data, which the graph cannot.
+    // One without a whole record (never run under the probe, or it started another process) is judged by the graph.
+    const run = facts.filter(fact => {
+        const record = passes[fact.file] ? recorded[fact.file] : null;
+        if (record && !record.partial) return !unchangedSince(record, cache);
+        return passes[fact.file] !== fact.fingerprint || (whole && fact.open);
+    });
+    return { facts, run };
 }
 
 function main(argv) {
@@ -88,14 +122,32 @@ function main(argv) {
     const dir = storeDir(), plan = name === 'changed' || name === 'whole' ? owed(name === 'whole') : null;
     // --only=<pattern> narrows a run; --limit=<n> takes a slice, so a long list can be worked off in small bites.
     const only = option('only') && new RegExp(option('only')), limit = +option('limit') || Infinity;
-    const files = (plan ? plan.run.map(fact => 'tests/' + fact.file) : tier(name)).filter(file => !only || only.test(file)).slice(0, limit);
+    let files = (plan ? plan.run.map(fact => 'tests/' + fact.file) : tier(name)).filter(file => !only || only.test(file)).slice(0, limit);
+    // The longest first, by what each took last time: a three-minute file started last is three minutes on the end
+    // of the run with every other worker idle. A file never timed counts as long.
+    let took = {};
+    try { took = JSON.parse(fs.readFileSync(path.join(dir, 'times.json'), 'utf8')); } catch (error) { /* a first run */ }
+    const cost = file => { const v = took[path.basename(file)]; return typeof v === 'number' ? v : 1e6; };
+    files = files.map((file, index) => [file, index]).sort((a, b) => cost(b[0]) - cost(a[0]) || a[1] - b[1]).map(([file]) => file);
     if (plan) console.log(`${files.length} of ${plan.facts.length} test files owed; the rest already passed on exactly this code.`);
     if (!files.length) return 0;
     if (own.includes('--list')) { console.log(files.join('\n')); return 0; }
-    // Ten workers at most, under a gigabyte each: a whole run takes minutes, and `npm run test:all` runs it at the lowest priority.
-    const flags = ['--require=' + path.join(here, 'helpers', 'small-pictures.cjs'), '--test', '--test-concurrency=' + (option('concurrency') || Math.min(10, Math.max(2, os.availableParallelism() >> 1)))];
-    const measure = option('measure');
-    if (measure) flags.push('--test-reporter=' + path.join(here, 'helpers', 'file-times-reporter.mjs'), '--test-reporter-destination=' + path.resolve(measure), '--test-reporter=spec', '--test-reporter-destination=stdout');
+    // Half the machine's threads, sixteen at most, and no more than the free memory holds at a gigabyte and a half
+    // each (a test process peaks under one): the other half stays the owner's, and the run is at the lowest priority.
+    // A run inside a memory limit (a systemd scope, as the desktop's check wrapper makes) is sized to that limit, not
+    // to the machine: fourteen workers under a 6 GB limit spent a run stalled on memory (2026-11-10, 10 minutes and
+    // not done, every process waiting), where the same run fits when the limit or the worker count is right.
+    let room = os.freemem();
+    try {
+        const group = fs.readFileSync('/proc/self/cgroup', 'utf8').trim().split('\n').pop().split(':').pop();
+        for (const name of ['memory.high', 'memory.max']) { const v = +fs.readFileSync('/sys/fs/cgroup' + group + '/' + name, 'utf8'); if (v > 0) room = Math.min(room, v); }
+    } catch (error) { /* no limit to read */ }
+    const workers = Math.max(2, Math.min(16, os.availableParallelism() >> 1, Math.floor(room / 1e9)));
+    const flags = ['--require=' + path.join(here, 'helpers', 'small-pictures.cjs'), '--test', '--test-concurrency=' + (option('concurrency') || workers)];
+    // Every run records each file's seconds (times-last.json, merged into times.json after): what each file costs on
+    // this machine, kept current without a separate measuring run; --measure also writes them where asked.
+    const measure = option('measure'), lastTimes = path.join(dir, 'times-last.json');
+    flags.push('--test-reporter=' + path.join(here, 'helpers', 'file-times-reporter.mjs'), '--test-reporter-destination=' + (measure ? path.resolve(measure) : lastTimes), '--test-reporter=spec', '--test-reporter-destination=stdout');
     // Each test process reports as it ends, so what passed is kept even if this run never finishes.
     const facts = plan ? plan.facts : (({ nodes, salt }) => allTestFiles().map(file => Graph.describe(nodes, file, salt)))(graphOf());
     fs.writeFileSync(path.join(dir, 'run.json'), JSON.stringify(Object.fromEntries(facts.map(fact => [fact.file, fact.fingerprint]))));
@@ -104,8 +156,9 @@ function main(argv) {
     const run = spawnSync(process.execPath, [...flags, ...passed, ...files], { cwd: editor, stdio: 'inherit', env });
     if (run.error) throw run.error;
     loadPasses(dir);
+    keepTimes(dir, measure ? path.resolve(measure) : lastTimes);
     return run.status === null ? 1 : run.status;
 }
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));
-module.exports = { allTestFiles, heavyList, tier, reaching, owed };
+module.exports = { allTestFiles, heavyList, tier, reaching, owed, unchangedSince, loadInputs };

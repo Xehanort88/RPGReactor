@@ -53,9 +53,13 @@ test('a material drawn before is never held, even after its version changes (a m
     const r = fakeRenderer();
     r.properties.get(mesh.material).currentProgram = {}; r.draw(mesh);
     assert.equal(W.hide(r, scene, {}), null);
+    // Changed once: still drawn (with the program it has), its next one begun in the background (runtime 20261110.7).
     mesh.material.needsUpdate = true;
-    assert.equal(W.hide(r, scene, {}), null, 'a recompile is drawn the old way');
-    assert.equal(r.compiles.length, 0);
+    assert.equal(W.hide(r, scene, {}), null, 'never held');
+    assert.equal(r.compiles.length, 1);
+    // Changing again and again: drawn the old way, and no compile begun for each change.
+    for (let i = 0; i < 4; i++) { mesh.material.needsUpdate = true; assert.equal(W.hide(r, scene, {}), null); r.draw(mesh); }
+    assert.equal(r.compiles.length, 1);
 });
 
 test('pictures upload under a per-frame budget before the mesh shows; one always goes', async () => {
@@ -190,4 +194,28 @@ test('a new material in a game that has run a while is compiled once and shows o
         r.finishCompiles(); await tick();
         assert.equal(W.hide(r, scene, {}), null, 'ready: drawn');
     } finally { performance.now = real; r.finishCompiles(); }
+});
+
+test('a material whose program was begun elsewhere and is still compiling is held, not waited for, until it links', () => {
+    const scene = new THREE.Scene(), mesh = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+    scene.add(mesh);
+    const r = fakeRenderer();
+    let linked = false;
+    // A merged character's warm began its compile: the program is there, the driver has not finished it.
+    r.properties.get(mesh.material).currentProgram = { isReady: () => linked };
+    r.properties.get(mesh.material).__version = mesh.material.version;
+    const hidden = W.hide(r, scene, {});
+    assert.ok(hidden && hidden.includes(mesh), 'held while it compiles: its first draw would wait on the main thread');
+    W.show(hidden);
+    linked = true;
+    assert.equal(W.hide(r, scene, {}), null, 'drawn once linked');
+    W.holdUnlinked = false;
+    try {
+        const other = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial()); scene.add(other);
+        r.properties.get(other.material).currentProgram = { isReady: () => false };
+        r.properties.get(other.material).__version = other.material.version;
+        const h = W.hide(r, scene, {});
+        assert.ok(!h || !h.includes(other), 'off: drawn as before');
+        if (h) W.show(h);
+    } finally { W.holdUnlinked = true; }
 });

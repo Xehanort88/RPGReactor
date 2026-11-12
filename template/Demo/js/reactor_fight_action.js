@@ -577,8 +577,11 @@
         // A party member struck by the other side fights back, whether or not the leader has opened the fight.
         if (st && taken !== 1 && st.ai[target.id]) st.ai[target.id].provoked = true;
         // A guard raised just as the blow lands turns it aside whole.
-        A._perfect = !!guarded && st.clock - st.player.guardAt <= A.PERFECT_GUARD && !!subject && subject.team !== target.team;
-        A._strike.damageRate = A._perfect ? 0.0001 : (run.rate > 0 ? run.rate : 1) * (guarded ? A.GUARD_RATE : 1) * taken;
+        // (Kept for the whole blow once any target turned it aside: set anew for each target, a later one that did
+        // not guard cleared it, and the attacker of an all-party skill never reeled.)
+        const perfect = !!guarded && st.clock - st.player.guardAt <= A.PERFECT_GUARD && !!subject && subject.team !== target.team;
+        if (perfect) A._perfect = true;
+        A._strike.damageRate = perfect ? 0.0001 : (run.rate > 0 ? run.rate : 1) * (guarded ? A.GUARD_RATE : 1) * taken;
         return A._strike;
     };
     A._strike = { damageRate: 1, hitRate: 1 };
@@ -1577,6 +1580,20 @@
                 side.count++;
             }
         }
+        // With more than two sides: everyone but the one named (`F.oppose`).
+        if (team && team[0] === "!") {
+            const others = kept.others || (kept.others = {}), out = others[team] || (others[team] = { list: [], count: 0, stamp: -2 });
+            if (out.stamp !== stamp) {
+                out.stamp = stamp;
+                out.count = 0;
+                for (const key of Object.keys(kept.sides)) {
+                    if (key === team.slice(1)) continue;
+                    const side = kept.sides[key];
+                    for (let i = 0; i < side.count; i++) out.list[out.count++] = side.list[i];
+                }
+            }
+            return out;
+        }
         return kept.sides[team] || A._noBodies || (A._noBodies = { list: [], count: 0 });
     };
 
@@ -1610,6 +1627,8 @@
     // Input: the mouse buttons and wheel beside the keys and buttons Input knows.
 
     const HOTBAR = ["", "hotbar1", "hotbar2", "hotbar3", "hotbar4", "hotbar5", "hotbar6", "hotbar7", "hotbar8"];
+    // Pressed while a landed blow holds the frame, these are kept (in `edges`) for the first frame after it.
+    const STOP_KEEPS = ["lock", "reload", "dodge", "weapon"];
     const In = A.Input = {
         left: false, right: false, leftEdge: false, wheel: 0, moved: false, virtual: {}, edges: {}, held: [true, true, true, true, true, true, true, true, true],
         // A key held as the battle takes the keys does not count as pressed for it: it must come up first.
@@ -1635,7 +1654,7 @@
             this.held[slot] = down;
             return fresh || this.triggered(name);
         },
-        endFrame() { this.leftEdge = false; this.wheel = 0; this.edges = {}; }
+        endFrame() { this.leftEdge = false; this.wheel = 0; for (const name in this.edges) this.edges[name] = false; }
     };
 
     /** Whether a click should take the mouse first: a look that turns by it, the mouse not yet held, and no refusal just now. */
@@ -1954,7 +1973,7 @@
                 // The burst's own lines start a little back from what it struck, in the open.
                 const bx = shot.x - shot.dx * 0.25, by = shot.y - shot.dy * 0.25 + (shot.flat ? 0 : 0.15), bz = shot.z - shot.dz * 0.25;
                 for (const unit of fight._units) {
-                    if (unit.gone || unit.team !== F.oppose(owner.team) || !fight.isAlive(unit)) continue;
+                    if (unit.gone || !F.isSide(unit.team, F.oppose(owner.team)) || !fight.isAlive(unit)) continue;
                     const character = fight.character(unit);
                     if (A.reachTo(fight, shot.x, shot.z, character) > shot.blast) continue;
                     if (!shot.flat || A.deep()) {
@@ -2118,7 +2137,7 @@
         const busy = !battler.canMove() || A.bodyBusy(character) || A.isActing(fight, unit.id);
         // The lock: Tab takes the opponent nearest the crosshair's line, again the next one; it lets go of one that fell.
         const held = p.lock ? fight.unit(p.lock) : null;
-        if (p.lock && (!fight.isAlive(held) || held.team !== F.oppose(unit.team))) { p.lock = 0; st.rev++; }
+        if (p.lock && (!fight.isAlive(held) || !F.isSide(held.team, F.oppose(unit.team)))) { p.lock = 0; st.rev++; }
         if (In.triggered("lock")) fight.actionLock();
         // Locked on, the look swings round to keep the target ahead: left and right circle it.
         const R3 = world3(), lookNow = R3 && R3.Camera && R3.Camera.look;
@@ -2204,7 +2223,7 @@
         if (swing.frame >= from && swing.frame <= to) {
             const yaw = aim.yaw * DEG, fx = Math.sin(yaw), fz = -Math.cos(yaw), half = Math.cos(profile.arc * DEG / 2);
             for (const other of fight._units) {
-                if (other.gone || other.team !== F.oppose(unit.team) || swing.hit.includes(other.id) || !fight.isAlive(other)) continue;
+                if (other.gone || !F.isSide(other.team, F.oppose(unit.team)) || swing.hit.includes(other.id) || !fight.isAlive(other)) continue;
                 const target = fight.character(other);
                 if (A.gap(fight, character, target) > profile.reach || A.levelGap(character, target) > A.LEVEL_REACH) continue;
                 // Within the arc: the way to the nearest part of its body (a big one's middle may be tiles off).
@@ -2306,7 +2325,9 @@
         const battler = unit && this.battler(unit);
         if (!battler || !battler.isAlive() || !battler.canMove() || p.guard || A.bodyBusy($gamePlayer) || A.isActing(this, unit.id)) return false;
         const profile = A.profile(battler), character = $gamePlayer;
-        A.takeAim(this, unit, profile.ranged ? profile.range : 12);
+        // (Not for a ranged weapon that cannot fire this frame: the frame's aim is already taken, and with fire held
+        // the world, the props and the units were traced a second time every frame for a shot that was not leaving.)
+        if (!(profile.ranged && (p.cooldown > 0 || p.reload > 0 || p.dodge > 0))) A.takeAim(this, unit, profile.ranged ? profile.range : 12);
         // The leader has opened the fight: the rest of the party joins in (A.waitsForLead).
         st.led = true;
         if (!profile.ranged) {
@@ -2357,12 +2378,6 @@
             if (sound && S && S.cue) sounded = !!S.cue(sound, { character, targetCharacters: [] });
         } catch (error) { sounded = false; }
         if (!sounded && typeof SoundManager !== "undefined" && SoundManager.playEnemyAttack) SoundManager.playEnemyAttack();
-    };
-
-    Game_Fight.prototype.actionAim = function(on) {
-        if (!this.isAction()) return false;
-        In.virtual.aim = !!on;
-        return true;
     };
 
     Game_Fight.prototype.actionReload = function() {
@@ -2438,7 +2453,7 @@
         // The opponents in sight by how far off the weapon's line they stand; the one after the one held.
         const list = [];
         for (const other of this._units) {
-            if (other.gone || other.team !== F.oppose(unit.team) || !this.isAlive(other)) continue;
+            if (other.gone || !F.isSide(other.team, F.oppose(unit.team)) || !this.isAlive(other)) continue;
             const character = this.character(other);
             const dx = character._realX + 0.5 - aim.ox, dz = character._realY + 0.5 - aim.oz, distance = Math.hypot(dx, dz);
             if (distance > 24 || !A.sees(this, $gamePlayer, character)) continue;
@@ -2488,7 +2503,7 @@
             const reach = Math.max(1.6, (tactics ? tactics.max : 4) * A.RANGE_SCALE);
             // Not at one behind a wall, a shut door or the ground, unless it needs no line (`<los: no>`).
             lobbed = !!tactics && tactics.los === false;
-            const within = other => !!other && other.team === F.oppose(unit.team) && this.isAlive(other) && A.gap(this, $gamePlayer, this.character(other)) <= reach
+            const within = other => !!other && F.isSide(other.team, F.oppose(unit.team)) && this.isAlive(other) && A.gap(this, $gamePlayer, this.character(other)) <= reach
                 && (lobbed || A.blowClear(this, $gamePlayer, this.character(other)));
             // On the one locked or under the crosshair; else on the nearest it can reach with a clear way.
             let target = p.lock ? this.unit(p.lock) : aim.target ? this.unit(aim.target) : null;
@@ -2496,7 +2511,7 @@
                 target = null;
                 let least = Infinity;
                 for (const other of this._units) {
-                    if (other.gone || other.team !== F.oppose(unit.team) || !within(other)) continue;
+                    if (other.gone || !F.isSide(other.team, F.oppose(unit.team)) || !within(other)) continue;
                     const gap = A.gap(this, $gamePlayer, this.character(other));
                     if (gap < least) { least = gap; target = other; }
                 }
@@ -2566,7 +2581,7 @@
     A.nearest = function(fight, unit, character, team, far) {
         let best = null, bestDistance = far;
         for (const other of fight._units) {
-            if (other.gone || other.team !== team || !fight.isAlive(other)) continue;
+            if (other.gone || !F.isSide(other.team, team) || !fight.isAlive(other)) continue;
             const target = fight.character(other);
             const distance = Math.hypot(target._realX - character._realX, target._realY - character._realY);
             if (distance < bestDistance) { best = other; bestDistance = distance; }
@@ -2807,13 +2822,13 @@
         A._thinks++;
         ai.late = false;
         let target = ai.targetId ? fight.unit(ai.targetId) : null;
-        if (!target || !fight.isAlive(target) || target.team !== foes) { target = null; ai.targetId = 0; }
+        if (!target || !fight.isAlive(target) || !F.isSide(target.team, foes)) { target = null; ai.targetId = 0; }
         if ((ai.state === "idle" || ai.state === "return") && A.waitsForLead(fight, st, unit, character, ai, player)) return;
         if (ai.state === "idle" || ai.state === "return") {
             let seen = null;
             if (ai.alert) seen = A.nearest(fight, unit, character, foes, 30);
             else for (const other of fight._units) {
-                if (other.gone || other.team !== foes || !fight.isAlive(other)) continue;
+                if (other.gone || !F.isSide(other.team, foes) || !fight.isAlive(other)) continue;
                 if (A.notices(fight, unit, character, other)) { seen = other; break; }
             }
             if (seen) {
@@ -3046,7 +3061,7 @@
         const kept = A._enters || (A._enters = { serial: -1, map: null, ally: false, enemy: false });
         const map = typeof $dataMap !== "undefined" ? $dataMap : null;
         if (kept.serial === fight._serial && kept.map === map) return kept;
-        kept.serial = fight._serial; kept.map = map; kept.ally = kept.enemy = false;
+        kept.serial = fight._serial; kept.map = map; kept.ally = kept.enemy = kept.any = false;
         for (const event of $gameMap.events()) {
             const data = event && event.event ? event.event() : null;
             for (const page of (data && data.pages) || []) {
@@ -3054,6 +3069,8 @@
                 if (!hook || hook.on !== "unitEnters") continue;
                 if (hook.team !== "enemy") kept.ally = true;
                 if (hook.team !== "ally") kept.enemy = true;
+                // A page for any team is also for a side of its own (a guest fighting for itself in a shared battle).
+                if (hook.team !== "enemy" && hook.team !== "ally") kept.any = true;
             }
         }
         return kept;
@@ -3069,7 +3086,11 @@
             // The instant a blade lands: nothing moves on, and a click made now still counts.
             st.stop--;
             if (In.triggered("attack") && st.player.swing) st.player.buffered = true;
-            In.endFrame();
+            // A key pressed in the pause is true for this frame only: it is kept for the first frame after it,
+            // which reads it and ends the input frame. The wheel keeps counting; the click was taken above.
+            for (const name of STOP_KEEPS) if (In.triggered(name)) In.edges[name] = true;
+            for (let slot = 1; slot <= 8; slot++) if (In.slot(slot)) In.edges[HOTBAR[slot]] = true;
+            In.leftEdge = false;
             return;
         }
         st.clock++;
@@ -3112,7 +3133,7 @@
             if (unit.defeated) fight.raise(unit);
             const character = fight.character(unit), battler = fight.battler(unit);
             // Whoever has come onto another cell, the player too: the pages that run when a unit enters an area.
-            if (enters[unit.team]) fight.checkEnterHooks(unit, character);
+            if (enters[unit.team] || (enters.any && unit.team !== "ally" && unit.team !== "enemy")) fight.checkEnterHooks(unit, character);
             if (unit === playerUnit) continue;
             A.updateUnit(fight, st, unit, character, battler, A.aiOf(fight, st, unit, character), player);
         }
@@ -3134,7 +3155,7 @@
         if (!leader) return;
         let nearest = Infinity;
         for (const unit of fight._units) {
-            if (unit.gone || unit.team !== foes || !fight.isAlive(unit)) continue;
+            if (unit.gone || !F.isSide(unit.team, foes) || !fight.isAlive(unit)) continue;
             const character = fight.character(unit);
             if (character) nearest = Math.min(nearest, Math.hypot(character._realX - leader._realX, character._realY - leader._realY));
         }
@@ -3153,7 +3174,7 @@
         crosshair: { x: 0, y: 0, spread: 0, aiming: false, onTarget: false, hit: 0, kill: 0 },
         target: null, hotbar: [], enemies: [], damage: { pulse: 0, angle: null }, combo: 0, guarding: false, dodging: false, objective: "", mouseFree: false, notice: "" };
     const hudTarget = { unitId: 0, name: "", hp: 0, mhp: 0, team: "", locked: false, x: 0, y: 0, visible: false };
-    let hudRev = -1;
+    let hudRev = -1, hudPay = -1;
 
     // Which opponents the player's eyes reach (the head, else the chest), for the HUD: a few are looked for each
     // battle frame and the answer kept a third of a second, so twenty bars are not twenty lines a frame.
@@ -3182,8 +3203,11 @@
         const profile = A.profile(battler);
         hud.unitId = unit.id; hud.name = battler.name();
         hud.hp = battler.hp; hud.mhp = battler.mhp; hud.mp = battler.mp; hud.mmp = battler.mmp; hud.tp = battler.tp;
-        if (hudRev !== st.rev) {
-            hudRev = st.rev;
+        // What a slot costs is paid in MP and TP, and those rise (a hit's TP, regeneration) without the battle's
+        // revision moving: either change has the bar asked again what can be used.
+        const pay = battler.mp * 4096 + battler.tp;
+        if (hudRev !== st.rev || hudPay !== pay) {
+            hudRev = st.rev; hudPay = pay;
             const weapons = battler.isActor() ? A.weaponsOf(battler) : [];
             const weapon = battler.isActor() ? battler.weapons()[0] || null : null;
             hud.weapon.id = weapon ? weapon.id : 0; hud.weapon.name = weapon ? weapon.name : ""; hud.weapon.iconIndex = weapon ? weapon.iconIndex : 0;
@@ -3236,7 +3260,7 @@
         let count = 0;
         const self = $gamePlayer;
         for (const other of this._units) {
-            if (other.gone || other.team !== F.oppose(unit.team) || !this.isAlive(other)) continue;
+            if (other.gone || !F.isSide(other.team, F.oppose(unit.team)) || !this.isAlive(other)) continue;
             const character = this.character(other);
             if (count >= 24 || Math.abs(character._realX - self._realX) + Math.abs(character._realY - self._realY) > 16) continue;
             const entry = hud.enemies[count] || (hud.enemies[count] = {});
@@ -4122,9 +4146,11 @@
             A.aimBlend = ease(A.aimBlend, st && st.player.aim ? 1 : 0, 0.2);
             A.battleBlend = ease(A.battleBlend, st && !fight._ending ? 1 : 0, 0.08);
             // A shot's kick: the look jumps up and settles back most of the way.
-            if (st && st.player.recoil > 0.01 && R.Camera.look && R.Camera.look.pitch !== null) {
+            // The kick wears off whether or not the look has a pitch yet (no mouse moved: a pad or the keys), or the aim help
+            // (A.lookToNear waits for it to settle) would be lost for the rest of the battle.
+            if (st && st.player.recoil > 0.01) {
                 const kick = st.player.recoil * 0.35;
-                R.Camera.look.pitch -= kick * 0.5;
+                if (R.Camera.look && R.Camera.look.pitch !== null) R.Camera.look.pitch -= kick * 0.5;
                 st.player.recoil -= kick;
             }
             const current = view.cameraCurrent, mode = A.cameraMode(), battle = A.battleBlend, aiming = A.aimBlend;

@@ -16,6 +16,44 @@ class DatabaseUserInterfaceEditor {
         try { return require('../utils/VictoryHud.js'); } catch (error) { return null; }
     }
     static isVictoryNode(type) { return ['victoryParty', 'victoryLevels', 'victoryRewards', 'victoryText'].includes(type); }
+    /** Pictures as an element's look and motion: the settings and the maths the game draws from (the same text as in runtime/reactor_ui.js). */
+    static motionApi() {
+        if (typeof RRInterfaceMotion !== 'undefined') return RRInterfaceMotion;
+        try { return require('../utils/InterfaceMotion.js'); } catch (error) { return null; }
+    }
+    /** The picture settings and the node types that can hold each. */
+    static get PICTURE_KEYS() {
+        return { fillImage: ['box', 'button', 'list', 'input'], focusedImage: ['button', 'input', 'list'], pressedImage: ['button', 'input'],
+            disabledImage: ['button', 'input', 'list'], rowImage: ['list'], gaugeImage: ['gauge'], gaugeBackImage: ['gauge'] };
+    }
+    /**
+     * Picture and motion settings as they are stored: kept only where they are set, so a record that uses
+     * none of them saves as before.
+     */
+    static normalizePictureMotion(node, type) {
+        const api = DatabaseUserInterfaceEditor.motionApi();
+        const fills = DatabaseUserInterfaceEditor.PICTURE_KEYS.fillImage;
+        if (node.fill === 'picture' && !fills.includes(type)) node.fill = 'none';
+        for (const [key, types] of Object.entries(DatabaseUserInterfaceEditor.PICTURE_KEYS)) {
+            const value = typeof node[key] === 'string' ? node[key].trim() : '';
+            if (value && types.includes(type)) node[key] = value;
+            else delete node[key];
+        }
+        if (!fills.includes(type) || !['contain', 'tile', 'slice'].includes(node.fillFit)) delete node.fillFit;
+        if (fills.includes(type)) {
+            for (const key of ['sliceLeft', 'sliceTop', 'sliceRight', 'sliceBottom']) {
+                const value = Math.min(9999, Math.max(0, Math.round(Number(node[key]) || 0)));
+                if (value) node[key] = value;
+                else delete node[key];
+            }
+        }
+        if (api) {
+            const motion = api.compact(api.normalize(node.motion, type, node.source));
+            if (motion) node.motion = motion;
+            else delete node.motion;
+        }
+        return node;
+    }
     /** The Action and First Person battle HUD's shared half (the same file the game runs). */
     static actionHud() {
         if (typeof ReactorActionHud !== 'undefined') return ReactorActionHud;
@@ -93,8 +131,6 @@ class DatabaseUserInterfaceEditor {
         return ['setMenuActor', 'personalSkill', 'personalEquip', 'personalStatus', 'pluginScene', 'pluginCommand', 'script', 'formation',
             'use', 'equipOptimize', 'equipClear'];
     }
-    static get SCENES() { return ['menu', 'item', 'skill', 'equip', 'status', 'save', 'load', 'options', 'gameEnd', 'title']; }
-    static get CONDITION_TYPES() { return ['always', 'never', 'saveExists', 'switch', 'variable', 'script']; }
     static get REPLACEMENT_ROLES() {
         return [
             ['title', 'Title Screen', 'reactorTitleInterfaceId'],
@@ -290,6 +326,33 @@ class DatabaseUserInterfaceEditor {
             if (typeof source.behind === 'boolean') value.behind = source.behind;
             if (Number.isFinite(Number(source.rotation)) && source.rotation !== '' && source.rotation != null) value.rotation = Math.max(-60, Math.min(60, Number(source.rotation)));
             result[key] = value;
+        }
+        return result;
+    }
+
+    /**
+     * The parts a row draws on the canvas: the layout without the MP and TP parts of a pool the project turned
+     * off (System.json rrPoolsOff), what sat below them moved up, as the game does it (ReactorUI.actorPanelLayout).
+     * The inspector keeps the whole layout, so a hidden part can still be edited.
+     */
+    static actorPanelShown(node, width, height, fontSize, system) {
+        const result = DatabaseUserInterfaceEditor.actorPanelLayout(node, width, height, fontSize);
+        const off = key => !!system && Array.isArray(system.rrPoolsOff) && key !== 'hp' && system.rrPoolsOff.includes(key);
+        const hidden = (node.actorFields || ['portrait','name','class','level','hp','mp','exp','states']).filter(key => ['mp','tp'].includes(key) && off(key));
+        const pictured = Object.values(node.actorElements || {}).some(element => element && element.kind === 'image');
+        for (const key of hidden) {
+            const parts = [key, key + 'Label', key + 'Value'];
+            const band = parts.filter(part => result[part] && result[part].visible !== false).map(part => result[part]);
+            for (const part of parts) delete result[part];
+            if (!band.length || pictured) continue;
+            const top = Math.min(...band.map(r => r.y)), bottom = Math.max(...band.map(r => r.y + r.height));
+            const left = Math.min(...band.map(r => r.x)), right = Math.max(...band.map(r => r.x + r.width));
+            const below = Object.values(result).filter(r => r.y >= bottom - 1 && r.x < right && r.x + r.width > left);
+            const next = below.length ? Math.min(...below.map(r => r.y)) : bottom;
+            for (const r of below) r.y -= next - top;
+        }
+        for (const [key, element] of Object.entries(result)) {
+            if (key.startsWith('custom_') && ['gauge','value','label'].includes(element.kind) && off(element.gauge)) delete result[key];
         }
         return result;
     }
@@ -516,7 +579,8 @@ class DatabaseUserInterfaceEditor {
             merged.fontBold = !!merged.fontBold;
             merged.fontItalic = !!merged.fontItalic;
             merged.outlineColor = /^#[0-9a-f]{6}$/i.test(merged.outlineColor || '') ? merged.outlineColor : '';
-            merged.outlineWidth = merged.outline === false ? 0 : Math.min(32, Math.max(0, Math.round(Number(merged.outlineWidth)) || 0));
+            // Kept while Outline is off (the game draws none then), so ticking it again brings the width back.
+            merged.outlineWidth = Math.min(32, Math.max(0, Math.round(Number(merged.outlineWidth)) || 0));
             merged.letterSpacing = Math.min(100, Math.max(-20, Math.round(Number(merged.letterSpacing) || 0)));
             // Kept only when turned, so records that never turn save as before.
             const angle = Math.min(180, Math.max(-180, Math.round(Number(merged.angle) || 0)));
@@ -567,6 +631,7 @@ class DatabaseUserInterfaceEditor {
                 merged.nineSlice = !!merged.nineSlice && (merged.source === 'picture' || merged.source === 'system');
                 for (const key of ['sliceLeft', 'sliceTop', 'sliceRight', 'sliceBottom']) merged[key] = Math.min(9999, Math.max(0, Math.round(Number(merged[key]) || 0)));
             }
+            DatabaseUserInterfaceEditor.normalizePictureMotion(merged, type);
             if (type === 'list') {
                 merged.items = DatabaseUserInterfaceEditor.normalizeLiteralItems(merged.items);
                 if (!DatabaseUserInterfaceEditor.LIST_SOURCES.includes(merged.dataSource)) merged.dataSource = 'literal';
@@ -650,6 +715,7 @@ class DatabaseUserInterfaceEditor {
         this._victoryPage = 0;
         this._victoryPlay = null;
         this._victoryFollowed = 0;
+        this._motionPlay = null;
         this.container = container;
         this.skin = null;
         this.images.clear();
@@ -733,6 +799,7 @@ class DatabaseUserInterfaceEditor {
                                 <button type="button" class="rr-btn-chip rr-ui-victory-next" aria-label="${tt('Next page')}" title="${tt('Next page')}">›</button>
                                 <button type="button" class="rr-btn-chip rr-ui-victory-play" title="${this.escapeHTML(tt('Plays the page as the game does: the bars fill and the Level Up marks land.'))}">${tt('Play')}</button>
                             </span>
+                            <button type="button" class="rr-btn-chip rr-ui-motion-play" aria-pressed="false" title="${this.escapeHTML(tt('Plays every layer\'s motion on the canvas at the game\'s pace, from the moment the interface opens.'))}">${tt('Motion')}</button>
                             <button type="button" class="rr-btn-chip rr-ui-undo" title="Ctrl+Z">${tt('Undo')}</button>
                             <button type="button" class="rr-btn-chip rr-ui-redo" title="Ctrl+Y">${tt('Redo')}</button>
                             <label title="${this.escapeHTML(tt('The layout as the game shows it on that screen. The saved numbers stay as they are.'))}">${tt('Preview at')}
@@ -1050,10 +1117,23 @@ class DatabaseUserInterfaceEditor {
         return `<span>${this.escapeHTML(this._t('The game still shows its own {name}.').replace('{name}', label))}</span>`;
     }
 
+    /**
+     * The first builds bound the Tactical HUD under another System field, which the game still reads when the
+     * present one is 0. Before Use As changes a binding the old field is moved onto the present one, so that
+     * clearing or replacing it takes effect in the game.
+     */
+    adoptLegacyTacticalBinding(system) {
+        const hud = DatabaseUserInterfaceEditor.fightHud();
+        if (!hud || !system || !(hud.LEGACY_FIELD in system)) return;
+        if (!(Number(system[hud.FIELD]) > 0)) system[hud.FIELD] = hud.boundId(system);
+        delete system[hud.LEGACY_FIELD];
+    }
+
     clearReplacementRoles() {
         const system = this.replacementSystem();
         const id = Number(this.current && this.current.id) || 0;
         if (!system || !(id > 0)) return false;
+        this.adoptLegacyTacticalBinding(system);
         let changed = false;
         for (const [, , field] of DatabaseUserInterfaceEditor.REPLACEMENT_ROLES) {
             if (Number(system[field]) === id) {
@@ -1134,6 +1214,7 @@ class DatabaseUserInterfaceEditor {
         const system = this.replacementSystem();
         const id = Number(this.current && this.current.id) || 0;
         if (!definition || !system || !(id > 0)) return false;
+        this.adoptLegacyTacticalBinding(system);
         const field = definition[2];
         if (assigned) {
             if (!this.roleFitsMode(role)) return false;
@@ -1376,7 +1457,8 @@ class DatabaseUserInterfaceEditor {
     addNode(type) {
         this.pushUndo();
         const node = DatabaseUserInterfaceEditor.defaultNode(type, this.nextNodeId(this.current));
-        const screen = this.screenSize();
+        // The record's own size, not the Preview at frame: x and y are stored.
+        const screen = this.designSize();
         const selected = this.selected();
         if (selected && (selected.type === 'box' || selected.type === 'image')) {
             node.parent = selected.id;
@@ -1433,7 +1515,13 @@ class DatabaseUserInterfaceEditor {
         if (!node) return;
         const roots = this.selectedIds?.has(id) ? this.selectionRoots() : [node];
         const source = this.current.nodes.filter(candidate => roots.some(root => candidate === root || this.wouldCycle(root.id, candidate.id)));
-        const ids = new Map(source.map((candidate, index) => [candidate.id, this.nextNodeId(this.current) + index]));
+        // One free id at a time: the lowest free id plus an index ran into ids in use (two layers sharing one).
+        const assigned = new Set(), ids = new Map();
+        for (const candidate of source) {
+            const id = this.nextNodeId(this.current, assigned);
+            assigned.add(id);
+            ids.set(candidate.id, id);
+        }
         this.pushUndo();
         const copies = source.map(candidate => {
             const copy = JSON.parse(JSON.stringify(candidate));
@@ -1554,8 +1642,9 @@ class DatabaseUserInterfaceEditor {
         const insert = placement === 'inside' ? siblings.length : siblings.indexOf(target) + (placement === 'after' ? 1 : 0);
         siblings.splice(insert, 0, ...roots);
         if (roots.every(root => this.effectiveParent(root) === parent) && this.siblingsOf(roots[0]).every((item, i) => item === siblings[i])) return false;
-        const rects = this.rects();
-        const screen = this.screenSize();
+        // Measured at the design size: the offsets written below are stored.
+        const rects = this.rects({ design: true });
+        const screen = this.designSize();
         const parentRect = rects.get(parent) || { x: 0, y: 0, width: screen.width, height: screen.height };
         this.pushUndo();
         for (const root of roots) {
@@ -1607,10 +1696,11 @@ class DatabaseUserInterfaceEditor {
      * Where each node stands on the canvas. A Battle Window that follows the active actor stands where it is
      * drawn (drawBattleWindowNode): over the actor in the battle, or at the actor's row of the party panel, its
      * X and Y offsets from there, so its outline, handles and clicks are on the window shown. `raw`: as its
-     * anchor and parent alone would place it.
+     * anchor and parent alone would place it. `design`: against the design size even while Preview at shows
+     * another screen, for edits that write x and y into the record.
      */
-    rects({ raw = false } = {}) {
-        const screen = this.screenSize();
+    rects({ raw = false, design = false } = {}) {
+        const screen = design ? this.designSize() : this.screenSize();
         const root = { x: 0, y: 0, width: screen.width, height: screen.height };
         const rects = new Map();
         const resolve = (node, trail) => {
@@ -1647,6 +1737,8 @@ class DatabaseUserInterfaceEditor {
                 }
             }
         }
+        // Kept for the carry of a layer inside a moving or angled one (carryOf), which needs its ancestors' places.
+        this._lastRects = rects;
         return rects;
     }
 
@@ -1765,7 +1857,8 @@ class DatabaseUserInterfaceEditor {
         auto.textContent = this._t('First control');
         select.appendChild(auto);
         for (const node of this.current.nodes) {
-            if (node.type !== 'button' && node.type !== 'list') continue;
+            // Every control the game can focus, a Text Input included.
+            if (!DatabaseUserInterfaceEditor.isControl(node.type)) continue;
             const option = document.createElement('option');
             option.value = String(node.id);
             option.textContent = this.nodeLabel(node);
@@ -2153,6 +2246,7 @@ class DatabaseUserInterfaceEditor {
         const isSurface = node.type === 'box' || fightSurface || DatabaseUserInterfaceEditor.isControl(node.type);
         const isLabel = node.type === 'text' || node.type === 'button' || node.type === 'input';
         const colorFill = node.fill === 'color' || node.fill === 'gradient';
+        if (DatabaseUserInterfaceEditor.PICTURE_KEYS.fillImage.includes(node.type)) fills.push(['picture', tt('Picture')]);
         let html = '';
         html += `<div class="rr-ui-prop-title rr-ui-type-${node.type}">${this.typeLabel(node.rowLayout === 'actorPanel' ? 'actorPanel' : node.type)} #${node.id}</div>`;
         html += this.row(tt('Name'), this.textControl('p-name', node.name));
@@ -2168,7 +2262,9 @@ class DatabaseUserInterfaceEditor {
         html += `<div class="rr-ui-sub"${cursor ? ' hidden' : ''}>`;
         html += this.pair(tt('Width'), this.numberControl('p-width', node.width, 0, 9999), tt('Height'), this.numberControl('p-height', node.height, 0, 9999));
         html += '</div>';
-        if (DatabaseUserInterfaceEditor.TURNABLE_TYPES.includes(node.type)) html += this.row(tt('Angle'), this.numberControl('p-angle', DatabaseUserInterfaceEditor.angleOf(node), -180, 180));
+        const holds = node.type === 'box' || node.type === 'image';
+        if (DatabaseUserInterfaceEditor.TURNABLE_TYPES.includes(node.type)) html += this.row(tt('Angle'), this.numberControl('p-angle', DatabaseUserInterfaceEditor.angleOf(node), -180, 180),
+            holds ? tt('Layers inside this one are carried: they move, grow, turn and fade with it.') : '');
         if (node.type === 'text') html += this.hintRow(tt('Width or height 0 fits the text.'));
         html += this.row(tt('Opacity'), this.numberControl('p-opacity', node.opacity, 0, 255));
         html += this.row(tt('Visible'), this.conditionMarkup('p-visible', node.visible));
@@ -2185,6 +2281,7 @@ class DatabaseUserInterfaceEditor {
             html += this.pair(tt('Border'), this.numberControl('p-borderWidth', node.borderWidth, 0, 32), tt('Color'), this.colorControl('p-borderColor', node.borderColor));
             html += this.row(tt('Radius'), this.numberControl('p-radius', node.radius, 0, 200));
         }
+        html += this.picturePropertiesMarkup(node);
         if (isLabel) {
             html += this.group(node.type === 'button' ? tt('Label') : node.type === 'input' ? tt('Placeholder') : tt('Text'));
             if(node.type==='button') {
@@ -2377,6 +2474,7 @@ class DatabaseUserInterfaceEditor {
             html += this.row(tt('Float'), this.numberControl('p-floatRange', node.floatRange ?? 6, 0, 100));
             html += this.row('', this.checkControl('p-showName', node.showName !== false, tt('Show the target\'s name')));
             html += this.row(tt('Font size'), this.numberControl('p-fontSize', node.fontSize || 0, 0, 200), tt('0 uses the game default.'));
+            html += this.row(tt('Font face'), this.textControl('p-fontFace', node.fontFace || '', tt('Game font')), tt('Blank uses the game font.'));
             html += this.group(tt('Placement'));
             html += this.hintRow(tt('Offsets from the top center of the target. A positive Y moves it down.'));
             html += this.pair(`${tt('Enemy')} X`, this.numberControl('p-enemyOffsetX', node.enemyOffsetX || 0, -2000, 2000), `${tt('Enemy')} Y`, this.numberControl('p-enemyOffsetY', node.enemyOffsetY || 0, -2000, 2000));
@@ -2435,6 +2533,7 @@ class DatabaseUserInterfaceEditor {
                 [['0', tt('Cancel action')], ...this.focusOptions(node).slice(1)]), tt('Cancel on this control moves focus here instead of running the interface\'s Cancel action.'));
             if (node.type === 'list') html += this.row('', this.checkControl('p-focusable', node.focusable !== false, tt('Can be focused')));
         }
+        html += this.motionPropertiesMarkup(node);
         panel.innerHTML = html;
         this.drawGaugeStylePreview();
         this.mountFightIconFields(panel, node);
@@ -2448,13 +2547,17 @@ class DatabaseUserInterfaceEditor {
         const openTitles = ['Label', 'Text', 'Image', 'Rows', 'Actor Panel', 'Gauge', 'Behavior', 'Battle Window', 'Commands', 'Target Cursor', 'Placement',
             'Party Experience', 'Level Up', 'Rewards', 'Victory Text', 'Victory'].map(title => this._t(title));
         openTitles.push(`${this._t('Text')} ${this._t('Style')}`);
+        // Picture is open where it is the node's look, Motion where the node moves; elsewhere they stay folded.
+        const shown = this.selectedNodes().length === 1 ? this.selected() : null;
+        if (shown && (shown.fill === 'picture' || shown.rowImage || shown.gaugeImage || shown.gaugeBackImage)) openTitles.push(this._t('Picture'));
+        const usedCard = shown && shown.motion ? this._t('Motion') : null;
         const headings = [...panel.children].filter(el => el.classList.contains('rr-ui-group'));
         for (const heading of headings) {
             const name = heading.textContent;
             const section = doc.createElement('details');
             section.className = 'rr-ui-property-section';
             section.dataset.section = name;
-            section.open = this._propertySections?.[name] ?? openTitles.includes(name);
+            section.open = this._propertySections?.[name] ?? (openTitles.includes(name) || name === usedCard);
             const summary = doc.createElement('summary');
             summary.textContent = name;
             const body = doc.createElement('div');
@@ -2521,12 +2624,13 @@ class DatabaseUserInterfaceEditor {
         if (reparent || reanchor) {
             // A new parent or anchor changes what x/y are measured from;
             // keep the node where it is on screen and re-express the offset.
-            const before = this.rects({ raw: true }).get(node.id);
+            // Measured at the design size, whatever Preview at shows.
+            const before = this.rects({ raw: true, design: true }).get(node.id);
             if (reparent) node.parent = parent;
             if (reanchor) node.anchor = anchor;
             if (before) {
-                const screen = this.screenSize();
-                const parentRect = this.rects({ raw: true }).get(node.parent) || { x: 0, y: 0, width: screen.width, height: screen.height };
+                const screen = this.designSize();
+                const parentRect = this.rects({ raw: true, design: true }).get(node.parent) || { x: 0, y: 0, width: screen.width, height: screen.height };
                 const [ax, ay] = DatabaseUserInterfaceEditor.ANCHORS[node.anchor];
                 node.x = Math.round(before.x - (parentRect.x + parentRect.width * ax - before.width * ax));
                 node.y = Math.round(before.y - (parentRect.y + parentRect.height * ay - before.height * ay));
@@ -2585,6 +2689,8 @@ class DatabaseUserInterfaceEditor {
             node.fontFace = q('p-fontFace').value.trim();
             node.fontBold = q('p-fontBold').checked;
             node.fontItalic = q('p-fontItalic').checked;
+            // Ticking Outline with a width of 0 gives the stock width: the game draws no outline at 0.
+            if (q('p-outline').checked && !node.outline && !(num('p-outlineWidth', 0, 32, node.outlineWidth) > 0)) q('p-outlineWidth').value = 3;
             node.outline = q('p-outline').checked;
             node.outlineColor = optionalColor('p-outlineColor');
             node.outlineWidth = num('p-outlineWidth', 0, 32, node.outlineWidth);
@@ -2619,7 +2725,10 @@ class DatabaseUserInterfaceEditor {
             if (q('p-portraitSize')) node.portraitSize = num('p-portraitSize', 32, 144, 144);
             if (q('p-actorPadding')) node.actorPadding = num('p-actorPadding', 0, 200, 12);
             if (q('p-actorGap')) node.actorGap = num('p-actorGap', 0, 200, 4);
-            if (oldLayout === 'actorPanel') node.actorFields = ['portrait','name','class','level','hp','mp','tp','exp','states','atb'].filter(key => q('p-actorField-' + key)?.checked);
+            // Only from a panel that shows the part checkboxes: a pick fires
+            // change and then input, and the second arrives after the layout
+            // became Actor Panel but before the Text panel is redrawn.
+            if (oldLayout === 'actorPanel' && q('p-actorField-portrait')) node.actorFields =['portrait','name','class','level','hp','mp','tp','exp','states','atb'].filter(key => q('p-actorField-' + key)?.checked);
             if (q('p-portraitSource')) {
                 node.portraitSource = q('p-portraitSource').value;
                 node.portraitPattern = q('p-portraitPattern').value.trim() || 'Face_{id}';
@@ -2645,6 +2754,8 @@ class DatabaseUserInterfaceEditor {
             node.fontFace = q('p-fontFace').value.trim();
             node.fontBold = q('p-fontBold').checked;
             node.fontItalic = q('p-fontItalic').checked;
+            // Ticking Outline with a width of 0 gives the stock width: the game draws no outline at 0.
+            if (q('p-outline').checked && !node.outline && !(num('p-outlineWidth', 0, 32, node.outlineWidth) > 0)) q('p-outlineWidth').value = 3;
             node.outline = q('p-outline').checked;
             node.outlineColor = optionalColor('p-outlineColor');
             node.outlineWidth = num('p-outlineWidth', 0, 32, node.outlineWidth);
@@ -2700,6 +2811,7 @@ class DatabaseUserInterfaceEditor {
             node.actorFile = q('p-actorFile').value.trim();
             node.cursorSlide = q('p-cursorSlide').checked;
             node.fontSize = num('p-fontSize', 0, 200, 0);
+            node.fontFace = q('p-fontFace').value.trim();
             for (const key of ['enemyOffsetX', 'enemyOffsetY', 'actorOffsetX', 'actorOffsetY']) node[key] = num('p-' + key, -2000, 2000, 0);
         }
         if (node.type === 'gauge') {
@@ -2742,6 +2854,8 @@ class DatabaseUserInterfaceEditor {
             const se = q('p-se').value.trim();
             node.se = se ? Object.assign({ name: se, volume: 90, pitch: 100, pan: 0 }, node.se || {}, { name: se }) : null;
         }
+        this.applyPictureProperties(node, q, num, panel, changedElement);
+        this.applyMotionProperties(node, q, panel);
         this.touch();
         if (changedElement && (changedElement.classList.contains('p-name') || changedElement.classList.contains('p-text') || changedElement.classList.contains('p-file') || changedElement.classList.contains('p-gauge') || changedElement.classList.contains('p-label') || changedElement.classList.contains('p-dataSource'))) {
             this.renderTree();
@@ -2947,6 +3061,7 @@ class DatabaseUserInterfaceEditor {
         q('.rr-ui-victory-prev').addEventListener('click', () => this.stepVictoryPage(-1));
         q('.rr-ui-victory-next').addEventListener('click', () => this.stepVictoryPage(1));
         q('.rr-ui-victory-play').addEventListener('click', () => this.playVictoryPage());
+        q('.rr-ui-motion-play').addEventListener('click', () => this.toggleMotionPlay());
         q('.rr-ui-undo').addEventListener('click', () => this.undo());
         q('.rr-ui-redo').addEventListener('click', () => this.redo());
         q('.rr-ui-snap').addEventListener('change', event => { this.snap = event.target.checked; });
@@ -2981,7 +3096,9 @@ class DatabaseUserInterfaceEditor {
                 node.actorElements ||= {}; node.actorElements[key] ||= {};
                 const oldShape=node.actorElements[key].shape || 'rectangle';
                 node.actorElements[key][prop]=value;
-                if(prop==='shape' && value==='circular' && oldShape!=='circular') {
+                // A cleared Text goes back to the game default, as the field says: a stored '' would draw nothing.
+                if(prop==='text' && value==='' && !key.startsWith('custom_')) delete node.actorElements[key].text;
+                if(prop==='shape'&& value==='circular' && oldShape!=='circular') {
                     const previousHeight=node.actorElements[key].height || 6;
                     node.actorElements[key].width=node.actorElements[key].height=80;
                     if(!key.startsWith('custom_')) node.rowHeight+=Math.max(0,80-previousHeight);
@@ -3021,6 +3138,7 @@ class DatabaseUserInterfaceEditor {
             if(event.target.classList.contains('p-element-remove')) {this.pushUndo();delete this.selected().actorElements[this._actorElementKey];this.touch();this.renderProperties();this.scheduleRender();}
             if(event.target.classList.contains('rr-ui-expand-script')) this.expandScript(event.target.parentElement.querySelector('textarea'));
             if (event.target.classList.contains('p-browse')) this.browseImage();
+            if (event.target.classList.contains('p-picture-browse')) this.browsePicture(event.target.dataset.pictureKey);
             if (event.target.classList.contains('p-se-browse')) this.browseSe();
             const commandButton = event.target.closest('[data-cmd-action]');
             if (commandButton && this.selected()) this.editBattleCommands(commandButton.dataset.cmdAction, Number(commandButton.dataset.index));
@@ -3054,8 +3172,9 @@ class DatabaseUserInterfaceEditor {
             if (selected && this.selectedNodes().length === 1 && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
                 const handle = this.handleAt(rects.get(selected.id), point, selected);
                 if (handle) {
-                    this.pushUndo();
-                    this.drag = { kind: 'resize', handle, node: selected, start: point, origin: { x: selected.x, y: selected.y, width: selected.width, height: selected.height }, rect: rects.get(selected.id) };
+                    // The undo step is taken now and kept only once the drag changes something
+                    // (see mousemove): a click alone must not add a step or empty Redo.
+                    this.drag = { kind: 'resize', handle, node: selected, start: point, origin: { x: selected.x, y: selected.y, width: selected.width, height: selected.height }, rect: rects.get(selected.id), before: this.snapshot(), changed: false };
                     event.preventDefault();
                     return;
                 }
@@ -3068,11 +3187,10 @@ class DatabaseUserInterfaceEditor {
                     return;
                 }
                 if (!this.selectedNodes().includes(hit)) this.select(hit.id);
-                this.pushUndo();
                 const roots = this.selectionRoots();
                 const primary = roots.includes(hit) ? hit : roots[0];
                 this.drag = { kind: 'move', node: primary, start: point, origin: { x: primary.x, y: primary.y },
-                    origins: roots.map(node => ({ node, x: node.x, y: node.y })), moved: false };
+                    origins: roots.map(node => ({ node, x: node.x, y: node.y })), before: this.snapshot(), changed: false };
             } else if (this.selectedId) {
                 this.select(0);
             }
@@ -3080,7 +3198,9 @@ class DatabaseUserInterfaceEditor {
         });
         window.addEventListener('mousemove', this._onMouseMove = event => {
             if (!this.drag) {
-                if (this.wrapper && this.wrapper.isConnected) this.updateCursor(toCanvas(event));
+                // The cursor is the canvas's own: a move anywhere else (this listener hears every editor
+                // window) has nothing to set, and finding it lays out every text of the interface.
+                if (event.target === canvas && this.wrapper && this.wrapper.isConnected) this.updateCursor(toCanvas(event));
                 return;
             }
             const point = toCanvas(event);
@@ -3089,11 +3209,20 @@ class DatabaseUserInterfaceEditor {
             const snap = value => this.snap && !event.altKey ? Math.round(value / DatabaseUserInterfaceEditor.GRID) * DatabaseUserInterfaceEditor.GRID : Math.round(value);
             const node = this.drag.node;
             if (this.drag.kind === 'move') {
-                this.translateSelection(snap(this.drag.origin.x + dx) - this.drag.origin.x,
-                    snap(this.drag.origin.y + dy) - this.drag.origin.y, this.drag.origins);
-                this.drag.moved = true;
+                // Inside a moving or angled layer the drag is read in that layer's frame, so the node stays under the pointer.
+                const moved = this.dragDelta(node, dx, dy);
+                this.translateSelection(snap(this.drag.origin.x + moved.x) - this.drag.origin.x,
+                    snap(this.drag.origin.y + moved.y) - this.drag.origin.y, this.drag.origins);
             } else {
                 this.resizeTurned(node, this.drag, dx, dy, snap);
+            }
+            if (!this.drag.changed) {
+                // Still where it was at mousedown (a click, or a move the grid snapped away): nothing to record.
+                if (Object.keys(this.drag.origin).every(key => node[key] === this.drag.origin[key])) return;
+                this.drag.changed = true;
+                this.undoStack.push(this.drag.before);
+                if (this.undoStack.length > 100) this.undoStack.shift();
+                this.redoStack = [];
             }
             this.touch();
             this.syncPositionFields(node);
@@ -3101,7 +3230,6 @@ class DatabaseUserInterfaceEditor {
         });
         window.addEventListener('mouseup', this._onMouseUp = () => {
             if (!this.drag) return;
-            if (this.drag.kind === 'move' && !this.drag.moved) this.undoStack.pop();
             this.drag = null;
         });
         this.followLanguage();
@@ -3189,6 +3317,7 @@ class DatabaseUserInterfaceEditor {
         if (this._captureTimer) clearTimeout(this._captureTimer);
         if (this._resizeObserver) this._resizeObserver.disconnect();
         this.captureInFlight = false;
+        this._motionPlay = null;
         this._layerDragId = 0;
         this._onMouseMove = this._onMouseUp = this._onRoleOutside = this._onLanguage = this._resizeObserver = this._captureTimer = null;
     }
@@ -3212,16 +3341,27 @@ class DatabaseUserInterfaceEditor {
         set('p-height', node.height);
     }
 
+    /**
+     * A drag on the canvas as a movement in the frame the node is laid out in: inside a moving or angled layer
+     * that frame is turned and grown with it, so the node follows the pointer.
+     */
+    dragDelta(node, dx, dy) {
+        const carry = this.carryOf(node);
+        return carry ? DatabaseUserInterfaceEditor.motionApi().carryDeltaBack(carry, dx, dy, {}) : { x: dx, y: dy };
+    }
+
     /** Resizes in the node's own frame; a turned node keeps the opposite handle where it was on the canvas. */
     resizeTurned(node, drag, dx, dy, snap) {
         const angle = DatabaseUserInterfaceEditor.angleOf(node);
+        ({ x: dx, y: dy } = this.dragDelta(node, dx, dy));
         if (!angle) return this.applyResize(node, drag, dx, dy, snap);
         const a = -angle * Math.PI / 180;
         this.applyResize(node, drag, dx * Math.cos(a) - dy * Math.sin(a), dx * Math.sin(a) + dy * Math.cos(a), snap);
         const opposite = drag.handle.replace(/[nsew]/g, side => ({ n: 's', s: 'n', e: 'w', w: 'e' })[side]);
+        // Measured in the frame the node is laid out in (its own Angle alone), which is what x and y are written in.
         const at = rect => {
             const [, x, y] = this.handles(rect).find(entry => entry[0] === opposite);
-            return this.turnedPoint(node, rect, { x, y });
+            return this.ownTurnedPoint(node, rect, { x, y });
         };
         const after = this.rects().get(node.id);
         if (!after) return;
@@ -3260,8 +3400,46 @@ class DatabaseUserInterfaceEditor {
         node.y = Math.round(y);
     }
 
-    /** A canvas point in a node's own frame: its Angle undone about the rect's center. */
+    /**
+     * The carry of a layer: what the layers it stands inside do to it. An ancestor's Angle always carries; its
+     * motion carries while Motion plays. Null when nothing carries it. The same sum the game makes (carryInto).
+     */
+    carryOf(node, rects = this._lastRects) {
+        const api = DatabaseUserInterfaceEditor.motionApi();
+        if (!api || !node || !rects || !(node.parent > 0) || !this.current) return null;
+        const chain = [], limit = this.current.nodes.length;
+        let parent = this.node(node.parent), steps = 0;
+        for (; parent && parent !== node && steps <= limit; parent = this.node(parent.parent), steps++) {
+            const rect = rects.get(parent.id);
+            // The game carries by a node's window, and a node without a size has none.
+            if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+            const angle = DatabaseUserInterfaceEditor.angleOf(parent);
+            const motion = this._motionPlay ? this.motionOf(parent) : null;
+            const pose = motion && api.traits(motion).moves ? this.motionPose(parent) : null;
+            if (angle || pose) chain.unshift({ rect, angle, pose });
+        }
+        // Parents that lead back to the node, or round in a ring, carry nothing: the layout roots such a node on the screen.
+        if (!chain.length || parent === node || steps > limit) return null;
+        const carry = api.newCarry();
+        for (const { rect, angle, pose } of chain) {
+            api.carryInto(carry, rect.x + rect.width / 2, rect.y + rect.height / 2, pose ? pose.dx : 0, pose ? pose.dy : 0,
+                pose ? pose.scale : 1, angle + (pose ? pose.turn : 0), pose ? pose.alpha : 1);
+        }
+        return carry;
+    }
+
+    /** Draws from here as the layers this one stands inside carry it. */
+    carryContext(node, fade = true) {
+        const carry = this.carryOf(node);
+        if (!carry) return;
+        this.ctx.transform(carry.a, carry.b, -carry.b, carry.a, carry.tx, carry.ty);
+        if (fade) this.ctx.globalAlpha *= carry.alpha;
+    }
+
+    /** A canvas point in a node's own frame: what carries it undone, then its Angle undone about the rect's center. */
     localPoint(node, rect, point) {
+        const carry = this.carryOf(node);
+        if (carry) point = DatabaseUserInterfaceEditor.motionApi().carryBack(carry, point.x, point.y, {});
         const angle = DatabaseUserInterfaceEditor.angleOf(node);
         if (!angle || !rect) return point;
         const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
@@ -3269,8 +3447,15 @@ class DatabaseUserInterfaceEditor {
         return { x: cx + dx * Math.cos(a) - dy * Math.sin(a), y: cy + dx * Math.sin(a) + dy * Math.cos(a) };
     }
 
-    /** Where a point of a node's own frame lands on the canvas once its Angle turns it. */
+    /** Where a point of a node's own frame lands on the canvas: turned by its Angle, then carried by the layers it stands inside. */
     turnedPoint(node, rect, point) {
+        const own = this.ownTurnedPoint(node, rect, point);
+        const carry = this.carryOf(node);
+        return carry ? DatabaseUserInterfaceEditor.motionApi().carryPoint(carry, own.x, own.y, {}) : own;
+    }
+
+    /** A point of a node's own frame turned by its Angle alone: where it is in the frame the node is laid out in. */
+    ownTurnedPoint(node, rect, point) {
         const angle = DatabaseUserInterfaceEditor.angleOf(node);
         if (!angle || !rect) return point;
         const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
@@ -3324,11 +3509,12 @@ class DatabaseUserInterfaceEditor {
     updateCursor(point) {
         const selected = this.selected();
         let cursor = 'default';
+        const rects = this.rects();
         if (selected && this.selectedNodes().length === 1) {
-            const handle = this.handleAt(this.rects().get(selected.id), point, selected);
+            const handle = this.handleAt(rects.get(selected.id), point, selected);
             if (handle) cursor = { n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize', ne: 'nesw-resize', sw: 'nesw-resize', nw: 'nwse-resize', se: 'nwse-resize' }[handle];
         }
-        if (cursor === 'default' && this.nodeAt(this.rects(), point)) cursor = 'move';
+        if (cursor === 'default' && this.nodeAt(rects, point)) cursor = 'move';
         this.canvas.style.cursor = cursor;
     }
 
@@ -3374,7 +3560,7 @@ class DatabaseUserInterfaceEditor {
     browseSe() {
         const node = this.selected();
         const project = this.project();
-        if (!node || (node.type !== 'button' && node.type !== 'list' && node.type !== 'victoryParty') || !project || !project.path) return;
+        if (!node || (!DatabaseUserInterfaceEditor.isControl(node.type) && node.type !== 'victoryParty') || !project || !project.path) return;
         if (typeof RRAudioPickerModal === 'undefined' || typeof RRAssetFiles === 'undefined') return;
         const path = require('path');
         const sePath = path.join(project.path, 'audio', 'se');
@@ -3840,6 +4026,9 @@ class DatabaseUserInterfaceEditor {
         const project = this.project();
         const manager = this.parentEditor && this.parentEditor.playtestManager;
         if (!project || !project.path || !manager) return;
+        // The game reads the record from UserInterfaces.json, which a project
+        // still on its seeded baselines has not been given yet.
+        this.databaseManager.writeSeededInterfaces = true;
         try {
             if (window.reactor && window.reactor.projectController && window.reactor.projectController.saveAll) {
                 const saved = await window.reactor.projectController.saveAll();
@@ -4129,7 +4318,6 @@ class DatabaseUserInterfaceEditor {
 
     /** Splits text into drawable runs: {text, color, size, icon}. `scale` shrinks the base font (Fit text to size). */
     parseText(node, scale = 1) {
-        const ctx = this.ctx;
         const baseSize = scale < 1 ? Math.max(DatabaseUserInterfaceEditor.MIN_FONT_SIZE, Math.round(this.fontSize(node) * scale)) : this.fontSize(node);
         const baseColor = typeof node.textColor === 'string' ? node.textColor : this.skinColor(node.textColor || 0);
         const actors = (this.databaseManager.data && this.databaseManager.data.actors) || [];
@@ -4137,11 +4325,11 @@ class DatabaseUserInterfaceEditor {
         let text = String(node.text || '');
         text = text.replace(/\\\\/g, '\u0000');
         const context = this.previewContext(node);
-        text = text.replace(/\{context\.(key|kind|id|value|name|description|icon|iconIndex|count|playtime|index|paramName|paramValue|price|level|symbol|valueText|title|timestamp|date|partyCharacters|partyFaces|existing|enabled)\}/gi,
+        text = text.replace(/\{context\.(key|kind|id|value|name|description|icon|iconIndex|count|playtime|index|paramName|paramValue|price|level|symbol|valueText|title|timestamp|date|partyCharacters|partyFaces|existing|enabled|cost|slot|newValue|change)\}/gi,
             (match, token) => {
                 if (!context) return '';
                 const field = { iconindex: 'iconIndex', paramname: 'paramName', paramvalue: 'paramValue', valuetext: 'valueText',
-                    partycharacters: 'partyCharacters', partyfaces: 'partyFaces' }[token.toLowerCase()] || token.toLowerCase();
+                    partycharacters: 'partyCharacters', partyfaces: 'partyFaces', newvalue: 'newValue' }[token.toLowerCase()] || token.toLowerCase();
                 return String(context[field] ?? '');
             });
         text = text.replace(/\{actor\.(name|nickname|class|level|profile|hp|mp|tp|mhp|maxHp|mmp|maxMp|maxTp|currentExp|totalExp|nextExp|nextRequiredExp|atk|def|mat|mdf|agi|luk)\}/gi,
@@ -4186,13 +4374,11 @@ class DatabaseUserInterfaceEditor {
             for (const run of line.runs) tallest = Math.max(tallest, run.size || 0);
             line.height = tallest + spacing;
         }
-        void ctx;
         return wrapped;
     }
 
     /** Greedy word wrap over styled runs; measured with the same font. */
-    wrapRuns(lines, maxWidth) {
-        const node = arguments[2];
+    wrapRuns(lines, maxWidth, node) {
         const ctx = this.ctx;
         const width = token => {
             if (token.icon !== undefined) return 36;
@@ -4431,7 +4617,7 @@ class DatabaseUserInterfaceEditor {
     }
 
     drawSelection(node, rect) {
-        if (!node._previewFocused || node.focusedFillColor) return;
+        if (!node._previewFocused || node.focusedFillColor || (node.fill === 'picture' && node.focusedImage)) return;
         const skin = this.skin && this.skin.image;
         const pad = node.fill === 'window' ? this.windowPadding() : 0;
         const x = rect.x + pad, y = rect.y + pad;
@@ -4471,6 +4657,8 @@ class DatabaseUserInterfaceEditor {
             }
             ctx.fillRect(x, y, w, h);
             ctx.restore();
+        } else if (node.fill === 'picture') {
+            this.drawPictureFill(node, rect);
         }
         if (node.borderWidth > 0) {
             const inset = node.borderWidth / 2;
@@ -4482,18 +4670,6 @@ class DatabaseUserInterfaceEditor {
         ctx.restore();
     }
 
-    /**
-     * A Battle Window is the stock window's stand-in: its skin (or a dashed
-     * outline without one) and the window's name. One that follows the
-     * active actor is drawn over the first party row it would follow.
-     */
-    /**
-     * A Battle Window as a battle shows it while the party chooses: the
-     * actor command window, skinned and listing the commands, over the first
-     * actor's row. Every other window only appears once opened, so it is a
-     * dashed outline with its name (faint when hidden); a game view (the
-     * troop preview) leaves those out.
-     */
     /** The Commands group: the stock list until customized, then one editable row per command. */
     battleCommandsMarkup(node, kinds) {
         const tt = text => this._t(text);
@@ -4559,7 +4735,7 @@ class DatabaseUserInterfaceEditor {
         const fresh = kind => ({ kind, label: '', id: kind === 'skillType' || kind === 'skill' || kind === 'commonEvent' ? 1 : 0, knownOnly: true });
         if (action === 'customize') node.commands = DatabaseUserInterfaceEditor.stockBattleCommands(node.battleWindow).map(fresh);
         else if (action === 'stock') node.commands = [];
-        else if (action === 'add') list.push(fresh(node.battleWindow === 'partyCommand' ? 'escape' : 'escape'));
+        else if (action === 'add') list.push(fresh('escape'));
         else if (action === 'remove') list.splice(index, 1);
         else if (action === 'up' && index > 0) list.splice(index - 1, 0, list.splice(index, 1)[0]);
         else if (action === 'down' && index < list.length - 1) list.splice(index + 1, 0, list.splice(index, 1)[0]);
@@ -4597,6 +4773,13 @@ class DatabaseUserInterfaceEditor {
         return null;
     }
 
+    /**
+     * A Battle Window as a battle shows it while the party chooses: the
+     * actor command window, skinned and listing the commands, over the first
+     * actor's row. Every other window only appears once opened, so it is a
+     * dashed outline with its name (faint when hidden); a game view (the
+     * troop preview) leaves those out.
+     */
     drawBattleWindowNode(node, rect) {
         const ctx = this.ctx;
         let r = rect;
@@ -4680,7 +4863,6 @@ class DatabaseUserInterfaceEditor {
         ctx.restore();
     }
 
-    /** Skills an actor knows at their starting level: learned by their class, or added by a trait (43). */
     /** A skill's cost as the game's skill list prints it: TP first, then MP; a pool the project turned off costs nothing. */
     previewSkillCost(skill) {
         const system = this.databaseManager && this.databaseManager.data ? this.databaseManager.data.system : null;
@@ -4689,6 +4871,7 @@ class DatabaseUserInterfaceEditor {
         return tp > 0 ? `\\C[29]${tp}\\C[0]` : mp > 0 ? `\\C[23]${mp}\\C[0]` : '';
     }
 
+    /** Skills an actor knows at their starting level: learned by their class, or added by a trait (43). */
     previewKnownSkills(actor) {
         const data = (this.databaseManager && this.databaseManager.data) || {};
         const klass = actor && data.classes ? data.classes[actor.classId] : null;
@@ -4779,7 +4962,7 @@ class DatabaseUserInterfaceEditor {
         let html = this.group(this.typeLabel(node.type));
         for (const [key, kind, name, , a, b] of hud.SETTINGS[node.type]) {
             // MP and TP are the game's own abbreviations, shown as they are.
-            const label = /^[A-Z]{2,3}$/.test(name) ? name : name;
+            const label = name;
             if (kind === 'check') html += this.row('', this.checkControl('p-action-' + key, !!node[key], /^[A-Z]{2,3}$/.test(name) ? name : tt(name)));
             else if (kind === 'number') html += this.row(tt(label), this.numberControl('p-action-' + key, node[key], a, b));
             else if (kind === 'color') html += this.row(tt(label), this.colorControl('p-action-' + key, node[key]));
@@ -4792,6 +4975,7 @@ class DatabaseUserInterfaceEditor {
             html += this.pair(tt('Align'), this.selectControl('p-align', node.align || 'left', [['left', tt('Left')], ['center', tt('Center')], ['right', tt('Right')]]),
                 tt('Size'), this.numberControl('p-fontSize', node.fontSize || 0, 0, 200));
             html += this.row(tt('Color'), this.textColorControl('p-textColor', node.textColor));
+            html += this.row('', this.checkControl('p-fontBold', !!node.fontBold, tt('Bold')));
         }
         const words = { actionWeapon: ['reloading'], actionInfo: ['defeated'] }[node.type];
         if (words) {
@@ -4820,6 +5004,7 @@ class DatabaseUserInterfaceEditor {
             node.align = q('p-align').value;
             node.fontSize = num('p-fontSize', 0, 200, 0);
             node.textColor = DatabaseUserInterfaceEditor.parseTextColor(q('p-textColor').value);
+            node.fontBold = q('p-fontBold').checked;
         }
         Object.assign(node, hud.normalizeProps(Object.assign({}, node, { actionLabels: labels }), node.type));
     }
@@ -4895,7 +5080,11 @@ class DatabaseUserInterfaceEditor {
         ctx.rect(inner.x, inner.y, inner.width, inner.height);
         ctx.clip();
         ctx.translate(inner.x, inner.y);
-        if (node.type === 'actionVitals') hud.drawVitals(ctx, inner.width, inner.height, node, data, sample.unit, theme);
+        if (node.type === 'actionVitals') {
+            // The project's System, for the MP and TP gauges it turned off (the shared file reads the game's otherwise).
+            hud.system = (this.databaseManager && this.databaseManager.data && this.databaseManager.data.system) || null;
+            try { hud.drawVitals(ctx, inner.width, inner.height, node, data, sample.unit, theme); } finally { hud.system = null; }
+        }
         else if (node.type === 'actionWeapon') hud.drawWeapon(ctx, inner.width, inner.height, node, data, theme, sample.extra);
         else if (node.type === 'actionHotbar') hud.drawHotbar(ctx, inner.width, inner.height, node, data, theme, sample.extra);
         else if (node.type === 'actionTarget') hud.drawTarget(ctx, inner.width, inner.height, node, data, theme);
@@ -5030,7 +5219,8 @@ class DatabaseUserInterfaceEditor {
         // Every page before it is passed with OK; the page itself is played to the frame Play has reached, else shown at rest.
         for (let guard = 0; run.index < this._victoryPage && guard < 4096; guard++) hud.step(run, { ok: true });
         const frames = playing ? Math.floor((Date.now() - playing.start) / (1000 / 60)) : Infinity;
-        if (frames === Infinity) { if (hud.isFilling(run)) hud.step(run, { ok: true }); }
+        // Opening a page locks input for a moment; cleared again, or the OK that fills the page at rest is swallowed.
+        if (frames === Infinity) { run.lock = 0; if (hud.isFilling(run)) hud.step(run, { ok: true }); }
         else for (let frame = 0; frame < frames && hud.isAnimating(run); frame++) hud.step(run, idle);
         if (playing && !hud.isAnimating(run)) this._victoryPlay = null;
         this._victoryPreview = { hud, summary, pages, run, page: pages[this._victoryPage], playing: !!this._victoryPlay };
@@ -5376,7 +5566,7 @@ class DatabaseUserInterfaceEditor {
             html += this.row(tt('Gauges'), this.selectControl('p-gaugeStyle', node.gaugeStyle || 'clipped', [['clipped', tt('Clipped corners')], ['bar', tt('Thin bar')]]));
             html += this.row(tt('Portrait size'), this.numberControl('p-fightPortrait', node.fightPortrait || 0, 0, 512), tt('0 fits the panel. A unit shows its face, else a portrait of its model, else its map sprite or battle picture, else its initials.'));
             html += teamColors();
-            html += words([...hud.STATS, 'hit', 'critical', 'damage', 'heal', 'defeats', 'halfCover', 'fullCover', 'side', 'back', 'highGround', 'lowGround', 'targets']);
+            html += words([...hud.STATS, 'hit', 'critical', 'damage', 'heal', 'defeats', 'halfCover', 'fullCover', 'side', 'back', 'highGround', 'lowGround', 'targets', 'watch']);
         } else if (node.type === 'fightTurnOrder') {
             html += this.group(tt('Turn Order'));
             html += this.pair(tt('Box size'), this.numberControl('p-cellSize', node.cellSize || 0, 0, 256), tt('Gap'), this.numberControl('p-cellGap', node.cellGap ?? 6, 0, 64));
@@ -5399,7 +5589,7 @@ class DatabaseUserInterfaceEditor {
                 + this.row(`${tt('Duration')} (${tt('Frames')})`, this.numberControl('p-bannerFrames', node.bannerFrames || 90, 10, 600), tt('Shown each time the turn passes to a side, in that side\'s color.'))
                 + teamColors() + '</div>';
             const keys = { turn: ['turn', 'allyPhase', 'enemyPhase'], phase: ['allyPhase', 'enemyPhase'],
-                hint: ['hintUnit', 'hintMove', 'hintCommand', 'hintTarget', 'hintEnemy', 'whyAttack', 'whySkill', 'whyItem', 'whyCost', 'whyUse', 'whyRange', 'whyNoTarget'] }[node.fightInfo];
+                hint: ['hintUnit', 'hintMove', 'hintCommand', 'hintTarget', 'hintEnemy', 'hintAlly', 'whyAttack', 'whySkill', 'whyItem', 'whyCost', 'whyUse', 'whyRange', 'whyNoTarget', 'whyNoReach'] }[node.fightInfo];
             if (keys) html += words(keys);
         } else if (node.type === 'fightWindow') {
             html += this.group(tt('Tactical Window'));
@@ -5617,9 +5807,13 @@ class DatabaseUserInterfaceEditor {
         if (node.type === 'fightUnit') {
             const unit = hud.panelUnit(node, reader);
             if (unit) {
-                const view = hud.fillUnitView(hud.newUnitView(), reader, unit, system.optDisplayTp !== false, node.fightUnit === 'focused' ? reader.preview(unit) : null);
-                if (view.preview) view.area = hud.areaSummary(reader, unit, {});
-                hud.drawUnit(ctx, width, height, node, view, theme);
+                // The project's System, for the MP and TP gauges it turned off (the shared file reads the game's otherwise).
+                hud.system = system;
+                try {
+                    const view = hud.fillUnitView(hud.newUnitView(), reader, unit, system.optDisplayTp !== false && !hud.poolOff('tp'), node.fightUnit === 'focused' ? reader.preview(unit) : null);
+                    if (view.preview) view.area = hud.areaSummary(reader, unit, {});
+                    hud.drawUnit(ctx, width, height, node, view, theme);
+                } finally { hud.system = null; }
             }
         } else if (node.type === 'fightTurnOrder') {
             const view = hud.newUnitView();
@@ -5783,8 +5977,10 @@ class DatabaseUserInterfaceEditor {
         const copy = Object.assign({}, node);
         let opacity = 255;
         let offsetX = 0, offsetY = 0;
+        // A picture fill shows its state's picture; the state fill colours belong to the other fills.
+        const pictured = node.fill === 'picture';
         if (state === 'focused') {
-            if (node.focusedFillColor) Object.assign(copy, { fill: 'color', color: node.focusedFillColor, color2: node.focusedFillColor });
+            if (node.focusedFillColor && !pictured) Object.assign(copy, { fill: 'color', color: node.focusedFillColor, color2: node.focusedFillColor });
             if (node.focusedTextColor) copy.textColor = node.focusedTextColor;
             if (node.focusedBorderColor) Object.assign(copy, { borderColor: node.focusedBorderColor, borderWidth: Math.max(2, node.borderWidth) });
             opacity = node.focusedOpacity === '' ? 255 : node.focusedOpacity;
@@ -5793,11 +5989,12 @@ class DatabaseUserInterfaceEditor {
             offsetX = node.pressedOffsetX;
             offsetY = node.pressedOffsetY;
         } else if (state === 'disabled') {
-            if (node.disabledFillColor) Object.assign(copy, { fill: 'color', color: node.disabledFillColor, color2: node.disabledFillColor });
+            if (node.disabledFillColor && !pictured) Object.assign(copy, { fill: 'color', color: node.disabledFillColor, color2: node.disabledFillColor });
             if (node.disabledTextColor) copy.textColor = node.disabledTextColor;
             opacity = node.disabledOpacity === '' ? 160 : node.disabledOpacity;
         }
         copy._previewFocused = state === 'focused';
+        copy._previewState = state;
         return { node: copy, state, opacity, offsetX, offsetY };
     }
 
@@ -5938,9 +6135,12 @@ class DatabaseUserInterfaceEditor {
                 this.ctx.strokeStyle = 'rgba(32,32,32,0.5)';
                 this.ctx.strokeRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height);
             }
+            // A row's picture by its state; a Selected row picture stands in for the highlight.
+            const focusedRow = index === 0 && node._previewFocused !== false;
+            const pictured = this.drawRowPicture(node, rowRect, entry.enabled === false ? 'disabled' : focusedRow ? 'focused' : 'base');
             // Focus as the game shows it: a highlight fill on text rows, the window-skin cursor on an actor panel unless it has a Selected fill.
-            if (index === 0 && node._previewFocused !== false) {
-                if (node.rowLayout === 'actorPanel' && !node.focusedFillColor) this.drawSelection({ fill: 'none', _previewFocused: true, focusedFillColor: '' }, rowRect);
+            if (focusedRow && pictured !== 'focused') {
+                if (node.rowLayout === 'actorPanel' && !node.focusedFillColor) { if (!node.focusedImage) this.drawSelection({ fill: 'none', _previewFocused: true, focusedFillColor: '' }, rowRect); }
                 else {
                     const color = node.focusedFillColor || node.highlightColor;
                     this.ctx.fillStyle = this.cssColor(color, node.focusedFillColor ? 255 : 96);
@@ -6101,7 +6301,7 @@ class DatabaseUserInterfaceEditor {
     drawActorPanelRow(node, rect, index) {
         const actorNode={...node,actorSource:'partySlot',index,fill:'none',_previewFocused:false};
         const actor=this.startingActor(actorNode), ctx=this.ctx;
-        const elements=DatabaseUserInterfaceEditor.actorPanelLayout(node,rect.width,rect.height,this.fontSize(node));
+        const elements=DatabaseUserInterfaceEditor.actorPanelShown(node,rect.width,rect.height,this.fontSize(node),this.databaseManager.data.system);
         const basic=this.databaseManager.data.system?.terms?.basic || [];
         ctx.save(); ctx.beginPath(); ctx.rect(rect.x,rect.y,rect.width,rect.height); ctx.clip();
         // Behind parts first; parts for the active actor preview on the first row.
@@ -6225,9 +6425,18 @@ class DatabaseUserInterfaceEditor {
         const value = node.valueFormat === 'currentMax' ? `${current}/${maximum}` : node.valueFormat === 'percent' ? `${Math.round(rate * 100)}%` : String(current);
         // Bar
         const bx = rect.x + gaugeX, by = rect.y + h - gaugeH, bw = Math.max(0, rect.width - gaugeX);
-        ctx.fillStyle = node.gaugeBackColor || this.skinColor(19);
-        ctx.fillRect(bx, by, bw, gaugeH);
-        if (bw > 2 && rate > 0) {
+        const backPicture = node.gaugeBackImage ? this.imageRef(node.gaugeBackImage).image : null;
+        const barPicture = node.gaugeImage ? this.imageRef(node.gaugeImage).image : null;
+        if (backPicture) ctx.drawImage(backPicture, 0, 0, backPicture.width, backPicture.height, bx, by, bw, gaugeH);
+        else {
+            ctx.fillStyle = node.gaugeBackColor || this.skinColor(19);
+            ctx.fillRect(bx, by, bw, gaugeH);
+        }
+        if (barPicture) {
+            // Cut to the value, as the game's meter picture is.
+            const cut = Math.floor(barPicture.width * rate);
+            if (cut > 0) ctx.drawImage(barPicture, 0, 0, cut, barPicture.height, bx, by, Math.round(bw * rate), gaugeH);
+        } else if (bw > 2 && rate > 0) {
             const gradient = ctx.createLinearGradient(bx + 1, 0, bx + 1 + (bw - 2) * rate, 0);
             gradient.addColorStop(0, node.gaugeColor1 || this.skinColor(colors[0]));
             gradient.addColorStop(1, node.gaugeColor2 || this.skinColor(colors[1]));
@@ -6302,6 +6511,7 @@ class DatabaseUserInterfaceEditor {
             const n = big ? 0 : node.index;
             sx = ((n % 4) * 3 + 1) * sw; sy = Math.floor(n / 4) * 4 * sh;
         }
+        if (this.drawImageMotion(node, rect, image)) { ctx.restore(); return; }
         if (node.nineSlice && (node.source === 'picture' || node.source === 'system')) {
             const insets = { left: node.sliceLeft, top: node.sliceTop, right: node.sliceRight, bottom: node.sliceBottom };
             for (const part of DatabaseUserInterfaceEditor.nineSliceSegments(sw, sh, rect.width, rect.height, insets)) {
@@ -6321,6 +6531,305 @@ class DatabaseUserInterfaceEditor {
         ctx.imageSmoothingEnabled = node.fit !== 'none';
         ctx.drawImage(image, sx, sy, sw, sh, dx, dy, dw, dh);
         ctx.restore();
+    }
+
+    // ==========================================
+    // PICTURES AND MOTION
+    // ==========================================
+
+    /** A picture field: its reference and a button that picks a file. */
+    pictureFieldMarkup(key, value) {
+        return `<div class="rr-ui-file-row">${this.textControl('p-' + key, value || '', this._t('(none)'))}<button type="button" class="rr-btn-chip p-picture-browse" data-picture-key="${key}">…</button></div>`;
+    }
+
+    /** The Picture card: a picture as the element's look, a control's state pictures, a list's row pictures, a gauge's bar. */
+    picturePropertiesMarkup(node) {
+        const tt = text => this._t(text);
+        const api = DatabaseUserInterfaceEditor.motionApi();
+        if (!api) return '';
+        let html = '';
+        // Where the … buttons look. A picture from img/system is written system/Name, as the field then shows.
+        const folder = this.row(tt('Source'), this.selectControl('p-pictureFolder', this._pictureFolder === 'system' ? 'system' : 'pictures', [['pictures', 'img/pictures'], ['system', 'img/system']]));
+        if (api.FILL_TYPES.includes(node.type)) {
+            const picture = node.fill === 'picture', list = node.type === 'list', control = node.type === 'button' || node.type === 'input';
+            const fit = node.fillFit || 'stretch';
+            html += this.group(tt('Picture'));
+            html += `<div class="rr-ui-sub rr-ui-picture-off"${picture || list ? ' hidden' : ''}>${this.hintRow(tt('Set Fill to Picture, under Background, to draw a picture as this element.'))}</div>`;
+            html += `<div class="rr-ui-sub rr-ui-picture-draw"${picture || list ? '' : ' hidden'}>`;
+            html += folder;
+            html += `<div class="rr-ui-sub rr-ui-fill-picture"${picture ? '' : ' hidden'}>`;
+            html += this.row(tt('Picture'), this.pictureFieldMarkup('fillImage', node.fillImage));
+            html += this.row(tt('Fill Opacity'), this.numberControl('p-fillPictureOpacity', node.fillOpacity, 0, 255));
+            html += '</div>';
+            html += `<div class="rr-ui-sub rr-ui-fill-picture"${picture ? '' : ' hidden'}>`;
+            html += this.row(tt('Draw'), this.selectControl('p-fillFit', fit, [['stretch', tt('Stretch')], ['contain', tt('Fit inside')], ['tile', tt('Tile')], ['slice', tt('Nine-slice')]]));
+            html += '</div>';
+            html += `<div class="rr-ui-sub rr-ui-fill-slice"${fit === 'slice' || list ? '' : ' hidden'}>`;
+            html += this.pair(tt('Left'), this.numberControl('p-sliceLeft', node.sliceLeft || 0, 0, 9999), tt('Top'), this.numberControl('p-sliceTop', node.sliceTop || 0, 0, 9999));
+            html += this.pair(tt('Right'), this.numberControl('p-sliceRight', node.sliceRight || 0, 0, 9999), tt('Bottom'), this.numberControl('p-sliceBottom', node.sliceBottom || 0, 0, 9999));
+            html += '</div>';
+            if (control) {
+                html += `<div class="rr-ui-sub rr-ui-fill-picture"${picture ? '' : ' hidden'}>`;
+                html += this.row(tt('Selected'), this.pictureFieldMarkup('focusedImage', node.focusedImage));
+                html += this.row(tt('Pressed'), this.pictureFieldMarkup('pressedImage', node.pressedImage));
+                html += this.row(tt('Disabled'), this.pictureFieldMarkup('disabledImage', node.disabledImage));
+                html += this.hintRow(tt('A state left blank shows the normal picture; Pressed shows the Selected one.'));
+                html += '</div>';
+            }
+            if (list) {
+                html += this.hintRow(tt('Pictures under the rows: every row, the selected row, a disabled row. Stretched; the borders above keep their size. A Selected picture replaces the highlight.'));
+                html += this.row(tt('Rows'), this.pictureFieldMarkup('rowImage', node.rowImage));
+                html += this.row(tt('Selected'), this.pictureFieldMarkup('focusedImage', node.focusedImage));
+                html += this.row(tt('Disabled'), this.pictureFieldMarkup('disabledImage', node.disabledImage));
+            }
+            html += '</div>';
+        }
+        if (node.type === 'gauge') {
+            html += this.group(tt('Picture'));
+            html += folder;
+            html += this.row(tt('Gauge'), this.pictureFieldMarkup('gaugeImage', node.gaugeImage), tt('Cut to the value. Blank draws the colored bar.'));
+            html += this.row(tt('Background'), this.pictureFieldMarkup('gaugeBackImage', node.gaugeBackImage));
+        }
+        return html;
+    }
+
+    applyPictureProperties(node, q, num, panel, changedElement) {
+        const api = DatabaseUserInterfaceEditor.motionApi();
+        if (!api) return;
+        if (q('p-pictureFolder')) this._pictureFolder = q('p-pictureFolder').value === 'system' ? 'system' : 'pictures';
+        const setText = key => {
+            const el = q('p-' + key);
+            if (!el) return;
+            const value = el.value.trim();
+            if (value) node[key] = value;
+            else delete node[key];
+        };
+        if (api.FILL_TYPES.includes(node.type) && q('p-fillFit')) {
+            const picture = node.fill === 'picture', list = node.type === 'list';
+            // A picture is drawn solid unless asked otherwise: 160 is the colour fill's default.
+            if (picture && changedElement && changedElement.classList.contains('p-fill')) node.fillOpacity = 255;
+            else if (picture) node.fillOpacity = num('p-fillPictureOpacity', 0, 255, node.fillOpacity);
+            q('p-fillPictureOpacity').value = node.fillOpacity;
+            q('p-fillOpacity').value = node.fillOpacity;
+            const fit = q('p-fillFit').value;
+            if (fit !== 'stretch' && api.FILL_FITS.includes(fit)) node.fillFit = fit;
+            else delete node.fillFit;
+            for (const key of ['sliceLeft', 'sliceTop', 'sliceRight', 'sliceBottom']) {
+                const value = num('p-' + key, 0, 9999, 0);
+                if (value) node[key] = value;
+                else delete node[key];
+            }
+            for (const key of ['fillImage', 'focusedImage', 'pressedImage', 'disabledImage', 'rowImage']) setText(key);
+            panel.querySelectorAll('.rr-ui-fill-picture').forEach(el => { el.hidden = !picture; });
+            panel.querySelector('.rr-ui-picture-off').hidden = picture || list;
+            panel.querySelector('.rr-ui-picture-draw').hidden = !(picture || list);
+            panel.querySelector('.rr-ui-fill-slice').hidden = fit !== 'slice' && !list;
+        }
+        if (node.type === 'gauge') { setText('gaugeImage'); setText('gaugeBackImage'); }
+    }
+
+    /** The Motion card: frames, idle motion, Appear and the focused look, each in its own folding part. */
+    motionPropertiesMarkup(node) {
+        const tt = text => this._t(text);
+        const api = DatabaseUserInterfaceEditor.motionApi();
+        if (!api || !api.MOTION_TYPES.includes(node.type)) return '';
+        const m = Object.assign({}, api.DEFAULTS, node.motion || {});
+        const n = key => this.numberControl('p-m-' + key, m[key], api.RANGES[key][1], api.RANGES[key][2]);
+        const set = keys => keys.some(key => m[key] !== api.DEFAULTS[key]);
+        const part = (title, keys, body) => `<details class="rr-ui-property-section rr-ui-motion-part"${set(keys) ? ' open' : ''}><summary>${title}</summary><div class="rr-ui-property-body">${body}</div></details>`;
+        const timing = (period, offset) => this.pair(tt('Period'), n(period), tt('Start offset'), n(offset));
+        const turns = api.TURN_TYPES.includes(node.type);
+        let html = this.group(tt('Motion'));
+        html += this.hintRow(tt('Times are in frames: 60 is one second. Press Motion over the canvas to watch.'));
+        if (node.type === 'box' || node.type === 'image') html += this.hintRow(tt('Layers inside this one are carried: they move, grow, turn and fade with it.'));
+        if (node.type === 'image') {
+            html += `<div class="rr-ui-sub rr-ui-motion-sheet"${api.FRAME_SOURCES.includes(node.source) ? '' : ' hidden'}>`;
+            html += part(tt('Frames'), ['cols', 'rows', 'frameCount'], this.pair(tt('Columns'), n('cols'), tt('Rows'), n('rows'))
+                + this.pair(tt('Frame count'), n('frameCount'), tt('Frames a second'), n('fps'))
+                + this.row(tt('Play'), this.selectControl('p-m-frameMode', m.frameMode, [['loop', tt('Loop')], ['once', tt('Once')], ['pingpong', tt('Back and forth')]]))
+                + this.hintRow(tt('The picture is a sheet of frames, read left to right, top to bottom. Frame count 0 plays them all.')));
+            html += part(tt('Drift'), ['driftX', 'driftY'], this.pair('X', n('driftX'), 'Y', n('driftY'))
+                + this.hintRow(tt('Scrolls the picture inside its box, in pixels a second; the picture repeats. Not with frames.')));
+            html += '</div>';
+        }
+        html += part(tt('Float'), ['floatX', 'floatY'], this.pair('X', n('floatX'), 'Y', n('floatY')) + timing('floatPeriod', 'floatOffset'));
+        if (turns) {
+            html += part(tt('Pulse'), ['pulseFrom', 'pulseTo'], this.pair(`${tt('From')} %`, n('pulseFrom'), `${tt('To')} %`, n('pulseTo')) + timing('pulsePeriod', 'pulseOffset'));
+            html += part(tt('Turn'), ['spin', 'swayAngle'], this.pair(tt('Spin'), n('spin'), tt('Sway'), n('swayAngle')) + timing('swayPeriod', 'swayOffset')
+                + this.hintRow(tt('Spin is in degrees a second. Sway swings this many degrees each way.')));
+        }
+        html += part(tt('Fade'), ['fadeFrom', 'fadeTo'], this.pair(tt('From'), n('fadeFrom'), tt('To'), n('fadeTo')) + timing('fadePeriod', 'fadeOffset'));
+        html += part(tt('Appear'), ['appearX', 'appearY', 'appearScale', 'appearOpacity'], this.pair('X', n('appearX'), 'Y', n('appearY'))
+            + (turns ? this.pair(`${tt('Size')} %`, n('appearScale'), tt('Opacity'), n('appearOpacity')) : this.row(tt('Opacity'), n('appearOpacity')))
+            + this.pair(tt('Duration'), n('appearDuration'), tt('Delay'), n('appearDelay'))
+            + this.hintRow(tt('Where it starts when the interface opens or it becomes visible: an offset, a size, an opacity. It settles into place over the duration, and leaves the same way when the interface closes with a transition.')));
+        if (api.FOCUS_TYPES.includes(node.type)) {
+            html += part(tt('Selected'), ['focusScale', 'focusX', 'focusY'], this.row(`${tt('Size')} %`, n('focusScale')) + this.pair('X', n('focusX'), 'Y', n('focusY'))
+                + this.hintRow(tt('While it has focus it grows to this size and moves by this offset.')));
+        }
+        return html;
+    }
+
+    applyMotionProperties(node, q, panel) {
+        const api = DatabaseUserInterfaceEditor.motionApi();
+        if (!api || !api.MOTION_TYPES.includes(node.type) || !q('p-m-floatX')) return;
+        const raw = {};
+        for (const key of Object.keys(api.RANGES)) {
+            const el = q('p-m-' + key);
+            if (el && el.value !== '') raw[key] = Number(el.value);
+        }
+        if (q('p-m-frameMode')) raw.frameMode = q('p-m-frameMode').value;
+        const motion = api.compact(api.normalize(raw, node.type, node.source));
+        if (motion) node.motion = motion;
+        else delete node.motion;
+        const sheet = panel.querySelector('.rr-ui-motion-sheet');
+        if (sheet) sheet.hidden = !api.FRAME_SOURCES.includes(node.source);
+    }
+
+    /** Picks a picture for one of a node's picture settings, from img/pictures or img/system. */
+    browsePicture(key) {
+        const node = this.selected();
+        const project = this.project();
+        const types = DatabaseUserInterfaceEditor.PICTURE_KEYS[key];
+        if (!node || !types || !types.includes(node.type) || !project || !project.path) return;
+        if (!this.parentEditor || typeof this.parentEditor.showImagePicker !== 'function') return;
+        const current = String(node[key] || '');
+        const folder = current.startsWith('system/') ? 'system' : current ? 'pictures' : this._pictureFolder === 'system' ? 'system' : 'pictures';
+        const path = require('path');
+        const dir = path.join(project.path, 'img', folder);
+        let files = [];
+        try {
+            files = folder === 'pictures' ? RRAssetFiles.listImageReferences(dir) : RRAssetFiles.listNames(dir, ['.png']);
+        } catch (error) {
+            console.error('Error reading image folder:', error);
+            return;
+        }
+        this.parentEditor.showImagePicker(this._t('Select Image'), files, selectedFile => {
+            this.pushUndo();
+            if (selectedFile) node[key] = folder === 'system' ? 'system/' + selectedFile : selectedFile;
+            else delete node[key];
+            this.touch();
+            this.renderProperties();
+            this.scheduleRender();
+        }, fileName => folder === 'pictures' ? RRAssetFiles.imageUrlFor(dir, fileName) : RRAssetFiles.urlFor(dir, fileName, ['.png']),
+        folder === 'system' ? current.slice('system/'.length) : current, { allowNone: true, selectButtonLabel: this._t('Select Image') });
+    }
+
+    /** Draws a picture over a rect as the game's picture fill does. False when the picture is not there (yet). */
+    drawPicture(ref, rect, fit, node, opacity, radius) {
+        const api = DatabaseUserInterfaceEditor.motionApi();
+        const image = ref && api ? this.imageRef(ref).image : null;
+        if (!image) return false;
+        const ctx = this.ctx;
+        const insets = { left: node.sliceLeft || 0, top: node.sliceTop || 0, right: node.sliceRight || 0, bottom: node.sliceBottom || 0 };
+        ctx.save();
+        if (radius > 0) { this.roundedPath(ctx, rect.x, rect.y, rect.width, rect.height, radius); ctx.clip(); }
+        ctx.globalAlpha *= opacity / 255;
+        for (const part of api.pictureSegments(image.width, image.height, rect.width, rect.height, fit, insets, DatabaseUserInterfaceEditor.nineSliceSegments)) {
+            ctx.drawImage(image, part.sx, part.sy, part.sw, part.sh, rect.x + part.dx, rect.y + part.dy, part.dw, part.dh);
+        }
+        ctx.restore();
+        return true;
+    }
+
+    /** Fill "picture": the state's picture, else the normal one. With none to show, a dashed frame here (the game draws nothing). */
+    drawPictureFill(node, rect) {
+        const api = DatabaseUserInterfaceEditor.motionApi();
+        const state = node.type === 'list' ? 'base' : node._previewState || 'base';
+        const ref = api ? api.statePicture(node, state) : node.fillImage;
+        const fit = node.fillFit || 'stretch';
+        if (this.drawPicture(ref, rect, fit, node, node.fillOpacity, node.radius)) return;
+        if (ref !== node.fillImage && this.drawPicture(node.fillImage, rect, fit, node, node.fillOpacity, node.radius)) return;
+        const entry = node.fillImage ? this.imageRef(node.fillImage) : null;
+        if (entry && !entry.failed) return;
+        const ctx = this.ctx;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2);
+        ctx.restore();
+    }
+
+    /** A list row's picture by its state, stretched with the slice borders kept; returns the state whose own picture was drawn, else ''. */
+    drawRowPicture(node, rect, state) {
+        const api = DatabaseUserInterfaceEditor.motionApi();
+        const ref = api ? api.rowPicture(node, state) : '';
+        if (!ref) return '';
+        if (this.drawPicture(ref, rect, 'slice', node, 255, 0)) return ref !== node.rowImage ? state : '';
+        if (ref !== node.rowImage) this.drawPicture(node.rowImage, rect, 'slice', node, 255, 0);
+        return '';
+    }
+
+    /** A node's motion with every setting filled in, or null. */
+    motionOf(node) {
+        const api = DatabaseUserInterfaceEditor.motionApi();
+        return api && node && node.motion ? api.normalize(node.motion, node.type, node.source) : null;
+    }
+
+    /** How many game updates Motion has played for: 0 while it is not playing. */
+    motionAge() {
+        return this._motionPlay ? Math.max(0, Math.floor((performance.now() - this._motionPlay.start) * 60 / 1000)) : 0;
+    }
+
+    /** The pose of a node on the canvas now: while Motion plays, where the game has it that many updates after opening. */
+    motionPose(node) {
+        const m = this._motionPlay ? this.motionOf(node) : null;
+        if (!m) return null;
+        const api = DatabaseUserInterfaceEditor.motionApi(), age = this.motionAge();
+        return api.pose(m, age, node._previewFocused ? Math.min(1, age / 8) : 0, -1, api.newPose());
+    }
+
+    /** Moves, grows, turns and fades the context as the game does the node's window. */
+    poseContext(node, rect) {
+        const pose = this.motionPose(node);
+        if (!pose) return;
+        const ctx = this.ctx, cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
+        ctx.globalAlpha *= pose.alpha;
+        ctx.translate(pose.dx, pose.dy);
+        if (pose.scale !== 1 || pose.turn) {
+            ctx.translate(cx, cy);
+            ctx.rotate(pose.turn * Math.PI / 180);
+            ctx.scale(pose.scale, pose.scale);
+            ctx.translate(-cx, -cy);
+        }
+    }
+
+    /** An Image node with frames or drift: the frame of its sheet, or its picture scrolled. False when it has neither. */
+    drawImageMotion(node, rect, image) {
+        const api = DatabaseUserInterfaceEditor.motionApi();
+        const m = this.motionOf(node), traits = m ? api.traits(m) : null;
+        if (!traits || !(traits.frames || traits.drift)) return false;
+        const ctx = this.ctx;
+        const pose = api.pose(m, this.motionAge(), 0, -1, api.newPose());
+        if (traits.frames) {
+            const cell = api.frameRect(pose.frame, m.cols, m.rows, image.width, image.height, {});
+            const place = api.fitRect(node.fit, cell.width, cell.height, rect.width, rect.height, {});
+            ctx.imageSmoothingEnabled = node.fit !== 'none';
+            if (cell.width > 0 && cell.height > 0) ctx.drawImage(image, cell.x, cell.y, cell.width, cell.height, rect.x + place.x, rect.y + place.y, place.width, place.height);
+            return true;
+        }
+        // Repeated across the box, scrolled by the drift so far.
+        const wrap = (value, size) => ((value % size) + size) % size;
+        const startX = rect.x - wrap(pose.driftX, image.width), startY = rect.y - wrap(pose.driftY, image.height);
+        for (let y = startY; y < rect.y + rect.height; y += image.height) {
+            for (let x = startX; x < rect.x + rect.width; x += image.width) ctx.drawImage(image, x, y);
+        }
+        return true;
+    }
+
+    /** The Motion button: plays every layer's motion on the canvas from the start, or stops it. */
+    toggleMotionPlay() {
+        const button = this.wrapper && this.wrapper.querySelector('.rr-ui-motion-play');
+        this._motionPlay = this._motionPlay ? null : { start: performance.now() };
+        if (button) button.setAttribute('aria-pressed', String(!!this._motionPlay));
+        const tick = () => {
+            if (!this._motionPlay) return;
+            if (!this.wrapper || !this.wrapper.isConnected) { this._motionPlay = null; return; }
+            this.render();
+            requestAnimationFrame(tick);
+        };
+        if (this._motionPlay) requestAnimationFrame(tick);
+        else this.scheduleRender();
     }
 
     /** Draws the record, or its fitted layout while Preview at names another screen. */
@@ -6401,6 +6910,8 @@ class DatabaseUserInterfaceEditor {
             ctx.globalAlpha = opacityOf(node, new Set());
             ctx.globalAlpha *= stateOpacity / 255;
             ctx.save();
+            this.carryContext(node);
+            this.poseContext(drawn, drawnRect);
             this.turnContext(node, drawnRect);
             switch (drawn.type) {
                 case 'box': this.drawSurface(drawn, drawnRect); break;
@@ -6437,6 +6948,7 @@ class DatabaseUserInterfaceEditor {
             if (!rect || !this.onVictoryPage(selected)) continue;
             const accent = (typeof ThemeColors !== 'undefined' && ThemeColors.resolve) ? ThemeColors.resolve('--color-accent-bright') : '#4da3ff';
             ctx.save();
+            this.carryContext(selected, false);
             this.turnContext(selected, rect);
             ctx.strokeStyle = accent;
             ctx.lineWidth = 2 / this.scale;

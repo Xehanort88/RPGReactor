@@ -40,7 +40,6 @@
 // `size` fits the longest ground axis to that many tiles. `scale` is an extra
 // multiplier. `yaw` is degrees added on top of the event's facing.
 
-Reactor3D.MODEL_DIR = "3d/";
 Reactor3D.MODEL_EXTS = [".glb", ".obj", ".fbx", ".stl", ".usdz", ".3mf", ".dxf", ".blend"];
 Reactor3D._glbCache = Object.create(null);
 
@@ -437,19 +436,23 @@ Reactor3D.collectMapModelSpecs = function(mapData) {
 
 /**
  * Load every model the map references while its loading fade still hides
- * the work, so nothing loads — or hitches — mid-play. Memoized per call
- * site; safe to call for maps with nothing to load.
+ * the work, so nothing loads — or hitches — mid-play. Safe to call again
+ * (a model already asked for is not asked for twice) and for maps with
+ * nothing to load.
  */
 Reactor3D.preloadMapModels = function(mapData) {
-    const specs = this.collectMapModelSpecs(mapData);
-    if (!specs.length) return Promise.resolve([]);
+    const all = this.collectMapModelSpecs(mapData);
+    if (!all.length) return Promise.resolve([]);
+    // Only what can stand on the map when it opens is waited for: its own models and the party's. Every other
+    // actor's model comes after, one at a time (a first visit fetched all 33 of Reactor One's, 109 MB, ahead of
+    // the map's own pictures, and over a slow line the map took minutes to open).
+    const later = this.laterActorSpecs(all, mapData), held = new Set(later);
+    const specs = all.filter(spec => !held.has(spec));
     return this.ensureLoaded().then(ok => {
         if (!ok) return [];
-        // What a battle here will show, readied under the same fade (a preparation, never a reason to fail the load).
-        let battle = null;
-        try { battle = this.preloadBattleModels(mapData); } catch (error) { battle = null; }
-        const settled = battle ? battle.catch(() => null) : Promise.resolve(null);
-        return settled.then(() => Promise.all(specs.map(spec => Promise.all([
+        // The map's own models are asked for first: behind the battle's they waited for models only a later
+        // battle needs, and over the web the map could open before its own had been asked for.
+        const mapLoads = Promise.all(specs.map(spec => Promise.all([
             this.loadModel(spec.name, spec.ext, spec.file, spec.texture),
             this.loadModelSidecar(spec.name)
         ]).then(loaded => {
@@ -460,16 +463,60 @@ Reactor3D.preloadMapModels = function(mapData) {
             try { this.modelCollisionMask(spec); } catch (error) { /* the box remains */ }
             this.boundModelTemplate(loaded[0]);
             return loaded;
-        }))).then(loaded => {
+        })));
+        // What a battle here will show, readied under the same fade (a preparation, never a reason to fail the load).
+        let battle = null;
+        try { battle = this.preloadBattleModels(mapData); } catch (error) { battle = null; }
+        const settled = battle ? battle.catch(() => null) : Promise.resolve(null);
+        return Promise.all([mapLoads, settled]).then(([loaded]) => {
             // One model at another size (a captain a fifth taller than his men) has a footprint of its own, kept per
             // pose: taken here too, or it was walked out on the frame its event first stood on the map (a battle's first).
             for (const spec of this.collectMapPoseSpecs(mapData)) { try { this.modelCollisionMask(spec); } catch (error) { /* the box remains */ } }
+            this.loadLaterModels(later);
             return loaded;
-        }));
+        });
     });
 };
 
-/** Every size and pose the map's events give their models, one spec for each (a footprint is kept per pose). */
+/**
+ * Of a map's specs, the actors' models no one in the party wears and no event of the map places: wanted only if an
+ * actor joins, or another player wears one. Without a party yet (a title map), none are put off.
+ */
+Reactor3D.laterActorSpecs = function(specs, mapData) {
+    const party = typeof $gameParty !== "undefined" && $gameParty && typeof $gameParty.allMembers === "function" ? $gameParty.allMembers() : null;
+    if (!party || !party.length) return [];
+    const key = spec => spec ? this.modelCacheKey(spec.name, spec.ext, spec.file) : "";
+    const needed = new Set();
+    for (const actor of party) if (actor && typeof actor.actorId === "function") needed.add(key(this.actorSlotSpec(actor.actorId(), "character")));
+    const events = (mapData && mapData.reactor3d && mapData.reactor3d.events) || {};
+    for (const pages of Object.values(events)) for (const raw of Object.values(pages || {})) needed.add(key(this.normalizeModelSpec(raw)));
+    this.loadDatabaseSidecar();
+    const actors = new Set();
+    for (const entry of Object.values((this._databaseSidecar && this._databaseSidecar.actors) || {})) actors.add(key(this.normalizeModelSpec(this.actorEntrySlots(entry).character)));
+    return specs.filter(spec => { const k = key(spec); return actors.has(k) && !needed.has(k); });
+};
+
+/** Whether other actors' models are worth having ahead: online, or loaded over the web. */
+Reactor3D.laterModelsWanted = function() {
+    const online = typeof ReactorOnline !== "undefined" && ReactorOnline.config && ReactorOnline.config();
+    const local = typeof Utils !== "undefined" && Utils.isNwjs && Utils.isNwjs();
+    return !!online || !local;
+};
+
+/** Models fetched behind the map, one at a time, so they never share the line with what it is waiting for. */
+Reactor3D.loadLaterModels = function(specs) {
+    // A single-player game from its own disk has nothing to fetch ahead, and making each model after the map opened
+    // was a 80-300 ms task while the player looked on (the first seconds in the Reactor room, 2026-11-05). They are
+    // made when asked for (an actor joining). Online, or over the web, other players may wear them: fetched as before.
+    if (this.laterModelsWanted && !this.laterModelsWanted()) return Promise.resolve();
+    for (const spec of specs || []) {
+        const load = () => Promise.all([this.loadModel(spec.name, spec.ext, spec.file, spec.texture), this.loadModelSidecar(spec.name)])
+            .then(loaded => { this.boundModelTemplate(loaded[0]); return loaded; }).catch(() => null);
+        this._laterModels = (this._laterModels || Promise.resolve()).then(load, load);
+    }
+    return this._laterModels || Promise.resolve();
+};
+
 /**
  * A loaded model's rest bounds, worked out while the map loads: every copy, finger skin and detail level takes them
  * from the model's own geometry, and the first thing to ask for a missing box (the lit region, on the frame a
@@ -488,6 +535,7 @@ Reactor3D.boundModelTemplate = function(template) {
     return template;
 };
 
+/** Every size and pose the map's events give their models, one spec for each (a footprint is kept per pose). */
 Reactor3D.collectMapPoseSpecs = function(mapData) {
     const specs = [], seen = new Set();
     const events = (mapData && mapData.reactor3d && mapData.reactor3d.events) || {};
@@ -623,7 +671,7 @@ Reactor3D.warmLoadedTemplates = function() {
     // variants and uploaded every picture of a model in one frame.
     if (this.ShaderWarmup && this.ShaderWarmup.enabled && this.ShaderWarmup.supported(renderer)) return;
     if (!this._warmedTemplates) this._warmedTemplates = new Set();
-    // Runs every frame; on the steady state it must allocate nothing.
+    // Runs every frame; on the steady state it makes this empty list and nothing else.
     const pending = [];
     for (const key in this._glbCache) {
         const template = this._glbCache[key].template;
@@ -719,6 +767,11 @@ Reactor3D.eventModelFaceTurn = function(direction) {
 
 Reactor3D.eventModelInterpolatedMark = function(faces, direction) {
     if (!faces) return null;
+    // A model with no marks at all (most of them) has nothing to find: asked for every unsettled model each frame,
+    // the table below was built and thrown away each time.
+    let marked = false;
+    for (const name in faces) { marked = true; break; }
+    if (!marked) return null;
     const pairs = {
         2: ["front"],
         4: ["left"],
@@ -739,8 +792,9 @@ Reactor3D.eventModelInterpolatedMark = function(faces, direction) {
 
 /**
  * The yaw the mesh actually stands at in the world: the authored spec
- * rotation plus the front-mark aim, exactly as `applyEventModelPose`
- * computes it. The collision footprint must rotate by THIS — rotating by
+ * rotation plus the front-mark aim, as `applyEventModelPose` computes it
+ * (a spec with face marks and no front mark is aimed there by its other
+ * marks, and here by the facing alone). The collision footprint must rotate by THIS — rotating by
  * the facing alone left a model posed with an authored yaw (a motorcycle
  * turned 163 degrees in the picker) colliding crosswise to its visible
  * body, so a character clipped into the metal from one side and was
@@ -1445,14 +1499,6 @@ Reactor3D.eventIsUnit = function(character) {
 };
 
 /**
- * Whether a battle sequence holds a character: it is drawn where the sequence
- * puts it (`_realX`, `_realY`, a lift) and has not left its cell.
- */
-Reactor3D.characterIsStaged = function(character) {
-    return !!(character && character._rrStage);
-};
-
-/**
  * The body of a character: the tiles it covers round its own, as a shape
  * `{ ox, oy, w, h, cells, count, reach, model, sweep }`: the rectangle's
  * first tile from the character's own (`ox`, `oy`, zero or less), its size,
@@ -1714,9 +1760,17 @@ Reactor3D._bodyHeights = function(a, b, at) {
  * and the tile is further from its own than any part of it reaches. Nearly
  * every event asked about is, and is passed over with no more than this.
  */
+/**
+ * How many updates an event's reach (`held.far`) is trusted for the test above: it changes only with the event's
+ * page, model or size, which are checked or rarely change. Asked only of a body looked at this very update, every
+ * event's whole body was worked out again (its model's spec through every wrapper) each update a wanderer tried a
+ * step: about 1 ms a frame of the Reactor Room on the laptop while walking (2026-11-08). 0 trusts this update's only.
+ */
+Reactor3D.BODY_FAR_FRAMES = 30;
 Reactor3D._bodyFar = function(event, x, y, margin, now) {
     const held = event._reactorBody;
-    if (held === undefined || held.frame !== now.frame || !(now.frame > 0) || now.loops || held.page !== event._pageIndex || held.map !== now.data) return false;
+    if (held === undefined || !(now.frame > 0) || now.loops || held.page !== event._pageIndex || held.map !== now.data) return false;
+    if (held.frame !== now.frame && !(held.frame < now.frame && now.frame - held.frame <= this.BODY_FAR_FRAMES && held.erased === !!event._erased)) return false;
     const far = held.far + margin, dx = x - event._x, dy = y - event._y;
     return dx > far || dx < -far || dy > far || dy < -far;
 };
@@ -1730,6 +1784,20 @@ Reactor3D._bodyFar = function(event, x, y, margin, now) {
  * to be put down (`strict`).
  */
 Reactor3D._bodyAt = { x: 0, y: 0 };
+
+/**
+ * Whether `other` can stand in the way of a one-tile walker. As MZ's Game_Event.isCollidedWithEvents: a moving
+ * event is stopped by any event that is not Through, below and above the characters included (a wandering NPC
+ * does not step onto a Quick Event transfer); the player and followers only by normal-priority ones. Where a unit
+ * can be put down (`strict`) keeps to normal priority. A hull with a body of its own is not asked (_bodyMeetsEvents).
+ * Such an event stops a walker only on its own tile (bodyBlocksTile), not over its model's footprint.
+ */
+Reactor3D._bodyStops = function(mover, other, strict) {
+    if (other.isThrough()) return false;
+    if (other.isNormalPriority()) return true;
+    return !strict && typeof Game_Event !== "undefined" && mover instanceof Game_Event;
+};
+
 Reactor3D.bodyBlocksTile = function(mover, x, y, strict) {
     const now = this._bodyRead();
     const events = now.map && now.map.events ? now.map.events() : null;
@@ -1740,7 +1808,10 @@ Reactor3D.bodyBlocksTile = function(mover, x, y, strict) {
     for (let i = 0; i < events.length; i++) {
         const event = events[i];
         if (event === mover || this._bodyFar(event, x, y, 0, now)) continue;
-        if (!event.isNormalPriority() || event.isThrough()) continue;
+        if (!this._bodyStops(mover, event, strict)) continue;
+        // An event below or above the characters stops a walker on its own tile only, as in MZ: a floor-level
+        // model's wide footprint (a rug, a dock) is not a wall to wandering NPCs.
+        if (!event.isNormalPriority() && !(event.x === x && event.y === y)) continue;
         if (!this._bodyCovers(event, x, y, now)) continue;
         if (!this._bodyHeights(mover, event, at)) continue;
         if (this.eventIsFallen(event) || (!strict && this.bodyLetsOut(mover, event, x, y))) continue;
@@ -1830,6 +1901,7 @@ Reactor3D._bodyMeetsEvents = function(mover, x, y, direction, strict) {
         const other = events[i];
         if (other === mover) continue;
         if (this._bodyFar(other, x, y, reach, now) && (!swept || this._bodyFar(other, mover._x, mover._y, reach, now))) continue;
+        // A hull (a body of its own: a vehicle, a unit's model) drives over events below and above the characters.
         if (!other.isNormalPriority() || other.isThrough()) continue;
         if (!this._bodyOverlap(moved, x, y, other, now) && !(swept && this._bodyOverlap(swept, mover._x, mover._y, other, now))) continue;
         // A wall light nine tiles up does not stop a tank underneath it.
@@ -2180,6 +2252,8 @@ Reactor3D.ModelUse = {
             if (entry.name && text.indexOf(entry.name) >= 0) continue;
             idle.push(key);
         }
+        // The map's events as text were for these two sweeps: not kept for as long as the map is played.
+        if (!early) { this._text = ""; this._textOf = null; }
         // The newest first: they stay while they fit.
         idle.sort((a, b) => (cache[b].used || 0) - (cache[a].used || 0));
         let room = R.lowMemory && R.lowMemory() ? this.lowMemoryGraceBytes : this.graceBytes;
@@ -2238,8 +2312,33 @@ Reactor3D.ModelUse = {
     }
 };
 
-Reactor3D.loadGlb = function(name) {
-    return this.loadModel(name, ".glb");
+/**
+ * Model files downloaded a few at a time. The browser ranks a script's downloads above pictures, and a map starts
+ * every model it names at once: over a slow line some seventy shared it, and the map's own pictures (its floor, the
+ * HUD, the window frame), which it waits for, came last: a first visit at 8 Mbit/s took three minutes to open.
+ */
+Reactor3D.ModelDownloads = {
+    LIMIT: 4,
+    active: 0,
+    waiting: [],
+
+    /** Runs `start(release)` once a place is free; `release` (once) frees it. */
+    take(start) {
+        this.waiting.push(start);
+        this.next();
+    },
+
+    next() {
+        // From the disk (a playtest, an installed game) there is no line to share.
+        const limit = typeof Utils !== "undefined" && typeof Utils.isLocal === "function" && Utils.isLocal() ? Infinity : this.LIMIT;
+        while (this.active < limit && this.waiting.length) {
+            const start = this.waiting.shift();
+            let held = true;
+            this.active++;
+            const release = () => { if (!held) return; held = false; this.active--; this.next(); };
+            try { start(release); } catch (error) { release(); throw error; }
+        }
+    }
 };
 
 Reactor3D.loadModel = function(name, ext, file, texture) {
@@ -2283,10 +2382,13 @@ Reactor3D.loadModel = function(name, ext, file, texture) {
                 return;
             }
             const job = jobs[index];
+            this.ModelDownloads.take(release => {
             const xhr = new XMLHttpRequest();
             xhr.open("GET", job.url);
             xhr.responseType = "arraybuffer";
+            xhr.onloadend = release;
             xhr.onload = () => {
+                release();
                 if (xhr.status >= 400 || !xhr.response) {
                     tryAt(index + 1);
                     return;
@@ -2302,13 +2404,21 @@ Reactor3D.loadModel = function(name, ext, file, texture) {
                         resolve(null);
                     }
                 };
-                if (job.ext === ".glb") {
+                if (String(job.ext).toLowerCase() === ".glb") {
                     // The container split and JSON parse run off-thread;
                     // the buffer travels there and back.
                     // A failed or absent worker hands the bytes back to the
                     // synchronous parser.
                     this.parseGlbAsync(xhr.response).then(parsed => {
                         if (parsed && parsed.json) {
+                            // A character from the Character Builder: its parts merged before anything clones it (LayeredParts).
+                            if (this.LayeredParts && this.isBuilderGlb(parsed.json) && (parsed.json.skins || []).length) {
+                                let template = null;
+                                try { template = this.buildGlbTemplate(parsed.json, parsed.bin, baseUrl, parsed.bitmaps); } catch (error) { buildFrom(() => { throw error; }); return; }
+                                this.LayeredParts.apply(template).catch(error => console.warn("Reactor3D: " + name + "'s parts stay apart:", error && error.message || error))
+                                    .then(() => buildFrom(() => template));
+                                return;
+                            }
                             buildFrom(() => this.buildGlbTemplate(
                                 parsed.json, parsed.bin, baseUrl, parsed.bitmaps));
                             // Distance levels, if the import wrote any: listed
@@ -2325,8 +2435,9 @@ Reactor3D.loadModel = function(name, ext, file, texture) {
                 }
                 buildFrom(() => this.readModel(xhr.response, job.ext, baseUrl, texture));
             };
-            xhr.onerror = () => tryAt(index + 1);
+            xhr.onerror = () => { release(); tryAt(index + 1); };
             xhr.send();
+            });
         };
         tryAt(0);
     });
@@ -2434,6 +2545,11 @@ Reactor3D.GlbCompact = { enabled: true };
 // The worker splits the container and parses its JSON. A model's pictures are
 // not decoded here: each one is decoded when it is first drawn (ShaderWarmup),
 // at this machine's size, and that copy is closed once it is on the GPU.
+// Asked to (`decode`: the largest side), it decodes them too, at no more than that
+// side, and hands them back as bitmaps: a character made in the game, whose
+// pictures are all read at once when its parts are merged (LayeredParts). Decoded
+// on the main thread, a crowd arriving in North Haven's square spent a sixth of
+// its first half minute there, at 11 to 80 frames a second.
 Reactor3D._glbWorkerSource = function() {
     return reactorSplitGlb.toString() + "\n" + reactorCompactGlb.toString() + "\n"
         + "self.onmessage = function(event) {\n"
@@ -2443,7 +2559,21 @@ Reactor3D._glbWorkerSource = function() {
         + "        var parsed = reactorSplitGlb(buffer);\n"
         + "        if (data.compact) {\n"
         + "            var packed = reactorCompactGlb(parsed.json, buffer, parsed.bin.offset, parsed.bin.length);\n"
-        + "            self.postMessage({ id: data.id, json: parsed.json, binOffset: 0, binLength: packed.byteLength, buffer: packed }, [packed]);\n"
+        + "            var send = function(bitmaps) { var list = [packed]; for (var k in bitmaps) list.push(bitmaps[k]);\n"
+        + "                self.postMessage({ id: data.id, json: parsed.json, binOffset: 0, binLength: packed.byteLength, buffer: packed, bitmaps: bitmaps }, list); };\n"
+        + "            if (!(data.decode > 0) || typeof createImageBitmap !== 'function') { send(null); return; }\n"
+        + "            var bitmaps = {}, jobs = [], options = { premultiplyAlpha: 'none', colorSpaceConversion: 'none', imageOrientation: 'none' };\n"
+        + "            (parsed.json.images || []).forEach(function(image, index) {\n"
+        + "                if (!image.rrBlob) return;\n"
+        + "                jobs.push(createImageBitmap(image.rrBlob, options).then(function(full) {\n"
+        + "                    var side = Math.max(full.width, full.height);\n"
+        + "                    if (side <= data.decode) { bitmaps[index] = full; return; }\n"
+        + "                    var k = data.decode / side;\n"
+        + "                    return createImageBitmap(full, { resizeWidth: Math.max(1, Math.round(full.width * k)), resizeHeight: Math.max(1, Math.round(full.height * k)), resizeQuality: 'high', premultiplyAlpha: 'none', colorSpaceConversion: 'none', imageOrientation: 'none' })\n"
+        + "                        .then(function(small) { full.close(); bitmaps[index] = small; });\n"
+        + "                }).catch(function() { /* decoded later, as any model's */ }));\n"
+        + "            });\n"
+        + "            Promise.all(jobs).then(function() { send(bitmaps); });\n"
         + "            return;\n"
         + "        }\n"
         + "        self.postMessage({ id: data.id, json: parsed.json,\n"
@@ -2464,7 +2594,10 @@ Reactor3D._ensureParseWorker = function() {
         if (typeof Worker !== "undefined" && typeof Blob !== "undefined"
             && typeof URL !== "undefined" && URL.createObjectURL) {
             const blob = new Blob([this._glbWorkerSource()], { type: "text/javascript" });
-            const worker = new Worker(URL.createObjectURL(blob));
+            // The address is let go once the worker has it: a new one is made after every rest.
+            const url = URL.createObjectURL(blob);
+            const worker = new Worker(url);
+            URL.revokeObjectURL(url);
             this._parsePending = new Map();
             worker.onmessage = event => {
                 const data = event.data || {};
@@ -2517,7 +2650,7 @@ Reactor3D.packJsonArrays = function(value) {
     return value;
 };
 
-Reactor3D.parseGlbAsync = function(buffer) {
+Reactor3D.parseGlbAsync = function(buffer, options) {
     const worker = this._ensureParseWorker();
     if (!worker) return Promise.resolve(null);
     this._parseId = (this._parseId || 0) + 1;
@@ -2535,7 +2668,7 @@ Reactor3D.parseGlbAsync = function(buffer) {
             });
         });
         try {
-            worker.postMessage({ id, buffer, compact: !!(this.GlbCompact && this.GlbCompact.enabled) }, [buffer]);
+            worker.postMessage({ id, buffer, compact: !!(this.GlbCompact && this.GlbCompact.enabled), decode: options && options.decode > 0 ? options.decode : 0 }, [buffer]);
             Reactor3D.IdleWorkers?.touch("glb", () => this._parsePending.size > 0, () => { const idle = this._parseWorker; this._parseWorker = undefined; if (idle) idle.terminate(); });
         } catch (error) {
             this._parsePending.delete(id);
@@ -2600,10 +2733,11 @@ Reactor3D.modelAnisotropy = function() {
 };
 
 /** The main-thread twin of capBitmapSize for images decoded by the browser: a canvas at the capped size. */
-Reactor3D.capImage = function(image) {
+Reactor3D.capImage = function(image, own) {
     // Only a picture the browser draws: a compressed texture's levels are capped where they are transcoded.
     if (!image || !(image.tagName || typeof image.getContext === "function" || typeof image.close === "function")) return image;
-    const cap = this.textureCap();
+    // `own`: a smaller cap for this picture (another player's character: Reactor3D.remoteTextureCap).
+    const cap = own > 0 ? Math.min(this.textureCap(), own) : this.textureCap();
     const width = image && (image.naturalWidth || image.width);
     const height = image && (image.naturalHeight || image.height);
     if (!image || !(width > cap || height > cap) || typeof document === "undefined") return image;
@@ -2620,6 +2754,38 @@ Reactor3D.capImage = function(image) {
     context.imageSmoothingQuality = "high";
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
     return canvas;
+};
+
+/**
+ * A model picture, decoded, onto its texture at no more than its cap (the machine's, or the texture's own:
+ * another player's character). An oversized one is resized off the main thread first and the texture holds a
+ * one-pixel stand-in until then, so the full picture is never uploaded. capImage's way of leaving it to
+ * ShaderWarmup's decode did not hold for a GLB's own pictures: three uploaded them at full size the frame they
+ * were drawn, before any decode asked for them (2048 sheets on every tier, and video memory full in a crowd).
+ */
+Reactor3D.fitModelTexture = function(texture, image, own) {
+    const cap = own > 0 ? Math.min(this.textureCap(), own) : this.textureCap();
+    const width = image && (image.naturalWidth || image.width), height = image && (image.naturalHeight || image.height);
+    if (!image || !(width > cap || height > cap)) { texture.image = image; texture.needsUpdate = true; return; }
+    if (typeof createImageBitmap !== "function" || typeof document === "undefined") { texture.image = this.capImage(image, own); texture.needsUpdate = true; return; }
+    const stand = this._fitStandIn || (this._fitStandIn = (() => { const c = document.createElement("canvas"); c.width = c.height = 1; const g = c.getContext("2d"); g.fillStyle = "#808080"; g.fillRect(0, 0, 1, 1); return c; })());
+    texture.image = stand;
+    texture.needsUpdate = true;
+    const scale = cap / Math.max(width, height);
+    const options = { resizeWidth: Math.max(1, Math.round(width * scale)), resizeHeight: Math.max(1, Math.round(height * scale)),
+        resizeQuality: "high", imageOrientation: texture.flipY ? "flipY" : "from-image", premultiplyAlpha: texture.premultiplyAlpha ? "premultiply" : "none", colorSpaceConversion: "none" };
+    // Decoded and resized in the image worker from the picture's own bytes: `createImageBitmap` of an <img> did that
+    // work on the main thread, 300 ms of every second for the first 20 s of North Haven's arrival on the weak-GPU
+    // laptop, whose 1024 cap resizes nearly every model sheet (2026-11-09). The main thread only if the worker cannot.
+    const worker = this.ImageWorker && this.ImageWorker.bitmap ? this.ImageWorker.bitmap(image, options) : null;
+    (worker ? worker.catch(() => createImageBitmap(image, options)) : createImageBitmap(image, options))
+        .then(bitmap => {
+            if (texture.image !== stand) { if (bitmap.close) bitmap.close(); return; }
+            // Its storage was made one pixel square: made again at the picture's size.
+            texture.dispose();
+            texture.image = bitmap;
+            texture.needsUpdate = true;
+        }, () => { if (texture.image === stand) { texture.image = this.capImage(image, own); texture.needsUpdate = true; } });
 };
 
 Reactor3D.capBitmapSize = function(bitmap) {
@@ -3682,14 +3848,19 @@ Reactor3D._loadGlbTexture = function(json, bin, texInfo, baseUrl, textures, bitm
     if (bitmaps && bitmaps[textureDef.source]) {
         if (usedBitmaps) usedBitmaps.add(textureDef.source);
         const decoded = new THREE.Texture(bitmaps[textureDef.source]);
+        decoded.userData.rrGlbImage = textureDef.source;
         decoded.flipY = false;
         if (THREE.SRGBColorSpace) decoded.colorSpace = THREE.SRGBColorSpace;
         decoded.needsUpdate = true;
         textures.push(decoded);
         return decoded;
     }
+    // The cap of the template being built (buildGlbTemplate's `textureCap`): it travels with the texture to its decode.
+    const ownCap = this._buildTextureCap > 0 ? this._buildTextureCap : 0;
     const map = new THREE.Texture();
     map.userData.rrModelTexture = true;
+    map.userData.rrGlbImage = textureDef.source;
+    if (ownCap) map.userData.rrTextureCap = ownCap;
     map.flipY = false;
     if (THREE.SRGBColorSpace) map.colorSpace = THREE.SRGBColorSpace;
     // An embedded picture's Blob goes with its <img> to the image worker, which decodes from it (its
@@ -3708,8 +3879,7 @@ Reactor3D._loadGlbTexture = function(json, bin, texInfo, baseUrl, textures, bitm
         try {
             embedded = new THREE.TextureLoader().load(primary, loaded => {
                 if (blob && Reactor3D.ImageWorker && Reactor3D.ImageWorker.blobs) Reactor3D.ImageWorker.blobs.set(loaded.image, blob);
-                loaded.image = Reactor3D.capImage(loaded.image);
-                loaded.needsUpdate = true;
+                Reactor3D.fitModelTexture(loaded, loaded.image, ownCap);
                 releaseObjectUrl();
                 if (loaded.userData) delete loaded.userData.reactorObjectUrl;
             }, undefined, releaseObjectUrl);
@@ -3719,6 +3889,8 @@ Reactor3D._loadGlbTexture = function(json, bin, texInfo, baseUrl, textures, bitm
         }
         embedded.flipY = false;
         embedded.userData.rrModelTexture = true;
+        embedded.userData.rrGlbImage = textureDef.source;
+        if (ownCap) embedded.userData.rrTextureCap = ownCap;
         if (THREE.SRGBColorSpace) embedded.colorSpace = THREE.SRGBColorSpace;
         if (ownedObjectUrl && !objectUrlReleased) embedded.userData.reactorObjectUrl = primary;
         textures.push(embedded);
@@ -3733,8 +3905,7 @@ Reactor3D._loadGlbTexture = function(json, bin, texInfo, baseUrl, textures, bitm
         if (index >= candidates.length) return;
         const img = new Image();
         img.onload = () => {
-            map.image = Reactor3D.capImage(img);
-            map.needsUpdate = true;
+            Reactor3D.fitModelTexture(map, img, ownCap);
         };
         img.onerror = () => tryAt(index + 1);
         img.src = candidates[index];
@@ -3778,6 +3949,7 @@ Reactor3D.carrySurfaceData = function(from, to) {
     for (const key of ["rrSurfaceMap", "rrOcclusionMap"]) if (a[key]?.isTexture) b[key] = a[key];
     if (a.rrEmissive && a.rrEmissive.isColor) b.rrEmissive = a.rrEmissive.clone();
     if (a.rrHair) b.rrHair = true;
+    if (a.rrLayers) b.rrLayers = a.rrLayers;
     return to;
 };
 
@@ -3787,6 +3959,7 @@ Reactor3D.cloneSurfaceMaterial = function(material) {
     for (const key of ["rrNormalMap", "rrEmissiveMap", "rrSurfaceMap", "rrOcclusionMap"]) {
         if (data?.[key]?.isTexture) delete material.userData[key];
     }
+    delete material.userData.rrLayers;
     let cloned;
     try {
         cloned = material.clone();
@@ -4143,6 +4316,35 @@ Reactor3D.buildGlbTemplate = function(json, bin, baseUrl, bitmaps, options) {
  * view's height; a quarter of its triangles is not a visible change there,
  * and at ten spans a twentieth is not.
  */
+/**
+ * options.textureCap: the largest side this template's pictures keep (under the machine's own cap). Another
+ * player's character is one of a crowd: its 2048 sheets (four or more, 60 to 100 MB of video memory with their
+ * mipmaps) became the stalls of a battle camera sweeping a crowd, each uploading as it came into view.
+ */
+(function() {
+    const build = Reactor3D.buildGlbTemplate;
+    Reactor3D.buildGlbTemplate = function(json, bin, baseUrl, bitmaps, options) {
+        const was = this._buildTextureCap;
+        this._buildTextureCap = options && options.textureCap > 0 ? options.textureCap : 0;
+        let template;
+        try { template = build.apply(this, arguments); } finally { this._buildTextureCap = was; }
+        // A transparent part seen from both sides is drawn in one pass. three draws such a material twice (its back,
+        // then its front) and marks it changed around each (needsUpdate), working its program out again twice a draw,
+        // every frame: a built character's soft hair, lips and brows, 54 of them a frame in North Haven's square.
+        if (template && template.traverse) template.traverse(child => {
+            if (child.isMesh) for (const m of [].concat(child.material || [])) if (m && m.transparent && m.side === THREE.DoubleSide) m.forceSinglePass = true;
+        });
+        return template;
+    };
+})();
+
+/** The largest side of another player's character pictures: 1024, 512 on a weak GPU (`remoteTextureSize`). */
+Reactor3D.remoteTextureSize = { full: 1024, weak: 512 };
+Reactor3D.remoteTextureCap = function() {
+    const weak = typeof this.isWeakGpu === "function" && this.isWeakGpu();
+    return Math.max(64, Math.floor((weak ? this.remoteTextureSize.weak : this.remoteTextureSize.full) || 1024));
+};
+
 Reactor3D.LOD_DISTANCES = [4, 10];
 /** Come back a level only once this much nearer than the switch, so a hovering distance does not flicker. */
 Reactor3D.LOD_HYSTERESIS = 0.85;
@@ -5010,7 +5212,36 @@ Reactor3D.readGlbClips = function(json, bin, nodes) {
  * a plain clone leaves the copy following the template's skeleton, which
  * lives outside every scene and never moves.
  */
-Reactor3D.cloneModelTemplate = function(template) {
+/**
+ * An instance's own copy of one of its template's materials: the light, the model marker and the
+ * surface data carried over by hand, since Material.clone drops them.
+ */
+Reactor3D.instanceModelMaterial = function(mat) {
+    const cloned = Reactor3D.cloneSurfaceMaterial(mat);
+    cloned.__reactorModel = mat.__reactorModel;
+    // Nor the light injection, which lives in onBeforeCompile and the
+    // program cache key — neither of which clone copies.
+    if (mat.__reactorLit) Reactor3D.litMaterial(cloned);
+    // Material.clone copies userData through JSON, which degrades a
+    // stored base colour to its hex number; rebuild it as a Colour or
+    // every later read of .r comes back undefined.
+    if (cloned.userData && cloned.userData.baseColor != null
+        && !cloned.userData.baseColor.isColor) {
+        cloned.userData.baseColor = new THREE.Color(cloned.userData.baseColor);
+    }
+    Reactor3D.carrySurfaceData(mat, cloned);
+    return cloned;
+};
+
+/** Template material -> share key -> the one instance copy every instance with that key draws with. */
+Reactor3D._sharedModelMaterials = new WeakMap();
+
+/**
+ * `options.shareKey`: instances cloned with the same key draw with the same materials until one of them
+ * needs its own (Reactor3D.ownModelMaterials). Twenty copies of one character were twenty sets of
+ * seventeen materials, and every draw switched material: 2.3 ms of a desktop GPU's frame went to it.
+ */
+Reactor3D.cloneModelTemplate = function(template, options) {
     // Object3D.copy duplicates userData through JSON, and the root's
     // glbTextures are THREE.Texture objects whose toJSON serialises every
     // image to a data URL: hundreds of milliseconds per clone, on the main
@@ -5029,23 +5260,21 @@ Reactor3D.cloneModelTemplate = function(template) {
     clone.__reactorClips = template.__reactorClips;
     this.presetSkinnedBounds(clone);
     // Materials are per instance (textures stay shared) so a model flash
-    // tints one tank, not every clone of it. Material.clone drops custom
-    // properties, so the model marker is carried by hand.
+    // tints one tank, not every clone of it; or shared by key until one
+    // instance needs its own (ownModelMaterials).
+    const share = options && options.shareKey != null ? String(options.shareKey) : null;
     const instanceMaterial = mat => {
-        const cloned = Reactor3D.cloneSurfaceMaterial(mat);
-        cloned.__reactorModel = mat.__reactorModel;
-        // Nor the light injection, which lives in onBeforeCompile and the
-        // program cache key — neither of which clone copies.
-        if (mat.__reactorLit) Reactor3D.litMaterial(cloned);
-        // Material.clone copies userData through JSON, which degrades a
-        // stored base colour to its hex number; rebuild it as a Colour or
-        // every later read of .r comes back undefined.
-        if (cloned.userData && cloned.userData.baseColor != null
-            && !cloned.userData.baseColor.isColor) {
-            cloned.userData.baseColor = new THREE.Color(cloned.userData.baseColor);
+        if (share === null) return Reactor3D.instanceModelMaterial(mat);
+        let byKey = Reactor3D._sharedModelMaterials.get(mat);
+        if (!byKey) Reactor3D._sharedModelMaterials.set(mat, byKey = new Map());
+        let shared = byKey.get(share);
+        if (!shared) {
+            shared = Reactor3D.instanceModelMaterial(mat);
+            shared.__rrShared = true;
+            shared.__rrSource = mat;
+            byKey.set(share, shared);
         }
-        Reactor3D.carrySurfaceData(mat, cloned);
-        return cloned;
+        return shared;
     };
     clone.traverse(child => {
         if (!child.isMesh || !child.material) return;
@@ -5781,24 +6010,111 @@ Reactor3D.Worn = {
     /** Takes off everything a model wears. */
     clear(holder, removing=false) {
         const changed=!!holder.worn?.length;
-        for (const worn of holder.worn || []) {
-            if (worn.parent) worn.parent.remove(worn);
-            const skeletons=new Set(),materials=new Set();
-            worn.traverse(n=>{
-                if(!n.isMesh)return;
-                // Garments own their fitted geometry; rigid accessories share the cached template's.
-                if(worn.userData.reactorSkinnedWear)n.geometry.dispose();
-                if(n.skeleton)skeletons.add(n.skeleton);
-                for(const m of (Array.isArray(n.material)?n.material:[n.material]))if(m)materials.add(m);
-            });
-            for(const skin of skeletons)skin.dispose();
-            const list=worn.__reactorWearScene?._materials;
-            for(const mat of materials){if(list){const at=list.indexOf(mat);if(at>=0)list.splice(at,1);}mat.__reactorCasterMaterial?.dispose();mat.dispose();}
-        }
+        for (const worn of holder.worn || []) this.drop(worn);
         holder.worn=[];holder.wornKey='';this.maskSkin(holder);
         const casting=holder.object?.userData.reactorShadowCaster;
         if(changed&&!removing&&casting&&Reactor3D.Shadows?.markCaster)Reactor3D.Shadows.markCaster(holder.object,casting==='dynamic');
         holder._reactorGrappler=undefined;
+    },
+
+    /** Takes one worn prop off and lets go of what it owns: its materials, and a garment's fitted geometry and skeleton. */
+    drop(worn) {
+        if (worn.parent) worn.parent.remove(worn);
+        const skeletons=new Set(),materials=new Set();
+        worn.traverse(n=>{
+            if(!n.isMesh)return;
+            // Garments own their fitted geometry; rigid accessories share the cached template's (merged pieces, LayeredParts.rigid's).
+            if(worn.userData.reactorSkinnedWear)n.geometry.dispose();
+            if(n.skeleton)skeletons.add(n.skeleton);
+            for(const m of (Array.isArray(n.material)?n.material:[n.material]))if(m)materials.add(m);
+        });
+        for(const skin of skeletons)skin.dispose();
+        this.forget(worn.__reactorWearScene, materials);
+    },
+
+    /** Materials a worn prop no longer draws with: out of the scene's lit list, and disposed. */
+    forget(scene, materials) {
+        const list=scene?._materials;
+        for(const mat of materials){if(list){const at=list.indexOf(mat);if(at>=0)list.splice(at,1);}mat.__reactorCasterMaterial?.dispose();mat.dispose();}
+    },
+
+    /**
+     * A rigid prop's pieces drawn as the merged meshes LayeredParts.rigid made for its model (WORN): each wearer's copy
+     * takes them in place of the pieces they stand for, at once where they are made already, else when they are
+     * (if the copy is still worn). The same geometry, places and per-piece pictures and values: fewer draws in every
+     * pass (the Grappler's three pieces are two). Nothing moves a worn piece against the others (they hang together
+     * from one bone, `put`); code that needs one piece apart (a grappler's harpoon, hidden while it flies) asks for
+     * the pieces back (`apart`).
+     */
+    mergePieces(holder, worn, template) {
+        const L = Reactor3D.LayeredParts, entry = L && !(holder.wornApart && holder.wornApart.has(template)) ? L.rigid(template) : null;
+        if (!entry) return;
+        if (entry.ready !== null) { if (entry.ready) this.swapPieces(holder, worn, template, entry.ready.made); return; }
+        entry.promise.then(() => {
+            if (entry.ready && holder.object && worn.parent && (holder.worn || []).indexOf(worn) >= 0) this.swapPieces(holder, worn, template, entry.ready.made);
+        });
+    },
+
+    swapPieces(holder, worn, template, made) {
+        if (worn.__rrMerged || (holder.wornApart && holder.wornApart.has(template))) return;
+        const scene = worn.__reactorWearScene, gone = new Set();
+        let swapped = false;
+        for (const { mesh, parts } of made) {
+            // The copy's pieces, at their places in the template (a copy shares each piece's geometry): all there and
+            // all shown, or this group stays as its pieces.
+            const pieces = parts.map(part => { const piece = worn.children[template.children.indexOf(part)]; return piece && piece.isMesh && piece.geometry === part.geometry ? piece : null; });
+            if (pieces.some(piece => !piece || !piece.visible)) continue;
+            const one = new THREE.Mesh(mesh.geometry, Reactor3D.instanceModelMaterial(mesh.material));
+            one.name = mesh.name;
+            one.position.copy(mesh.position); one.quaternion.copy(mesh.quaternion); one.scale.copy(mesh.scale);
+            one.renderOrder = mesh.renderOrder;
+            one.frustumCulled = pieces.every(piece => piece.frustumCulled);
+            one.castShadow = pieces.some(piece => piece.castShadow);
+            one.receiveShadow = pieces.some(piece => piece.receiveShadow);
+            one.layers.mask = pieces[0].layers.mask;
+            one.userData.rrLayeredParts = mesh.userData.rrLayeredParts.slice();
+            const mat = one.material;
+            mat.__reactorModel = true;
+            mat.fog = false;
+            if (mat.color && !mat.userData.baseColor) mat.userData.baseColor = mat.color.clone();
+            if (scene && scene._materials && scene._materials.indexOf(mat) < 0) scene._materials.push(mat);
+            // In the first piece's place among the copy's children, so the model's own order is kept.
+            worn.add(one);
+            worn.children.splice(worn.children.indexOf(one), 1);
+            worn.children.splice(worn.children.indexOf(pieces[0]), 0, one);
+            for (const piece of pieces) { worn.remove(piece); gone.add(piece.material); }
+            swapped = true;
+        }
+        if (!swapped) return;
+        this.forget(scene, gone);
+        worn.__rrMerged = true;
+        // The Builder's metal shines on the merged mesh as on its pieces (put).
+        Reactor3D.applyModelSurface(worn, null);
+        const casting = holder.object && holder.object.userData.reactorShadowCaster;
+        if (casting && Reactor3D.Shadows && Reactor3D.Shadows.markCaster) Reactor3D.Shadows.markCaster(holder.object, casting === "dynamic");
+        holder._reactorGrappler = undefined;
+    },
+
+    /**
+     * Worn props whose merged pieces include one named by `pattern` (all merged ones without it), put on again as
+     * their pieces, and kept so on this wearer. Rope.grapplerOf asks for the Grappler's harpoon this way.
+     */
+    apart(holder, pattern) {
+        if (!holder || !Array.isArray(holder.worn) || !holder.worn.some(worn => worn.__rrMerged)) return false;
+        let changed = false;
+        holder.worn = holder.worn.map(worn => {
+            const put = worn.__rrPut;
+            if (!worn.__rrMerged || !put) return worn;
+            const names = [];
+            worn.traverse(node => { if (node.userData && Array.isArray(node.userData.rrLayeredParts)) names.push(...node.userData.rrLayeredParts); });
+            if (pattern && !names.some(name => pattern.test(name))) return worn;
+            (holder.wornApart || (holder.wornApart = new Set())).add(put.template);
+            this.drop(worn);
+            changed = true;
+            return this.put(holder, put.template, put.json, put.spec, put.scene);
+        }).filter(Boolean);
+        if (changed) holder._reactorGrappler = undefined;
+        return changed;
     },
 
     /** Puts one prop on: the clone, held by the wearer's bone for its part; null when the prop or the wearer has no such part. */
@@ -5846,6 +6162,9 @@ Reactor3D.Worn = {
         if (casting && Reactor3D.Shadows && Reactor3D.Shadows.markCaster) Reactor3D.Shadows.markCaster(holder.object, casting === "dynamic");
         holder._reactorGrappler = undefined;
         if (scene) scene._ambientLevel = undefined;
+        // What it was put on with, to put it on again as its pieces (`apart`); its pieces merged where they can be.
+        worn.__rrPut = { template, json, spec, scene };
+        this.mergePieces(holder, worn, template);
         return worn;
     },
 
@@ -5978,11 +6297,16 @@ Reactor3D.Worn = {
             if(!entry){entry={original:mesh.geometry,copy:mesh.geometry.clone()};records.set(mesh,entry);mesh.geometry=entry.copy;}
             const UV=entry.original.getAttribute('uv'),I=entry.original.getIndex();if(!UV||!I)return;
             const out=entry.copy.getIndex().array;let count=0;
+            // A body merged with the face's parts (LayeredParts.BODY): only its own triangles are masked, the rest kept in order.
+            const ranges=entry.original.userData.rrBodyRanges;
+            const isBody=t=>!Array.isArray(ranges)||ranges.some(r=>t>=r[0]&&t<r[0]+r[1]);
             for(let t=0;t<I.count;t+=3) {
                 const a=I.array[t],b=I.array[t+1],c=I.array[t+2];
-                const u=(UV.getX(a)+UV.getX(b)+UV.getX(c))/3,v=(UV.getY(a)+UV.getY(b)+UV.getY(c))/3;
-                const index=Math.max(0,Math.min(255,Math.floor(v*256)))*256+Math.max(0,Math.min(255,Math.floor(u*256)));
-                if(masks.some(m=>m.bits[index>>3]&(1<<(index&7))))continue;
+                if(isBody(t)) {
+                    const u=(UV.getX(a)+UV.getX(b)+UV.getX(c))/3,v=(UV.getY(a)+UV.getY(b)+UV.getY(c))/3;
+                    const index=Math.max(0,Math.min(255,Math.floor(v*256)))*256+Math.max(0,Math.min(255,Math.floor(u*256)));
+                    if(masks.some(m=>m.bits[index>>3]&(1<<(index&7))))continue;
+                }
                 out[count++]=a;out[count++]=b;out[count++]=c;
             }
             entry.copy.getIndex().needsUpdate=true;entry.copy.setDrawRange(0,count);
@@ -6327,6 +6651,9 @@ Reactor3D.carveModelParts = function(root, parts) {
             mesh.parent.add(piece);
         }
         mesh.geometry = subGeometry(remainder);
+        // No distance levels for what is left: a level would hand it the whole mesh back, and the carved
+        // triangles would be drawn twice (the pieces and, unmoving, here). This copy's note only.
+        delete mesh.userData.lodIndex;
     });
 };
 
@@ -6733,7 +7060,6 @@ Reactor3D.attachRigFingers = function(root, hand, side, points, palm) {
             entry.joints = [{ node: one, rest: one.quaternion.clone(), axis: hinge.clone() }, { node: two, rest: two.quaternion.clone(), axis: hinge.clone() }];
         }
         entry.now = [0, 0];
-        entry.goal = [0, 0];
     }
     hand.updateMatrixWorld(true);
     const grip = { hand, layout, file: layout.fingers.some(f => f.file), stamp: -1, held: null, last: null, closed: false };
@@ -7514,8 +7840,6 @@ Reactor3D.HandGrip = {
     HELD_FOR: 140,
     // How far a wrist turns to take a handle, in radians: a hand cannot close on a handle that lies along its fingers.
     TURN_MAX: 0.8,
-    // A thing whose bulk hangs this far off its long axis (a pistol, a rifle) is held by that bulk, the grip; anything slimmer by its long axis.
-    GRIP_HANG: 0.06,
     _m: null,
     _cloud: new Float32Array(3 * 2048),
     now() { return typeof performance !== "undefined" ? performance.now() : Date.now(); },
@@ -7875,6 +8199,15 @@ Reactor3D.Held = {
     },
     /** The joint both arms hang from (the chest), and the head on it: what a stance turns. */
     torso(record, side) {
+        // Found once for a model and kept: asked each aimed frame, and finding the head walks everything
+        // under the chest (both arms, every finger joint) with a pattern on each name.
+        const kept = record && record._torso && record._torso.object === record.object ? record._torso : null;
+        if (kept && kept[side]) return kept[side];
+        const found = this.findTorso(record, side);
+        if (found && record.object) (kept || (record._torso = { object: record.object }))[side] = found;
+        return found;
+    },
+    findTorso(record, side) {
         const hand = this.joint(record, side + "Hand"), other = this.joint(record, (side === "right" ? "left" : "right") + "Hand");
         const upper = hand && hand.parent && hand.parent.parent, across = other && other.parent && other.parent.parent;
         if (!upper || !across) return null;
@@ -7951,7 +8284,7 @@ Reactor3D.Held = {
     /**
      * Holds a shown weapon the way its step asks: aimed, the shooting arm reaches down the line to `goal` so the
      * barrel (laid along that line) points at it and the stock sits back by the shoulder. Returns the hand frame
-     * to place the thing with. `note`, when given, is told the line (`heldAimLine`).
+     * to place the thing with.
      */
     aim(owner, held, step, goal, note) {
         const T = THREE, R = Reactor3D, side = step.attachment === "leftHand" ? "left" : "right";
@@ -7974,7 +8307,6 @@ Reactor3D.Held = {
         // A long gun is shouldered (the stock ends by the shoulder); a short one is held out at arm's length.
         const fore = hand.parent, E = fore.getWorldPosition(new T.Vector3()), H = hand.getWorldPosition(new T.Vector3()), reach = S.distanceTo(E) + E.distanceTo(H);
         const distance = itemLength > 1.2 ? Math.max(.35, gripLength + .12) : reach * .86;
-        if (note) note.heldAimLine = { from: S.clone(), to: goal.clone() };
         if (gun) {
             const down = new T.Vector3(0, -1, 0).addScaledVector(dir, dir.y);
             if (down.lengthSq() > 1e-6) {
@@ -8300,12 +8632,33 @@ Reactor3D.MapHeld = {
         this.unpin(state);
         const record = state.record;
         if (record) {
+            // Its materials (this copy's own) leave the scene's list with it: every ambient change walks that
+            // list, and it grew by each weapon's materials every battle.
+            const listed = state.lit && state.lit._materials;
+            if (listed) record.object.traverse(child => {
+                const mats = child.material ? (Array.isArray(child.material) ? child.material : [child.material]) : [];
+                for (const mat of mats) { const at = listed.indexOf(mat); if (at >= 0) listed.splice(at, 1); }
+            });
             if (record.object.parent) record.object.parent.remove(record.object);
             if (state.template) Reactor3D.releaseModelInstance(record.object, state.template);
         }
-        state.record = null; state.template = null; state.local = null; state.loading = null;
+        state.record = null; state.template = null; state.local = null; state.loading = null; state.lit = null;
     },
     free(state) {
+        // Its hands open at once: the fingers are eased only by HandGrip.update, which the map reaches through
+        // a held thing's update, and after the last one is freed nobody calls it (they stayed clenched).
+        const grips = Reactor3D.HandGrip;
+        for (const grip of state.pinned) {
+            for (const finger of grip.layout.fingers) {
+                finger.now[0] = 0; finger.now[1] = 0;
+                for (const joint of finger.joints) joint.node.quaternion.copy(joint.rest);
+            }
+            // The wrist's turn and an aim's turn come off with them, where the pose has not replaced them.
+            if (grip.turned) { if (grip.hand.quaternion.equals(grip.turnOut)) grip.hand.quaternion.copy(grip.turnBase); grip.turn.identity(); grip.turned = false; }
+            if (grip.isSet) { if (grip.hand.quaternion.equals(grip.setOut)) grip.hand.quaternion.copy(grip.setBase); grip.isSet = false; }
+            if (grips && grips.hands) grips.hands.delete(grip);
+            grip.thing = undefined; grip.relSet = false;
+        }
         this.release(state);
         for (const slot of state.slots) if (slot && slot.node && slot.node.quaternion.equals(slot.out)) slot.node.quaternion.copy(slot.base);
         state.slots.length = 0;
@@ -8327,7 +8680,9 @@ Reactor3D.MapHeld = {
     unbind(state) {
         const object = state.record && state.record.object;
         if (object && object.parent) object.parent.remove(object);
-        state.owner = null; state.slots.length = 0; state.pinned.length = 0; state.local = null;
+        // Each grip is let go too (unpin): a grip left pinned counts as held and never leaves HandGrip's list.
+        this.unpin(state);
+        state.owner = null; state.slots.length = 0; state.local = null;
         state.solved = !state.shown;
     },
     scratch() {
@@ -8605,6 +8960,52 @@ Reactor3D.DownedPose = {
 };
 
 /**
+ * A body laid down by turning it about its feet (a sleeper on its back, a Face Ceiling or Face Ground route step)
+ * had the half of it behind that line under the floor: sleepers lay half sunk into the ground. The posed body's
+ * lowest point is found from a sample of its skinned vertices and the body raised to rest on the floor, as a
+ * fall's is (DownedPose). Found again only while its pose may still change (a sleeper settles in its first
+ * second) or its turn, size or floor does; a body held still costs nothing.
+ */
+Reactor3D.LyingLift = {
+    SAMPLES: 1500,
+    // How far above the floor the lowest point rests (a little, so it never flickers through).
+    CLEAR: 0.02,
+    lowest(object) {
+        const vertex = new THREE.Vector3();
+        let low = Infinity, total = 0;
+        const meshes = [];
+        object.traverse(o => { if (o.isMesh && o.visible && o.geometry && o.geometry.attributes.position) { meshes.push(o); total += o.geometry.attributes.position.count; } });
+        for (const mesh of meshes) {
+            const count = mesh.geometry.attributes.position.count, step = Math.max(1, Math.ceil(total / this.SAMPLES));
+            for (let i = 0; i < count; i += step) {
+                mesh.getVertexPosition(i, vertex).applyMatrix4(mesh.matrixWorld);
+                if (vertex.y < low) low = vertex.y;
+            }
+        }
+        return low;
+    },
+    // A pose still playing (an event lying with its idle) is measured again this often, in frames.
+    EVERY: 30,
+    apply(holder, object, floor) {
+        const state = holder.lyingLift || (holder.lyingLift = { lift: 0, at: null, age: 0 });
+        // How it lay when it was last measured, as six numbers: a key string made of them was an array, six
+        // strings and a join for every sleeper every update, to find nothing changed.
+        const q = object.quaternion, at = state.at, scale = object.scale.y, near = (a, b) => Math.abs(a - b) <= 0.0005;
+        const same = !!at && near(at[0], q.x) && near(at[1], q.y) && near(at[2], q.z) && near(at[3], q.w) && near(at[4], scale) && near(at[5], floor);
+        // Measured with the body where it was just placed, before any lift.
+        if (!same || (!holder.poseHeld && ++state.age >= this.EVERY)) {
+            object.updateMatrixWorld(true);
+            const low = this.lowest(object);
+            if (Number.isFinite(low)) state.lift = floor + this.CLEAR - low;
+            const kept = at || (state.at = [0, 0, 0, 0, 0, 0]);
+            kept[0] = q.x; kept[1] = q.y; kept[2] = q.z; kept[3] = q.w; kept[4] = scale; kept[5] = floor;
+            state.age = 0;
+        }
+        object.position.y += state.lift;
+    }
+};
+
+/**
  * A body pulling itself up a ledge keeps its hands on the edge
  * (`ReactorPhysics.updateMantle` moves the body; this poses the arms). Each
  * frame of a grapple, the firing arm aims along the line and the free hand
@@ -8811,8 +9212,11 @@ Reactor3D.applyModelRig = function(root, rig) {
             const round = v => Math.round(v * 1e4) / 1e4;
             const signature = data.count + "|" + (geometry.index ? geometry.index.count : 0) + "|" + list.map(h => h.index + ":" + h.toHand.map(round).join(",") + ":"
                 + h.fingers.map(f => [f.one, f.two, ...f.base.map(round), ...f.tip.map(round), round(f.radius)].join(",")).join(";")).join("|");
-            const versions = this.FingerSkin._rigSkins.get(data) || [];
-            this.FingerSkin._rigSkins.set(data, versions);
+            // Kept by the weights' own array (the cached sidecar's, the same for every copy of the model):
+            // `readModelRig` makes the record around it anew each time, and every copy ran the whole job again.
+            const kept = data.indices && typeof data.indices === "object" ? data.indices : data;
+            const versions = this.FingerSkin._rigSkins.get(kept) || [];
+            this.FingerSkin._rigSkins.set(kept, versions);
             fingerSkin = versions.find(entry => entry.signature === signature);
             if (!fingerSkin) {
                 const entry = fingerSkin = { signature, index: null, weight: null, mitts: null, waiting: [] };
@@ -9039,6 +9443,8 @@ Reactor3D.prepareModelInstance = function(object, clips) {
             acc: null
         });
     });
+    // One rest value per bone and property for every clip of this model (Reactor3D.keepClipRest).
+    if (clips && clips.length) Reactor3D.keepClipRest(inner);
     return {
         root: inner,
         meshes,
@@ -9329,6 +9735,34 @@ Reactor3D.chestForward = function(holder) {
 Reactor3D.isClimbing = function(character) {
     // (Over the edge of a ledge the body steps onto the top: a walk, not a climb.)
     return !!(character && (character._reactorOnLadder || (character._reactorMantle && !character._reactorMantle.over)));
+};
+
+/**
+ * A model's clips name its bones in their own ways (the file's "mixamorigHips", the shared library's "Hips"),
+ * and three keeps a binding, with an original value to fall back to, for each name. A binding made while
+ * another clip held the bone took that pose as its original: a party member who climbed out of the water
+ * started its run clip there for the first time, and from then on every fade of the run went back to the
+ * swim's tilt, and with no idle clip it stood (or floated) in it (2026-11-07). Under `root`, every binding's
+ * original is the value the bone had the first time any binding of it was made: before anything moved it.
+ */
+Reactor3D.keepClipRest = function(root) {
+    if (!root || !root.userData) return;
+    if (!root.userData.__rrClipRest) root.userData.__rrClipRest = new Map();
+    const PM = THREE.PropertyMixer && THREE.PropertyMixer.prototype;
+    if (!PM || PM.saveOriginalState.__rrClipRest) return;
+    const save = PM.saveOriginalState;
+    PM.saveOriginalState = function() {
+        save.call(this);
+        const binding = this.binding, node = binding && binding.node, kept = binding && binding.rootNode && binding.rootNode.userData && binding.rootNode.userData.__rrClipRest;
+        if (!kept || !node || !node.uuid) return;
+        const path = binding.parsedPath || {}, key = node.uuid + "|" + path.propertyName + "|" + (path.propertyIndex === undefined ? "" : path.propertyIndex);
+        const stride = this.valueSize, buffer = this.buffer, offset = stride * this._origIndex, had = kept.get(key);
+        if (!had || had.length !== stride) { kept.set(key, Array.prototype.slice.call(buffer, offset, offset + stride)); return; }
+        for (let i = 0; i < stride; i++) buffer[offset + i] = had[i];
+        // As three's own save does: the accumulators start from the original, so a change is told from it.
+        for (let i = stride; i !== offset; ++i) buffer[i] = buffer[offset + (i % stride)];
+    };
+    PM.saveOriginalState.__rrClipRest = true;
 };
 
 /** Whether a character is swimming by the physics. */
@@ -9830,7 +10264,7 @@ Reactor3D.applyModelGlow = function(binding, rule, index, state) {
                 }
                 mats[k] = own; changed = true;
             }
-            if (changed) object.material = many ? mats : mats[0];
+            if (changed) { object.material = many ? mats : mats[0]; Reactor3D.touchMaterial(object.material); }
         });
         glow = all[index] = { rule, list, lit: false };
     }
@@ -9843,7 +10277,7 @@ Reactor3D.applyModelGlow = function(binding, rule, index, state) {
         if (active) t -= state.action.frame;
     }
     if (!active) {
-        if (glow.lit) for (const g of glow.list) { g.material.emissiveIntensity = g.intensity; if (g.offset) g.material.emissiveMap.offset.copy(g.offset); }
+        if (glow.lit) for (const g of glow.list) { g.material.emissiveIntensity = g.intensity; if (g.offset) g.material.emissiveMap.offset.copy(g.offset); Reactor3D.touchMaterial(g.material); }
         glow.lit = false;
         return;
     }
@@ -9851,6 +10285,7 @@ Reactor3D.applyModelGlow = function(binding, rule, index, state) {
     const k = this.modelGlowValue(rule, t), seconds = t / 60;
     for (const g of glow.list) {
         g.material.emissiveIntensity = g.intensity * k;
+        Reactor3D.touchMaterial(g.material);
         if (rule.mode === "scroll" && g.offset) {
             const map = g.material.emissiveMap;
             map.offset.set(((g.offset.x + rule.uv[0] * seconds) % 1 + 1) % 1, ((g.offset.y + rule.uv[1] * seconds) % 1 + 1) % 1);
@@ -10448,8 +10883,37 @@ Reactor3D.fireModelEffect = function(effect, character, holder) {
  * flashes. Returns true on the frame the flash ends, so the caller can
  * hand the materials back to the ambient tint.
  */
+/**
+ * Before anything changes one instance's materials (a flash, a variant, a Transform 3D Model's look):
+ * its shared ones are swapped for copies of its own, made from the template's and given the instance's
+ * surface and look again, so it looks exactly as it did.
+ */
+Reactor3D.ownModelMaterials = function(holder) {
+    const object = holder && holder.object;
+    if (!object || holder.ownsMaterials || typeof object.traverse !== "function") return;
+    holder.ownsMaterials = true;
+    let swapped = false;
+    const own = mat => {
+        if (!mat || !mat.__rrShared || !mat.__rrSource) return mat;
+        swapped = true;
+        // (The mesh draws with another material from here: the one left and the one taken are both stamped.)
+        Reactor3D.touchMaterial(mat);
+        return Reactor3D.touchMaterial(Reactor3D.instanceModelMaterial(mat.__rrSource));
+    };
+    object.traverse(child => {
+        if (!child.isMesh || !child.material) return;
+        child.material = Array.isArray(child.material) ? child.material.map(own) : own(child.material);
+    });
+    if (!swapped) return;
+    const transform = holder.joinTransform;
+    if (transform && "surface" in transform) this.applyModelSurface(object, transform.surface);
+    if (transform && "look" in transform) this.applyModelLook(object, transform.look);
+    if (holder.scene && holder.scene.adoptModelMaterials) holder.scene.adoptModelMaterials(object);
+};
+
 Reactor3D.updateModelFlash = function(holder) {
     if (!holder || !holder.flash || !holder.object) return false;
+    this.ownModelMaterials(holder);
     const flash = holder.flash;
     const strength = (flash.color[3] / 255) * Math.max(0, 1 - flash.t / flash.duration);
     holder.object.traverse(child => {
@@ -10468,6 +10932,7 @@ Reactor3D.updateModelFlash = function(holder) {
                 base.r + (flash.color[0] / 255 - base.r) * strength,
                 base.g + (flash.color[1] / 255 - base.g) * strength,
                 base.b + (flash.color[2] / 255 - base.b) * strength);
+            Reactor3D.touchMaterial(mat);
         }
     });
     flash.t++;
@@ -10480,6 +10945,7 @@ Reactor3D.updateModelFlash = function(holder) {
             for (const mat of mats) {
                 if (mat.color && mat.userData.baseColor && mat.userData.baseColor.isColor) {
                     mat.color.copy(mat.userData.baseColor);
+                    Reactor3D.touchMaterial(mat);
                 }
             }
         });
@@ -10675,7 +11141,7 @@ Reactor3D.actorFaceState = function(actorId) {
             state.bitmap.baseTexture.update();
             state.ready = true;
             for (const waiter of state.waiters.slice()) {
-                if (waiter && typeof waiter.refresh === "function" && !waiter._destroyed) {
+                if (waiter && typeof waiter.refresh === "function" && !waiter._destroyed && !waiter.destroyed) {
                     waiter.refresh();
                 }
             }
@@ -10992,9 +11458,12 @@ Reactor3D.updateMapModelSprite = function(sprite) {
         sprite._reactorFlatFit = 0;
     }
     if (!character || typeof character.tileId === "function" && character.tileId() > 0) return;
-    const spec = this.characterModelSpec(character);
     let state = sprite._reactorMapModel;
     const inScene = typeof $dataMap !== "undefined" && this.shouldRender3D($dataMap);
+    // A 3D map draws the model in its scene: nothing to do here unless a flat map's picture is left to let go
+    // (the spec, asked of every sprite every update, was the larger part of this call).
+    if (inScene && !state) return;
+    const spec = this.characterModelSpec(character);
     if (!spec || inScene) {
         if (state) {
             this.releaseMapModelState(state);
@@ -11247,6 +11716,8 @@ Reactor3D.setMaterialShine = function(material, surface, studio) {
     if (!material || typeof THREE === "undefined") return;
     const shines = !!surface && surface.reflect > 0;
     const had = !!this.shineOf(material);
+    const shineKey = () => { const s = material.userData.rrShine; return s && s.vector ? s.vector.x + "," + s.vector.y + "," + s.vector.z + "," + s.vector.w + "," + (s.tint && s.tint.isColor ? s.tint.getHex() : "") + "," + (s.albedo ? s.albedo.value : "") : ""; };
+    const shineWas = shineKey();
     if (shines) {
         if (!material.userData.rrShine || !material.userData.rrShine.vector || !material.userData.rrShine.vector.isVector4) {
             material.userData.rrShine = { vector: new THREE.Vector4(), tint: new THREE.Color() };
@@ -11266,6 +11737,8 @@ Reactor3D.setMaterialShine = function(material, surface, studio) {
     // (no reflection sampler, every draw dropped). Dispose so the next draw compiles
     // afresh; the GL program itself is shared and reused.
     if (had !== shines) { material.dispose(); material.needsUpdate = true; }
+    // (Asked again with the surface it has: nothing changed, nothing stamped.)
+    if (had !== shines || shineKey() !== shineWas) Reactor3D.touchMaterial(material);
 };
 
 /** Builder metal keeps no diffuse paint under its metallic response (the fourth Surface component). */
@@ -11566,11 +12039,14 @@ Reactor3D.applyModelLook = function(object, look) {
                 mine = { color: base.clone(), map: material.map || null };
                 own.set(material, mine);
             }
+            const lookWas = material.color.getHex() + "|" + (material.map ? material.map.id : 0) + "|" + (material.userData.rrLook && material.userData.rrLook.a ? [material.userData.rrLook.a.x, material.userData.rrLook.a.y, material.userData.rrLook.a.z, material.userData.rrLook.b.x, material.userData.rrLook.b.y, material.userData.rrLook.b.z].join(",") : "");
+            const colourWas = [material.color.r, material.color.g, material.color.b];
             // The picture: the variant's own in place of the file's.
             const map = look && look.texture ? (this.variantTexture(look.model, look.texture, mine.map) || mine.map) : mine.map;
             if (material.map !== map) {
                 const had = !!material.map;
                 material.map = map;
+                Reactor3D.touchMaterial(material);
                 if (had !== !!map) material.needsUpdate = true;
             }
             // The color adjustment: in the program for a textured material, on the color itself for a flat one.
@@ -11597,6 +12073,9 @@ Reactor3D.applyModelLook = function(object, look) {
                 base.setRGB(out[0], out[1], out[2], THREE.SRGBColorSpace);
             }
             material.color.copy(base);
+            // (Asked again with the look it has: nothing changed, nothing stamped.)
+            const lookNow = material.color.getHex() + "|" + (material.map ? material.map.id : 0) + "|" + (material.userData.rrLook && material.userData.rrLook.a ? [material.userData.rrLook.a.x, material.userData.rrLook.a.y, material.userData.rrLook.a.z, material.userData.rrLook.b.x, material.userData.rrLook.b.y, material.userData.rrLook.b.z].join(",") : "");
+            if (lookNow !== lookWas || colourWas[0] !== material.color.r || colourWas[1] !== material.color.g || colourWas[2] !== material.color.b) Reactor3D.touchMaterial(material);
         }
     });
 };
@@ -11623,6 +12102,7 @@ Reactor3D.refreshModelVariant = function(holder, spec) {
     holder.variant = spec.variant || "";
     const json = this._sidecarJson ? this._sidecarJson[spec.name] : null;
     if (!holder.object) return;
+    this.ownModelMaterials(holder);
     this.applyModelSurface(holder.object, this.variantSurface(json, spec));
     this.applyModelLook(holder.object, this.modelLook(json, spec));
     if (!json || !this.readModelEffects) return;
@@ -12277,6 +12757,23 @@ Reactor3D.animationStride = function(x, y, z, span, camera) {
     return share < Reactor3D.ANIMATION_SPECK ? 4 : share < Reactor3D.ANIMATION_SMALL ? 2 : 1;
 };
 
+/** Whether a model stands in the camera's view, with a body's height of margin all round. The frustum is made once a frame. */
+Reactor3D.inAnimationView = function(object, span, camera) {
+    if (typeof THREE === "undefined" || !camera?.projectionMatrix || !camera.matrixWorldInverse) return true;
+    const frame = typeof Graphics !== "undefined" ? Graphics.frameCount : 0;
+    const view = this._animationView || (this._animationView = { frame: -1, camera: null, frustum: new THREE.Frustum(), matrix: new THREE.Matrix4(), sphere: new THREE.Sphere() });
+    if (view.frame !== frame || view.camera !== camera) {
+        view.frame = frame;
+        view.camera = camera;
+        if (typeof camera.updateMatrixWorld === "function") camera.updateMatrixWorld();
+        view.matrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+        view.frustum.setFromProjectionMatrix(view.matrix);
+    }
+    view.sphere.center.set(object.position.x, object.position.y + span / 2, object.position.z);
+    view.sphere.radius = span * 1.5 + 1;
+    return view.frustum.intersectsSphere(view.sphere);
+};
+
 /**
  * Whether a placed model's motion is sampled this frame: the player's own
  * body and one playing an action asked of it always are; the rest by their
@@ -12284,13 +12781,335 @@ Reactor3D.animationStride = function(x, y, z, span, camera) {
  */
 Reactor3D.animationDue = function(holder, character, object, camera) {
     holder.sampled = true;
+    holder.poseHeld = false;
+    // Whether the frames between game updates blend this body's pose (Graphics.FramePacing.capturePoses): not
+    // for one out of view or small on screen, whose pose and place of the update stand until the next.
+    holder.blendPose = true;
     if (!camera || holder.action || (typeof $gamePlayer !== "undefined" && character === $gamePlayer)) return true;
     const span = Reactor3D.instanceSpan(object);
-    const stride = Reactor3D.animationStride(object.position.x, object.position.y + span / 2, object.position.z, span, camera);
+    // Out of view, a body keeps the pose it had: sampling a clip nobody sees was most of a crowd's cost.
+    // Its first pose is always taken, and the sphere is generous, so it never steps in frozen mid-stride.
+    if (holder.posedOnce && !Reactor3D.inAnimationView(object, span, camera)) { holder.poseHeld = true; holder.blendPose = false; return (holder.sampled = false); }
+    holder.posedOnce = true;
+    // A Quality level may animate what is not the party (props, machines, NPCs) every other update or less often.
+    const Q = Reactor3D.Quality, floor = !Q || !Q.animationStride ? 1 : Reactor3D.partyCharacter(character) ? (Q.partyStride ? Q.partyStride() : 1) : Q.animationStride();
+    const stride = Math.max(floor, Reactor3D.animationStride(object.position.x, object.position.y + span / 2, object.position.z, span, camera));
     if (stride === 1) return true;
+    holder.blendPose = false;
     if (holder.strideAt === undefined) holder.strideAt = (Reactor3D._strideSeed = (Reactor3D._strideSeed || 0) + 1);
     // Kept for what is laid over the motion each frame (the look's lean): a frame not sampled keeps last frame's pose whole.
     return (holder.sampled = ((typeof Graphics !== "undefined" ? Graphics.frameCount : 0) + holder.strideAt) % stride === 0);
+};
+
+/**
+ * A body small on screen leaves out the parts nobody can see at that size: what is inside the head (teeth, tongue,
+ * the mouth's inside) and trims under a pixel (seams, stitching, zip teeth, fasteners, indicator lights, lashes,
+ * brows, eyelids). A built character is 17 to 39 parts, each a draw and a material in every pass that sees it, and a
+ * crowd of them was thousands of draws a frame; this is about half of them, at under a twentieth of the view's height
+ * (Reactor3D.animationDue's `blendPose`). The parts leave the view's layer only, so whatever else shows or hides them
+ * is untouched, and they still cast. The parts are known by the Forge's names for them.
+ */
+Reactor3D.FarParts = {
+    enabled: true,
+    PATTERN: /\b(teeth|tongue|mouth inside|seams?|stitch|stitching|zip|zipper|fasteners?|indicators?|lashes|brows|eyelids|controls)\b/i,
+    VIEW_LAYER: 0,
+    partsOf(object) {
+        let list = object.userData.rrFarParts;
+        if (list && list.of === object.children.length) return list;
+        list = [];
+        object.traverse(child => {
+            if (!child.isMesh || child === object) return;
+            const names = (child.name || "") + " " + [].concat(child.material || []).map(m => m && m.name || "").join(" ");
+            if (this.PATTERN.test(names)) list.push(child);
+        });
+        list.of = object.children.length;
+        object.userData.rrFarParts = list;
+        return list;
+    },
+    /**
+     * The second, soft pass of hair (a built character's `Hair_soft`, `Facial_hair_soft`): the blended fringe over
+     * the cut-out hair. A Quality level that trims (Reactor3D.Quality.trimParts) leaves it out with the small parts,
+     * on every body however near: the cut-out hair stays, its edge harder.
+     */
+    SOFT_PATTERN: /(^|_|\s)soft\b/i,
+    /**
+     * A part's name, or the name of a group it stands in below the body: a built character's soft hair is an
+     * unnamed SkinnedMesh in a node named `Hair_soft`, and was never found by its own name (North Haven,
+     * 2026-11-09: every trimmed party member still drew both hair passes).
+     */
+    namedSoft(child, object) {
+        for (let node = child; node && node !== object; node = node.parent) if (this.SOFT_PATTERN.test(node.name || "")) return true;
+        return false;
+    },
+    softOf(object) {
+        let list = object.userData.rrSoftParts;
+        if (list && list.of === object.children.length) return list;
+        list = [];
+        object.traverse(child => { if (child.isMesh && child !== object && this.namedSoft(child, object)) list.push(child); });
+        list.of = object.children.length;
+        object.userData.rrSoftParts = list;
+        return list;
+    },
+    apply(holder, object, far, trim = false) {
+        if (!object || !object.userData) return;
+        const want = !!((far || trim) && this.enabled), soft = !!(trim && this.enabled);
+        if (holder.farParts === want && object.userData.rrFarPartsApplied === want && holder.softParts === soft && object.userData.rrSoftPartsApplied === soft) return;
+        holder.farParts = want;
+        object.userData.rrFarPartsApplied = want;
+        for (const part of this.partsOf(object)) {
+            if (want) part.layers.disable(this.VIEW_LAYER); else part.layers.enable(this.VIEW_LAYER);
+        }
+        // The mouth's inside is among these parts: shown again here, it is ClosedMouth's to hide again, which it
+        // would not do while its record still said hidden (three draws a pass back for that body until it next spoke).
+        if (!want && object.userData.rrMouth) object.userData.rrMouth.hidden = undefined;
+        holder.softParts = soft;
+        object.userData.rrSoftPartsApplied = soft;
+        for (const part of this.softOf(object)) {
+            if (soft) part.layers.disable(this.VIEW_LAYER); else part.layers.enable(this.VIEW_LAYER);
+        }
+    }
+};
+(function() {
+    const due = Reactor3D.animationDue;
+    Reactor3D.animationDue = function(holder, character, object, camera) {
+        const answer = due.apply(this, arguments);
+        const Q = Reactor3D.Quality, trim = !!(Q && Q.trimParts && Q.trimParts());
+        Reactor3D.FarParts.apply(holder, object, holder.blendPose === false, trim);
+        return answer;
+    };
+})();
+
+/**
+ * The inside of a closed mouth draws nothing anyone sees: a built character's teeth, tongue and mouth lining sit
+ * behind its lips, three draws in every pass for each body. While every shape of the face (expressions, speech) is
+ * at rest they leave the view's layer; the moment one moves (talking, a smile, a yawn) they come back. Lossless at
+ * any size. Parts known by the Forge's names; the face's shapes are read from the parts that carry them.
+ */
+Reactor3D.ClosedMouth = {
+    enabled: true,
+    PATTERN: /\b(teeth|tongue|mouth inside)\b/i,
+    partsOf(object) {
+        let record = object.userData.rrMouth;
+        if (record && record.of === object.children.length) return record;
+        record = { of: object.children.length, inside: [], faces: [] };
+        object.traverse(child => {
+            if (!child.isMesh) return;
+            const names = (child.name || "") + " " + [].concat(child.material || []).map(m => m && m.name || "").join(" ");
+            if (this.PATTERN.test(names)) record.inside.push(child);
+            else if (child.morphTargetInfluences && child.morphTargetInfluences.length) record.faces.push(child);
+        });
+        object.userData.rrMouth = record;
+        return record;
+    },
+    resting(record) {
+        for (const face of record.faces) { const w = face.morphTargetInfluences; for (let i = 0; i < w.length; i++) if (w[i] > 0.001) return false; }
+        // Its own shapes too (a tongue that moves): any of them off zero shows the inside.
+        for (const part of record.inside) { const w = part.morphTargetInfluences; if (w) for (let i = 0; i < w.length; i++) if (w[i] > 0.001) return false; }
+        return true;
+    },
+    update(object) {
+        if (!object || !object.userData) return;
+        const record = this.partsOf(object);
+        if (!record.inside.length) return;
+        // A body whose parts the far body stands for leaves them all out already.
+        const hide = this.enabled && !object.userData.rrFarHidden && this.resting(record);
+        if (record.hidden === hide) return;
+        record.hidden = hide;
+        for (const part of record.inside) { if (hide) part.layers.disable(0); else part.layers.enable(0); }
+    }
+};
+
+/**
+ * Another player far off, as one draw. A built character is 17 to 39 parts, each a draw, a material and its lights'
+ * uniforms in every pass that sees it; a crowd of them was the frame (1,700 draws, the CPU never idle). Under a
+ * twentieth of the view's height (Reactor3D.animationStride above 1) a remote player or sleeper is drawn instead as
+ * its model's parts merged into one skinned mesh, coloured per vertex from each part's picture and colour, on the
+ * copy's own skeleton (so it walks and lies as the copy does), with one lit material shared by every such body: the
+ * same light, the outline the same, no texture detail (none shows at that size). Its parts leave the view's layer
+ * only: they still cast, and nothing that shows or hides them is touched. It lives in the scene's `far-bodies` group,
+ * outside the model's tree; distance levels (GeometryDetail) take it further when it is a speck. A battle unit is
+ * never one (its fades and flashes are its parts'). `enabled` false: as before.
+ */
+Reactor3D.FarBody = {
+    // Off until its look is judged against the real parts: the scenes measured (the raid's camera, a walk in the
+    // square) showed every player 130 to 300 pixels tall, where a flat-coloured body would be seen.
+    enabled: false,
+    MIN_PARTS: 6,
+    SAMPLE: 128,
+    _merged: new WeakMap(),
+    material() {
+        if (this._material) return this._material;
+        const material = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true, side: THREE.DoubleSide, fog: false });
+        material.name = "far-body";
+        if (Reactor3D.litMaterial) Reactor3D.litMaterial(material);
+        material.__reactorModel = true;
+        return (this._material = material);
+    },
+    group(scene) {
+        let group = scene.userData.rrFarBodies;
+        if (!group || group.parent !== scene) {
+            group = new THREE.Group();
+            group.name = "far-bodies";
+            group.matrixAutoUpdate = false;
+            group.matrixWorldAutoUpdate = false;
+            scene.add(group);
+            scene.userData.rrFarBodies = group;
+        }
+        return group;
+    },
+    /** A picture's pixels, small, for colouring vertices: null until it is decoded (a one-pixel stand-in is not). */
+    pixels(texture) {
+        const image = texture && texture.image;
+        const w = image && (image.width || image.naturalWidth), h = image && (image.height || image.naturalHeight);
+        if (!image || !(w > 1) || !(h > 1) || typeof document === "undefined") return null;
+        const cache = this._pixels || (this._pixels = new WeakMap());
+        const key = texture.source || texture;
+        if (cache.has(key)) return cache.get(key);
+        const size = this.SAMPLE, canvas = document.createElement("canvas");
+        canvas.width = canvas.height = size;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        try { context.drawImage(image, 0, 0, size, size); } catch (error) { return null; }
+        const data = { size, rgba: context.getImageData(0, 0, size, size).data, flipY: !!texture.flipY, srgb: texture.colorSpace === (THREE.SRGBColorSpace || "srgb") };
+        cache.set(key, data);
+        return data;
+    },
+    /**
+     * The merged body of a template: every skinned part on one skeleton, in bind space, with a colour per vertex.
+     * Null while a part's picture is still decoding (asked again later), or when the model is not one of these.
+     */
+    mergedOf(template) {
+        if (this._merged.has(template)) return this._merged.get(template);
+        const parts = [];
+        let skeleton = null, ok = true;
+        template.traverse(child => {
+            if (!child.isSkinnedMesh || !child.geometry || !child.geometry.attributes.position) return;
+            if (Array.isArray(child.material) || child.bindMode !== THREE.AttachedBindMode) { ok = false; return; }
+            if (!skeleton) skeleton = child.skeleton; else if (child.skeleton !== skeleton) ok = false;
+            if (Reactor3D.FarParts && Reactor3D.FarParts.PATTERN.test((child.name || "") + " " + ((child.material && child.material.name) || ""))) return;
+            parts.push(child);
+        });
+        if (!ok || parts.length < this.MIN_PARTS - 1) { this._merged.set(template, null); return null; }
+        const colours = [];
+        for (const part of parts) {
+            const m = part.material, map = m && m.map;
+            const px = map ? this.pixels(map) : null;
+            if (map && !px) return null;    // not decoded yet: asked again
+            colours.push({ px, base: m && m.color ? m.color : new THREE.Color(1, 1, 1), uv: part.geometry.attributes.uv });
+        }
+        let vertices = 0, indices = 0;
+        for (const part of parts) { const g = part.geometry, n = g.attributes.position.count; vertices += n; indices += g.index ? g.index.count : n; }
+        const position = new Float32Array(vertices * 3), normal = new Float32Array(vertices * 3), color = new Float32Array(vertices * 3);
+        const skinIndex = new Uint16Array(vertices * 4), skinWeight = new Float32Array(vertices * 4), index = new Uint32Array(indices);
+        const at = new THREE.Vector3(), nm = new THREE.Vector3(), normalMatrix = new THREE.Matrix3();
+        const lin = c => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+        let v = 0, k = 0;
+        parts.forEach((part, p) => {
+            const g = part.geometry, P = g.attributes.position, N = g.attributes.normal, J = g.attributes.skinIndex, W = g.attributes.skinWeight, n = P.count;
+            const bind = part.bindMatrix, identity = bind.elements.every((e, i) => e === (i % 5 === 0 ? 1 : 0));
+            if (!identity) normalMatrix.getNormalMatrix(bind);
+            const { px, base, uv } = colours[p];
+            for (let i = 0; i < n; i++) {
+                const o = v + i;
+                at.fromBufferAttribute(P, i); if (!identity) at.applyMatrix4(bind);
+                position[o * 3] = at.x; position[o * 3 + 1] = at.y; position[o * 3 + 2] = at.z;
+                if (N) { nm.fromBufferAttribute(N, i); if (!identity) nm.applyMatrix3(normalMatrix).normalize(); normal[o * 3] = nm.x; normal[o * 3 + 1] = nm.y; normal[o * 3 + 2] = nm.z; }
+                let r = base.r, gg = base.g, b = base.b;
+                if (px && uv) {
+                    let u = uv.getX(i), w = uv.getY(i);
+                    u -= Math.floor(u); w -= Math.floor(w);
+                    if (px.flipY) w = 1 - w;
+                    const x = Math.min(px.size - 1, Math.floor(u * px.size)), y = Math.min(px.size - 1, Math.floor(w * px.size)), q = (y * px.size + x) * 4;
+                    const cr = px.rgba[q] / 255, cg = px.rgba[q + 1] / 255, cb = px.rgba[q + 2] / 255;
+                    r *= px.srgb ? lin(cr) : cr; gg *= px.srgb ? lin(cg) : cg; b *= px.srgb ? lin(cb) : cb;
+                }
+                color[o * 3] = r; color[o * 3 + 1] = gg; color[o * 3 + 2] = b;
+                if (J && W) {
+                    skinIndex[o * 4] = J.getX(i); skinIndex[o * 4 + 1] = J.getY(i); skinIndex[o * 4 + 2] = J.getZ(i); skinIndex[o * 4 + 3] = J.getW(i);
+                    skinWeight[o * 4] = W.getX(i); skinWeight[o * 4 + 1] = W.getY(i); skinWeight[o * 4 + 2] = W.getZ(i); skinWeight[o * 4 + 3] = W.getW(i);
+                }
+            }
+            if (g.index) { const src = g.index; for (let i = 0; i < src.count; i++) index[k++] = src.getX(i) + v; }
+            else for (let i = 0; i < n; i++) index[k++] = v + i;
+            v += n;
+        });
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(position, 3));
+        geometry.setAttribute("normal", new THREE.BufferAttribute(normal, 3));
+        geometry.setAttribute("color", new THREE.BufferAttribute(color, 3));
+        geometry.setAttribute("skinIndex", new THREE.BufferAttribute(skinIndex, 4));
+        geometry.setAttribute("skinWeight", new THREE.BufferAttribute(skinWeight, 4));
+        geometry.setIndex(new THREE.BufferAttribute(index, 1));
+        geometry.computeBoundingSphere();
+        geometry.name = "far-body";
+        const merged = { geometry, parts: parts.length };
+        this._merged.set(template, merged);
+        return merged;
+    },
+    /** The copy's parts in or out of the view's layer (they keep their shadow layers). */
+    showParts(object, on) {
+        if (object.userData.rrFarHidden === !on) return;
+        object.userData.rrFarHidden = !on;
+        object.traverse(child => { if (child.isMesh) { if (on) child.layers.enable(0); else child.layers.disable(0); } });
+        // FarParts' own choice for the parts it leaves out is made again on its next update.
+        object.userData.rrFarPartsApplied = undefined;
+        if (object.userData.rrMouth) object.userData.rrMouth.hidden = undefined;
+    },
+    release(holder) {
+        const far = holder.farBody;
+        if (!far) return;
+        if (far.mesh.parent) far.mesh.parent.remove(far.mesh);
+        if (far.object && far.object.userData) this.showParts(far.object, true);
+        holder.farBody = null;
+    },
+    /** Each update: far remote players (and sleepers) as their merged body, the rest as themselves. */
+    update(mapScene, camera) {
+        const instances = mapScene && mapScene._modelInstances;
+        if (!instances || typeof THREE === "undefined") return;
+        if (!this.enabled) {
+            // Off: nothing to look at each sync, once the bodies this scene was given are let go.
+            if (!mapScene._rrFarBodies) return;
+            for (const holder of instances.values()) if (holder.farBody) this.release(holder);
+            mapScene._rrFarBodies = false;
+            return;
+        }
+        let scene = null;
+        for (const holder of instances.values()) {
+            const object = holder.object, character = holder.character;
+            const remote = typeof Game_RemotePlayer !== "undefined" && character instanceof Game_RemotePlayer;
+            if (holder.farBody && (holder.farBody.object !== object || !object || !object.parent)) this.release(holder);
+            if (!remote || !object || !object.parent) continue;
+            let far = false;
+            if (this.enabled && camera && object.visible && !character.fight) {
+                const span = Reactor3D.instanceSpan(object), p = object.position;
+                far = Reactor3D.animationStride(p.x, p.y + span / 2, p.z, span, camera) > 1;
+            }
+            if (!far) { if (holder.farBody && holder.farBody.on) { holder.farBody.mesh.visible = false; holder.farBody.on = false; this.showParts(object, true); } continue; }
+            if (!holder.farBody) {
+                const entry = Reactor3D._glbCache && Reactor3D._glbCache[holder.spec], template = entry && entry.template;
+                const merged = template ? this.mergedOf(template) : null;
+                if (!merged) continue;
+                let skeleton = null;
+                object.traverse(child => { if (!skeleton && child.isSkinnedMesh && child.skeleton) skeleton = child.skeleton; });
+                if (!skeleton) continue;
+                if (!scene) { scene = object; while (scene.parent) scene = scene.parent; }
+                const mesh = new THREE.SkinnedMesh(merged.geometry, this.material());
+                mesh.name = "far-body";
+                mesh.bindMode = THREE.AttachedBindMode;
+                mesh.bind(skeleton, new THREE.Matrix4());
+                mesh.matrixAutoUpdate = false;
+                mesh.matrixWorldAutoUpdate = false;
+                mesh.frustumCulled = false;
+                mesh.castShadow = false;
+                mesh.userData.rrFarBodyFor = object;
+                this.group(scene).add(mesh);
+                holder.farBody = { mesh, object, on: false };
+                mapScene._rrFarBodies = true;
+            }
+            const far0 = holder.farBody;
+            far0.mesh.visible = !!object.visible;
+            if (!far0.on) { far0.on = true; this.showParts(object, false); }
+        }
+    }
 };
 
 /**
@@ -12307,11 +13126,21 @@ Reactor3D.ModelJoins = {
     queue: [],
     limited() {
         if (Reactor3D.Arrival && Reactor3D.Arrival.pacing) return true;
+        // A map in plain view: what joins it (an event's new page, players arriving online, a crowd of
+        // sleepers) comes in a few a frame rather than as one frozen frame. Behind a load's dark screen
+        // they are built as fast as they come.
+        if (this.mapInView()) return true;
         if (Reactor3D.Neighbors && Reactor3D.Neighbors.streaming && Reactor3D.Neighbors.streaming()) return true;
         const fight = typeof $gameFight !== "undefined" ? $gameFight : null;
         return !!(fight && typeof fight.isActive === "function" && fight.isActive());
     },
     now() { return typeof performance !== "undefined" ? performance.now() : Date.now(); },
+    mapInView() {
+        if (typeof SceneManager === "undefined" || typeof Scene_Map === "undefined") return false;
+        const scene = SceneManager._scene;
+        return scene instanceof Scene_Map && !!scene._active && !(scene._fadeDuration > 0) && !(scene._fadeOpacity > 0)
+            && !(typeof $gamePlayer !== "undefined" && $gamePlayer && $gamePlayer.isTransferring());
+    },
     /** A model whose files are in: built now, or after those already waiting. */
     add(job) {
         if (this.limited() && (this.queue.length || this.spent >= this.BUDGET)) { this.queue.push(job); return; }
@@ -12332,6 +13161,151 @@ Reactor3D.ModelJoins = {
     }
 };
 
+/**
+ * Crowd tiers: what a body out of view costs. Its pose is already held there (Reactor3D.animationDue); its
+ * placement was not: every update every NPC out of view still had its model looked up, its ground, facing,
+ * place, effects and carried things worked out, and its sprite's plugins run, for a picture nobody sees (North
+ * Haven, 80 characters, 2026-11-10: about a third of the page's frame was per character). A body out of view
+ * that is not the party, not a ragdoll, not knocked out and not acting is placed every OFF_VIEW_EVERY updates
+ * (each on its own beat), its sprite updated every SPRITE_OFF_VIEW_EVERY; its game logic runs as before. The
+ * view test is the animation's generous sphere, so a body is placed again before it comes on screen. Coming
+ * into view, it is placed at its next beat at the latest: OFF_VIEW_EVERY - 1 updates.
+ */
+Reactor3D.CrowdTiers = {
+    enabled: true,
+    OFF_VIEW_EVERY: 4,
+    SPRITE_OFF_VIEW_EVERY: 4,
+    /** Placements left out (a counter for probes). */
+    skipped: 0,
+    _seed: 0,
+    /** After a placement: whether this body is out of view, and what its next sync needs to leave it be. */
+    note(character, key, holder) {
+        const off = holder.poseHeld === true && !!holder.object && !Reactor3D.partyCharacter(character)
+            && !character._reactorRagdoll && !character._reactorKnockedOut && !holder.action;
+        let crowd = character._rrCrowd;
+        if (!crowd) {
+            if (!off) return;
+            crowd = { off: false, key, holder, page: character._pageIndex, seed: ++this._seed };
+            try { Object.defineProperty(character, "_rrCrowd", { value: crowd, enumerable: false, configurable: true, writable: true }); } catch (error) { return; }
+        }
+        crowd.off = off; crowd.key = key; crowd.holder = holder; crowd.page = character._pageIndex;
+    },
+    /** How often a model-drawn character's sprite updates for being out of view (1: as its level says). */
+    spriteEvery(character) {
+        const crowd = this.enabled && character ? character._rrCrowd : null;
+        return crowd && crowd.off ? this.SPRITE_OFF_VIEW_EVERY : 1;
+    }
+};
+
+/**
+ * A skinned body's joints are objects in the scene's tree, sixty to ninety of them a character, and every walk
+ * of the visible tree went through them all to find nothing to draw: the engine's own gathering of the visible
+ * tree (SceneWalk), three's walk for its draw lists, the shadow rows' walks. With 120 bodies that was about
+ * 10,000 nodes a walk and ~5 ms of every frame (2026-11-10). A joint with nothing under it that a pass could
+ * draw or light is set invisible, which is how those walks know to pass a subtree by; its matrices are worked
+ * out as before (visibility is not asked there), so the skin moves the same. Whatever is put under such a
+ * joint afterwards (a weapon in a hand, a worn piece, an effect's anchor) shows it and every joint above it
+ * again at once (`add` on those nodes), and each body is looked over again every EVERY updates for anything
+ * that got there another way.
+ */
+Reactor3D.BareBones = {
+    enabled: true,
+    EVERY: 30,
+    _joints: new Set(),
+    /** Whether a node is something a pass may draw, light or look from. */
+    draws(node) {
+        return !!(node.isMesh || node.isLine || node.isPoints || node.isSprite || node.isLight || node.isCamera || (node.userData && node.userData.rrKeepShown));
+    },
+    /** `root`'s bare joints hidden, and those no longer bare shown; returns how many are hidden now. */
+    apply(root) {
+        if (!root) return 0;
+        if (!this.enabled) { this.release(root); return 0; }
+        const joints = this._joints;
+        joints.clear();
+        root.traverse(node => { if (node.isSkinnedMesh && node.skeleton && node.skeleton.bones) for (const bone of node.skeleton.bones) if (bone) joints.add(bone); });
+        if (!joints.size) return 0;
+        let hidden = 0;
+        const walk = node => {
+            let draws = this.draws(node);
+            const children = node.children;
+            for (let i = 0; i < children.length; i++) if (walk(children[i])) draws = true;
+            if (!joints.has(node)) return draws;
+            if (draws) { if (node.userData.rrBare) this.show(node); return true; }
+            // Hidden by this, or by a copy of a body this had hidden (userData and `visible` are copied; `add` is not).
+            if (node.visible || node.userData.rrBare) {
+                node.visible = false;
+                node.userData.rrBare = true;
+                this.watch(node);
+                hidden++;
+            }
+            return false;
+        };
+        walk(root);
+        joints.clear();
+        return hidden;
+    },
+    /** A bare joint and everything under it tell this when something is added to them. */
+    watch(joint) {
+        const owner = this;
+        joint.traverse(node => {
+            if (node.__rrBareAdd) return;
+            node.__rrBareAdd = true;
+            node.add = function() {
+                owner.reveal(this);
+                return THREE.Object3D.prototype.add.apply(this, arguments);
+            };
+        });
+    },
+    show(node) {
+        node.visible = true;
+        delete node.userData.rrBare;
+    },
+    /** `node` and every joint above it that this hid, shown again: something to draw is coming under them. */
+    reveal(node) {
+        for (let n = node; n; n = n.parent) if (n.userData && n.userData.rrBare) this.show(n);
+    },
+    /** Every joint of `root` this hid, shown (the switch turned off). */
+    release(root) {
+        root.traverse(node => { if (node.userData && node.userData.rrBare) this.show(node); });
+    }
+};
+
+/**
+ * A body whose pose is held (asleep, or out of view: Reactor3D.animationDue) and that stands as it
+ * was placed keeps last frame's matrices, bones and all: the scene's walk leaves it out, and its bone
+ * palette is not compared again, until it moves or is posed. 150 still bodies were most of a frame.
+ *
+ * So does a body in view on an update its motion is not sampled in (its stride, at a Quality level that animates
+ * what is not the party every few updates: `holdUnsampled`): nothing wrote its joints, and the walk made the same
+ * matrices again. In a North Haven raid at the main thread's last level 83% of the models' 1,600 objects were in
+ * every frame's walk while a pose was sampled on 31% of their updates (the Iris Xe laptop, 2026-11-11).
+ * `Reactor3D.holdUnsampled = false`: only the asleep and the out of view, as before.
+ */
+Reactor3D.holdUnsampled = true;
+Reactor3D.holdModelMatrices = function(holder, character, object) {
+    const held = !!(holder.stillNow && (holder.poseHeld || Reactor3D.holdUnsampled !== false) && holder.sampled === false && object.visible
+        && !character._reactorKnockedOut && !character._reactorRagdoll && !holder.wornRest && !holder.mantlePose
+        && !(holder.effects && holder.effects.length));
+    if (held === !!holder.matricesHeld) return;
+    // three walks every child with force once any parent recomputes, so the walk is stopped at the body itself.
+    if (!object.__rrHoldable) {
+        const update = object.updateMatrixWorld;
+        object.updateMatrixWorld = function(force) { if (!this.__rrHeld) update.call(this, force); };
+        object.__rrHoldable = true;
+    }
+    if (held) object.updateMatrixWorld(true);
+    object.__rrHeld = held;
+    holder.matricesHeld = held;
+    // Measured afresh at the next hold: it may be somewhere else by then.
+    holder.heldBox = null;
+    if (!holder.skeletons || holder.skeletonsOf !== object) {
+        holder.skeletons = [];
+        holder.skeletonsOf = object;
+        object.traverse(child => { if (child.isSkinnedMesh && child.skeleton && !holder.skeletons.includes(child.skeleton)) holder.skeletons.push(child.skeleton); });
+    }
+    for (const skeleton of holder.skeletons) if (skeleton.__rrPaletteCache) skeleton.__rrPaletteCache.held = held;
+};
+
 Reactor3D.MapScene.prototype.syncCharacterModels = function(characters) {
     if (typeof THREE === "undefined") return;
     const group = this.modelsGroup();
@@ -12348,14 +13322,49 @@ Reactor3D.MapScene.prototype.syncCharacterModels = function(characters) {
     let lodScreen = null;
     let commandsAsked = false;
     const still = Reactor3D.StillModels;
+    // A Quality level may sync a prop that stood still last time every few frames (Quality.propEvery): what it
+    // was placed and posed as stands meanwhile. Never the party.
+    const Q = Reactor3D.Quality, propEvery = Q && Q.propEvery ? Q.propEvery() : 1;
+    const tick = typeof Graphics !== "undefined" ? Graphics.frameCount : 0;
+    const crowdTiers = Reactor3D.CrowdTiers, offEvery = crowdTiers.enabled ? crowdTiers.OFF_VIEW_EVERY : 1;
+    const bareBones = Reactor3D.BareBones;
     for (const character of characters || []) {
+        // Out of view (its pose held, see animationDue) and not the party: placed every few updates only.
+        if (offEvery > 1) {
+            const crowd = character && character._rrCrowd;
+            if (crowd && crowd.off && crowd.holder.object && this._modelInstances.get(crowd.key) === crowd.holder
+                && crowd.page === character._pageIndex && ((tick + crowd.seed) % offEvery) !== 0) { live.add(crowd.key); crowdTiers.skipped++; continue; }
+        }
+        if (propEvery > 1) {
+            const kept = character && character._rrPropSkip;
+            if (kept && kept.holder && kept.holder.stillNow && kept.holder.object && this._modelInstances.get(kept.key) === kept.holder
+                && kept.page === character._pageIndex && ((tick + kept.seed) % propEvery) !== 0) { live.add(kept.key); continue; }
+        }
         const spec = Reactor3D.characterModelSpec(character);
         if (!spec) continue;
         const key = Reactor3D.modelInstanceKey(character);
         live.add(key);
         let holder = this._modelInstances.get(key);
+        if (propEvery > 1 && holder && character && !Reactor3D.partyCharacter(character)) {
+            let kept = character._rrPropSkip;
+            if (!kept) {
+                kept = { key, holder, page: character._pageIndex, seed: (this._propSeed = (this._propSeed || 0) + 1) };
+                try { Object.defineProperty(character, "_rrPropSkip", { value: kept, enumerable: false, configurable: true, writable: true }); } catch (error) { kept = null; }
+            }
+            if (kept) { kept.key = key; kept.holder = holder; kept.page = character._pageIndex; }
+        }
+        const specKey = Reactor3D.modelCacheKey(spec.name, spec.ext, spec.file);
+        // Another model for the same character (a page turned to one, a party member swapped in): the one
+        // it wore is let go and the new one loads, as A.remodel does in a battle. A variant only is below.
+        if (holder && holder.spec !== specKey) {
+            if (holder.object && holder.object.parent) holder.object.parent.remove(holder.object);
+            if (Reactor3D.MapHeld.count) Reactor3D.MapHeld.detach(holder);
+            Reactor3D.releaseModelHolder(holder);
+            this._modelInstances.delete(key);
+            holder = null;
+        }
         if (!holder) {
-            holder = { character, spec: Reactor3D.modelCacheKey(spec.name, spec.ext, spec.file), object: null };
+            holder = { character, spec: specKey, object: null };
             this._modelInstances.set(key, holder);
             Promise.all([
                 Reactor3D.loadModel(spec.name, spec.ext, spec.file, spec.texture),
@@ -12365,8 +13374,14 @@ Reactor3D.MapScene.prototype.syncCharacterModels = function(characters) {
                 const current = this._modelInstances.get(key);
                 if (current !== holder || current.spec !== Reactor3D.modelCacheKey(spec.name, spec.ext, spec.file)) return;
                 Reactor3D.groundAnimatedTemplate(template, sidecar);
-                const object = Reactor3D.cloneModelTemplate(template);
-                Reactor3D.applyModelTransform(object, Reactor3D.readModelTransform(sidecar, spec));
+                // Instances that look alike draw with one set of materials (cloneModelTemplate's shareKey).
+                const joinTransform = Reactor3D.readModelTransform(sidecar, spec);
+                const shareKey = JSON.stringify([joinTransform && "surface" in joinTransform ? joinTransform.surface : null,
+                    joinTransform && "look" in joinTransform ? joinTransform.look : null, spec.variant || ""]);
+                const object = Reactor3D.cloneModelTemplate(template, { shareKey });
+                Reactor3D.applyModelTransform(object, joinTransform);
+                current.joinTransform = joinTransform;
+                current.scene = this;
                 object.userData.glbSize = template.userData.glbSize;
                 // Carved parts (or the rig's bones) must exist before the
                 // binding is prepared, or the new pieces would be invisible
@@ -12392,21 +13407,7 @@ Reactor3D.MapScene.prototype.syncCharacterModels = function(characters) {
                 Reactor3D.Shadows.markCaster(object, Reactor3D.modelCasterMoves(character, current.rules));
                 // The shadow budget is measured from the player, not the eye.
                 object.userData.reactorPlayer = typeof $gamePlayer !== "undefined" && character === $gamePlayer;
-                object.traverse(child => {
-                    const mats = child.material
-                        ? (Array.isArray(child.material) ? child.material : [child.material])
-                        : [];
-                    for (const mat of mats) {
-                        mat.__reactorModel = true;
-                        mat.fog = false;
-                        if (!mat.userData.baseColor) mat.userData.baseColor = mat.color.clone();
-                        // Whatever loader or clone it came through, a model
-                        // standing on a lit map takes the lights.
-                        Reactor3D.litMaterial(mat);
-                        if (this._materials.indexOf(mat) < 0) this._materials.push(mat);
-                    }
-                });
-                this._ambientLevel = undefined;
+                this.adoptModelMaterials(object);
             })).finally(() => { holder.settled = true; });
         }
         const object = holder.object;
@@ -12434,8 +13435,10 @@ Reactor3D.MapScene.prototype.syncCharacterModels = function(characters) {
             if (lodEye) Reactor3D.pickLod(object, holder.placed.lodSpan, lodEye, holder.spec, lodScreen);
             Reactor3D.noteModelFacing(character, holder.smoothYaw - (spec.yaw || 0));
             still.freeze(holder, object);
+            holder.stillNow = true;
         } else {
             still.thaw(holder, object);
+            holder.stillNow = false;
             const stretch = spec.stretch || STILL_NO_STRETCH;
             object.scale.set(scale * stretch[0], scale * stretch[1], scale * stretch[2]);
             const lodSpan = Reactor3D.instanceSpan(object);
@@ -12494,6 +13497,9 @@ Reactor3D.MapScene.prototype.syncCharacterModels = function(characters) {
             if (fallAxis) object.rotateOnWorldAxis(fallAxis, posePitch * Math.PI / 2);
             else if (posePitch) object.rotateX(-posePitch * Math.PI / 2);
             if (poseSpin) object.rotateZ(-poseSpin * Math.PI / 180);
+            // Laid down (a sleeper, Face Ceiling / Face Ground) and not by a fall, which lifts its own (DownedPose).
+            if (posePitch && !character._reactorKnockedOut) Reactor3D.LyingLift.apply(holder, object, ground + (character._reactorLift || 0) + air);
+            else if (holder.lyingLift) holder.lyingLift = null;
             if (still.enabled) still.note(holder, character, object, spec, extent, ground, dir8, lodSpan, targetYaw);
         }
         object.visible = !(character.isTransparent && character.isTransparent())
@@ -12590,6 +13596,10 @@ Reactor3D.MapScene.prototype.syncCharacterModels = function(characters) {
                 if (Reactor3D.updateModelFlash(holder)) this._ambientLevel = undefined;
             }
         }
+        Reactor3D.holdModelMatrices(holder, character, object);
+        if (offEvery > 1 && character) crowdTiers.note(character, key, holder);
+        // Its joints with nothing to draw under them leave the visible tree (BareBones): at once, then every so often.
+        if (holder.bareAt === undefined || tick - holder.bareAt >= bareBones.EVERY || tick < holder.bareAt) { holder.bareAt = tick; bareBones.apply(object); }
     }
     for (const [key, holder] of this._modelInstances) {
         if (live.has(key)) continue;
@@ -12598,6 +13608,41 @@ Reactor3D.MapScene.prototype.syncCharacterModels = function(characters) {
         Reactor3D.releaseModelHolder(holder);
         this._modelInstances.delete(key);
     }
+};
+
+// After syncCharacterModels is defined (a wrapper above it was overwritten by it): far bodies and closed mouths.
+(function() {
+    const sync = Reactor3D.MapScene.prototype.syncCharacterModels;
+    Reactor3D.MapScene.prototype.syncCharacterModels = function() {
+        const out = sync.apply(this, arguments);
+        try {
+            const viewport = Reactor3D.viewport && Reactor3D.viewport(), camera = viewport && viewport.camera ? viewport.camera() : null;
+            Reactor3D.FarBody.update(this, camera);
+        } catch (error) { console.warn("Reactor3D.FarBody", error); Reactor3D.FarBody.enabled = false; }
+        try {
+            if (Reactor3D.ClosedMouth.enabled && this._modelInstances) for (const holder of this._modelInstances.values()) if (holder.character && holder.object) Reactor3D.ClosedMouth.update(holder.object);
+        } catch (error) { console.warn("Reactor3D.ClosedMouth", error); Reactor3D.ClosedMouth.enabled = false; }
+        return out;
+    };
+})();
+
+/** A placed model's materials made the map's: lit, unfogged, their base colour kept, in the ambient list. */
+Reactor3D.MapScene.prototype.adoptModelMaterials = function(object) {
+    object.traverse(child => {
+        const mats = child.material
+            ? (Array.isArray(child.material) ? child.material : [child.material])
+            : [];
+        for (const mat of mats) {
+            mat.__reactorModel = true;
+            mat.fog = false;
+            if (!mat.userData.baseColor) mat.userData.baseColor = mat.color.clone();
+            // Whatever loader or clone it came through, a model
+            // standing on a lit map takes the lights.
+            Reactor3D.litMaterial(mat);
+            if (this._materials.indexOf(mat) < 0) this._materials.push(mat);
+        }
+    });
+    this._ambientLevel = undefined;
 };
 
 /** A character model going for good: what its copy holds on the GPU goes with it (the renderer outlives map scenes). */
@@ -12953,6 +13998,1052 @@ Reactor3D.MapScene.prototype.clear = function() {
 // re-clamp _modelsGroup to the below/all passes, which silently overrode any
 // new pass the base method learned — the "world" pass rendered an empty
 // models group and every character and vehicle vanished.
+
+//-----------------------------------------------------------------------------
+// Still parts: a rigid model's parts that never move, drawn as one mesh per material
+//
+// A placed rigid model (a parked vehicle, a prop built of pieces) is one draw per part in the view, and again in
+// the reflection capture and each mirror: the Demo's tank is 41 meshes, its motorcycle 42, and on the owner's
+// laptop the frame is the main thread's at about 19 us a draw, the GPU mostly idle. Here the parts that no rule
+// of the model can move and that draw with the same material object are copied, once, into one geometry in the
+// frame of the model's animation root (`anim-root`), and drawn as one mesh that stands where that root stands.
+//
+// Lossless by construction:
+//  - the merged mesh draws with the parts' own material object (a flash, a fade, a cutaway, a variant's surface
+//    reach it as they reach them), with the same receiveShadow, render order and attributes, so it runs the same
+//    program; positions are the parts' own through their place under the root, normals through the same normal
+//    matrix (not renormalized, so the shader interpolates exactly what it did), a mirrored part's triangles turned
+//    over so its front stays its front;
+//  - only opaque materials that write and test depth: their result does not depend on draw order (a see-through
+//    part sorts by distance on its own, and keeps its draw);
+//  - parts any rule of the model reaches (a wheel, the bars, a turret, a door) keep their own draws, as does a part
+//    with shapes, a skin, a distance level of its own (GeometryDetail), a part FarParts or ClosedMouth hides by name,
+//    and a model with a skin or file clips anywhere (characters are LayeredParts' and CasterMerge's);
+//  - the parts stay where they are, in the model's tree, for everything that reads them (the vehicle's points and
+//    wheels, effects anchored to a part, collision, shadows): they only leave the view's layer (0). The merged mesh
+//    is on that layer alone, so the shadow rows draw the parts as before, and it stands beside the model in the
+//    models group, outside its tree, so nothing that walks a model's parts meets it. It is shown only while the
+//    model and every node down to its root are (a reflection that hides the model hides it too);
+//  - each update, before anything draws, every merged part is checked: the same material, geometry, visibility,
+//    off the view's layer, and standing exactly where it was merged. A part that moved (something no rule names)
+//    draws itself from then on; any other change draws the parts themselves until the model has been still again
+//    for SETTLE updates, when the groups are made afresh.
+// Instances of one model share their merged geometries (`_shared`, by the parts' buffers and places).
+// `enabled` false: every model draws its parts as before, from the next update.
+//
+// Parts at rest (`atRest`): the parts a rule can move (a parked tank's turret and cannon: nine draws of one material)
+// are merged the same way, by the same rules, in groups of their own (`resting`), while they stand still. Each
+// update, before anything draws, every number of every such part and of the nodes above it is compared with the
+// numbers it was merged at: one that differs (a rule turned the turret, a wheel rolled) and the group's parts draw
+// themselves from that same update, the merged mesh hidden; nothing is marked and no other group is touched. Once
+// every part has kept the same numbers for SETTLE updates the group is merged where the parts now stand (the same
+// geometry again when that is where it was merged before) and shown. A part changed in any other way (its material,
+// its geometry, hidden, off the view's layer) and the group is let go until the model's groups are next made.
+// `atRest` false: the parts a rule can move draw themselves, from the next update.
+//
+// Parts by colour (`byColour`): still parts whose materials are plain colours, the same in everything but `color`
+// (a motorcycle's 22 paints over 42 parts), draw as one mesh whose vertices carry each part's colour (its material's,
+// times the vertex colour it already had), with one material made for them: a copy of the first part's, white, its
+// vertex colours on (`colourMaterial`). What "the same" means is `colourKey`: a lit MeshBasicMaterial with no picture
+// of any kind, no blend colour laid over it, and every other value equal: its flags, its program's key, its shine,
+// glow and the uniform holders in its userData. This one is not the parts' own material, so nothing that reaches a
+// model's materials reaches it. Instead, each update, before anything draws, every source material is compared with
+// the numbers it was merged at (`colourNumbers`): its stamp (Reactor3D.touchMaterial, which every writer of a model
+// material calls), its version, its colour, its flags and every holder's value, read directly. One that differs and
+// the model's parts draw themselves from that same update; the groups are made again once the model's materials
+// have stood unchanged for SETTLE updates (`quietFor`). Until the copy's program has drawn in the view for
+// WARM updates the parts draw as well, under it (a new program is held back while it compiles: ShaderWarmup).
+// `byColour` false: such parts are grouped by their own material as before, from the next update.
+Reactor3D.StillParts = {
+    enabled: true,
+    // Parts of plain colours drawn as one (see above).
+    byColour: true,
+    // Updates in a row a group by colour must have drawn in the view before its parts leave it.
+    WARM: 3,
+    // The parts a rule can move, merged while they stand still (see above). OFF until it has been seen in a Classic
+    // battle and in the editor's views: on the Demo's first map it takes the parked tank from 11 draws to 3, with
+    // the same hairline differences at light and dark edges the still parts' own merge has (688 pixels of 1 in 255
+    // and 8 single pixels up to 69 in a frozen frame of the tank, 2026-11-11), not a picture the same to the bit.
+    atRest: false,
+    // Fewer parts than this with one material are left alone: nothing to save.
+    MIN_PARTS: 2,
+    // Updates a model stands before its parts are merged, and again after anything changed them.
+    SETTLE: 30,
+    // Milliseconds of merging an update may spend (one model is always merged when one is due).
+    BUDGET: 3,
+    // A model whose groups were made this many times gives up and draws its parts.
+    MAX_BUILDS: 12,
+    _records: new Set(),
+    _shared: new Map(),
+    _tick: 0,
+    _ids: new WeakMap(),
+    _serial: 0,
+    _hashes: new WeakMap(),
+    /** How many draws the merged meshes stand for now, and how many they are: for the lead's counters. */
+    stats() {
+        let parts = 0, meshes = 0;
+        let resting = 0, colour = 0;
+        for (const record of this._records) for (const group of record.groups) {
+            if ((group.resting && !group.shown) || group.warming) continue;
+            if (group.resting) resting++;
+            if (group.colour) colour++;
+            meshes++; parts += group.parts.length;
+        }
+        return { models: this._records.size, meshes, parts, shared: this._shared.size, resting, colour };
+    },
+    idOf(object) {
+        let id = this._ids.get(object);
+        if (id === undefined) this._ids.set(object, id = ++this._serial);
+        return id;
+    },
+    shadowBits() {
+        return (1 << (Reactor3D.SHADOW_LAYER_STATIC || 1)) | (1 << (Reactor3D.SHADOW_LAYER_DYNAMIC || 2));
+    },
+    /** An attribute a merged geometry carries: position, normal, tangent, uv, uv1…, color. */
+    attributeKept(name) {
+        if (name === "position" || name === "normal" || name === "tangent" || name === "uv" || name === "color") return true;
+        return /^uv\d+$/.test(name);
+    },
+    /** Whether a material's draws give the same picture in any order, one draw or many. */
+    materialFits(m) {
+        return !!(m && !Array.isArray(m) && m.__reactorModel && !m.transparent && m.depthWrite && m.depthTest && m.colorWrite !== false
+            && (m.blending === THREE.NormalBlending || m.blending === THREE.NoBlending) && !m.alphaToCoverage
+            && !m.__reactorBillboard && !(m.userData && m.userData.rrLayers));
+    },
+    /** Whether a part may be merged at all (its rules aside). */
+    partFits(part) {
+        if (!part.isMesh || part.isSkinnedMesh || part.isInstancedMesh || part.isBatchedMesh) return false;
+        if ((part.userData && part.userData.__reactorOverlay) || !(part.layers.mask & 1)) return false;
+        if (part.onBeforeRender !== THREE.Object3D.prototype.onBeforeRender || part.onAfterRender !== THREE.Object3D.prototype.onAfterRender) return false;
+        if (!this.materialFits(part.material)) return false;
+        const g = part.geometry, position = g && g.attributes && g.attributes.position;
+        if (!position || position.isInterleavedBufferAttribute || !(position.array instanceof Float32Array) || position.itemSize !== 3) return false;
+        for (const k in g.morphAttributes) if (g.morphAttributes[k] && g.morphAttributes[k].length) return false;
+        for (const k in g.attributes) {
+            const a = g.attributes[k];
+            if (!this.attributeKept(k) || a.isInterleavedBufferAttribute || a.isInstancedBufferAttribute) return false;
+            if ((k === "normal" || k === "tangent") && !(a.array instanceof Float32Array)) return false;
+        }
+        if (g.attributes.normal && g.attributes.normal.itemSize !== 3) return false;
+        if (g.attributes.tangent && g.attributes.tangent.itemSize !== 4) return false;
+        const count = g.index ? g.index.count : position.count;
+        if (g.drawRange.start !== 0 || g.drawRange.count < count || count % 3) return false;
+        // Hidden by name at a distance or with the mouth shut: those switch the view's layer themselves.
+        const names = (part.name || "") + " " + (part.material.name || "");
+        if (Reactor3D.FarParts && Reactor3D.FarParts.PATTERN.test(names)) return false;
+        if (Reactor3D.ClosedMouth && Reactor3D.ClosedMouth.PATTERN.test(names)) return false;
+        // One that takes distance levels of its own in the view keeps them.
+        const detail = Reactor3D.GeometryDetail;
+        if (detail && this._detailEligible && this._detailEligible.call(detail, part)) return false;
+        return true;
+    },
+    attributeKey(g, withoutColour) {
+        let key = "";
+        for (const name of Object.keys(g.attributes).sort()) {
+            if (withoutColour && name === "color") continue;
+            const a = g.attributes[name];
+            key += name + ":" + a.itemSize + (a.normalized ? "n" : "") + a.array.constructor.name + ";";
+        }
+        return key;
+    },
+    /**
+     * A material's numbers for a group by colour, into `out`; how many. The first COLOUR_OWN are its own (its stamp,
+     * its version, its colour); the rest must be the same in every material of a group. Read each update for every
+     * source material: nothing is made here.
+     */
+    COLOUR_OWN: 5,
+    // Where `colourNumbers` puts what `colourKey` asks about by name.
+    COLOUR_AT: { vertexColors: 15, pictures: 26, blend: 30, look: 45 },
+    colourNumbers(m, out) {
+        const d = m.userData || this._noData, c = m.color;
+        let i = 0;
+        out[i++] = d.rrStamp || 0; out[i++] = m.version;
+        out[i++] = c.r; out[i++] = c.g; out[i++] = c.b;
+        out[i++] = m.opacity; out[i++] = m.transparent ? 1 : 0; out[i++] = m.visible ? 1 : 0; out[i++] = m.side; out[i++] = m.blending;
+        out[i++] = m.depthTest ? 1 : 0; out[i++] = m.depthWrite ? 1 : 0; out[i++] = m.depthFunc; out[i++] = m.alphaTest; out[i++] = m.colorWrite ? 1 : 0;
+        out[i++] = m.vertexColors ? 1 : 0; out[i++] = m.wireframe ? 1 : 0; out[i++] = m.fog ? 1 : 0; out[i++] = m.toneMapped ? 1 : 0;
+        out[i++] = m.polygonOffset ? 1 : 0; out[i++] = m.polygonOffsetFactor; out[i++] = m.polygonOffsetUnits;
+        out[i++] = m.premultipliedAlpha ? 1 : 0; out[i++] = m.dithering ? 1 : 0; out[i++] = m.alphaToCoverage ? 1 : 0; out[i++] = m.alphaHash ? 1 : 0;
+        // Pictures: none, of any kind (counted, so one given later is a difference).
+        out[i++] = (m.map ? 1 : 0) + (m.alphaMap ? 1 : 0) + (m.envMap ? 1 : 0) + (m.lightMap ? 1 : 0) + (m.aoMap ? 1 : 0) + (m.specularMap ? 1 : 0)
+            + (d.rrNormalMap ? 1 : 0) + (d.rrEmissiveMap ? 1 : 0) + (d.rrSurfaceMap ? 1 : 0) + (d.rrOcclusionMap ? 1 : 0) + (d.rrDetail ? 1 : 0) + (d.rrLayers ? 1 : 0);
+        // The uniform holders, by their values as they stand (a holder not made yet draws as its neutral value).
+        const blend = d.rrBlend && d.rrBlend.value;
+        out[i++] = blend ? blend.x : 0; out[i++] = blend ? blend.y : 0; out[i++] = blend ? blend.z : 0; out[i++] = blend ? blend.w : 0;
+        out[i++] = d.rrDissolve ? d.rrDissolve.value : -1e9;
+        out[i++] = d.rrCutBody ? d.rrCutBody.value : 0;
+        out[i++] = d.rrFightStump ? d.rrFightStump.value : 1e9;
+        const shine = d.rrShine, vector = shine && shine.vector, tint = shine && shine.tint;
+        out[i++] = vector ? vector.x : 0; out[i++] = vector ? vector.y : 0; out[i++] = vector ? vector.z : 0; out[i++] = vector ? vector.w : 0;
+        out[i++] = tint ? tint.r : 1; out[i++] = tint ? tint.g : 1; out[i++] = tint ? tint.b : 1;
+        out[i++] = shine && shine.albedo ? shine.albedo.value : 0;
+        const glow = d.rrEmissive;
+        out[i++] = glow ? glow.r : 0; out[i++] = glow ? glow.g : 0; out[i++] = glow ? glow.b : 0;
+        const look = d.rrLook && d.rrLook.a;
+        out[i++] = look ? look.x : 0;
+        const coat = d.rrClearcoat;
+        out[i++] = coat ? coat.factor || 0 : 0; out[i++] = coat ? coat.roughness || 0 : 0;
+        out[i++] = m.__reactorSelfLit ? 1 : 0; out[i++] = m.__reactorGhost ? 1 : 0; out[i++] = m.__reactorLit ? 1 : 0;
+        return i;
+    },
+    _noData: Object.freeze({}),
+    _numbers: new Float64Array(64),
+    // What `colourNumbers` reads of a material's userData (the rest is compared as it is written, in `colourKey`),
+    // and what is another's bookkeeping and no part of the picture.
+    COLOUR_READ: new Set(["rrStamp", "baseColor", "rrBlend", "rrDissolve", "rrCutBody", "rrFightStump", "rrShine", "rrEmissive", "rrLook", "rrClearcoat", "rrCutRides", "rrCutWas"]),
+    // What a material carries beside three's own values that a copy of it is given too (instanceModelMaterial, colourMaterial).
+    COLOUR_CARRIED: new Set(["__reactorModel", "__reactorLit", "__reactorReflects"]),
+    /**
+     * What a material must share with another to draw in one group by colour, as text; null for a material that
+     * cannot be in one. Everything of it but its colour: three's own values, the program its hooks build, what its
+     * userData holds. Made when a model's groups are planned, not each update.
+     */
+    colourKey(m) {
+        if (!m || !m.isMeshBasicMaterial || !m.__reactorLit || !m.color || !m.color.isColor || !this.materialFits(m)) return null;
+        const d = m.userData || this._noData;
+        // A shine or a glow that came through a copy as plain numbers is made whole first (Reactor3D.shineOf).
+        if (d.rrShine && Reactor3D.shineOf) Reactor3D.shineOf(m);
+        if (d.rrShine && d.rrShine.vector && !(d.rrShine.tint && d.rrShine.tint.isColor)) return null;
+        if (d.rrEmissive && !d.rrEmissive.isColor) return null;
+        const n = this._numbers, count = this.colourNumbers(m, n);
+        for (let i = 0; i < count; i++) if (!Number.isFinite(n[i])) return null;
+        // No picture; nothing laid over the colour (a blend takes the vertex colour, which the sources have not);
+        // no adjustment of a picture; nothing three clips or stencils.
+        const at = this.COLOUR_AT;
+        if (n[at.pictures] !== 0 || n[at.blend] !== 0 || n[at.look] !== 0) return null;
+        if (m.alphaTest || m.alphaHash || m.wireframe || m.stencilWrite || (m.clippingPlanes && m.clippingPlanes.length)) return null;
+        if (m.vertexColors && m.vertexColors !== true) return null;
+        let key = m.type;
+        for (let i = this.COLOUR_OWN; i < count; i++) key += "," + n[i];
+        // Every other value three or a hook keeps on it: a number, a flag or a word by its value; anything else must
+        // be nothing, or the material is left to its own group.
+        for (const name of Object.keys(m).sort()) {
+            if (name === "uuid" || name === "name" || name === "version" || name === "userData" || name === "color" || name === "_listeners") continue;
+            const value = m[name];
+            if (name.charCodeAt(0) === 95 && name.charCodeAt(1) === 95) {
+                // (`__rr…`: marks of the passes that draw it, none of them its picture; the program's key below
+                // tells the hooks apart.)
+                if (name.indexOf("__rr") === 0 || this.COLOUR_CARRIED.has(name)) continue;
+                if (value) return null;
+                continue;
+            }
+            if (value === null || value === undefined || typeof value === "function") continue;
+            if (typeof value === "object") {
+                // (A colour, a vector, a turn: by its numbers. A picture or anything unknown: no group.)
+                if (value.isTexture || typeof value.toArray !== "function") return null;
+                key += "|" + name + "#" + value.toArray().join(",");
+            } else key += "|" + name + "=" + value;
+        }
+        for (const name of Object.keys(d).sort()) {
+            if (this.COLOUR_READ.has(name)) continue;
+            const value = d[name];
+            if (value === null || value === undefined || value === false) continue;
+            if (typeof value === "function" || (typeof value === "object" && (value.isTexture || value.isObject3D || value.isMaterial))) return null;
+            let text;
+            try { text = typeof value === "object" ? JSON.stringify(value) : String(value); } catch (error) { return null; }
+            if (text === undefined || text.length > 2000) return null;
+            key += "|" + name + ":" + text;
+        }
+        try { key += "|" + (typeof m.customProgramCacheKey === "function" ? m.customProgramCacheKey() : ""); } catch (error) { return null; }
+        return key;
+    },
+    _colourMaterials: new Map(),
+    /**
+     * The one material a group by colour draws with: a copy of `first` as an instance's is made, white, with its
+     * vertex colours on and the holders' values as they stand. Shared by every group of the same key, and checked
+     * each update like a source (nothing should write to it; if something did, it is let go). Null when the copy
+     * would not run the program its sources do.
+     */
+    colourMaterial(key, first) {
+        let entry = this._colourMaterials.get(key);
+        if (entry && !this.sameColourNumbers(entry.material, entry.numbers, 0)) { this._colourMaterials.delete(key); entry.lost = true; if (!entry.users) this.disposeColourMaterial(entry); entry = null; }
+        if (!entry) {
+            if (typeof Reactor3D.instanceModelMaterial !== "function") return null;
+            const m = Reactor3D.instanceModelMaterial(first), d = m.userData, from = first.userData || this._noData;
+            m.name = "still-parts-colour";
+            m.color.setRGB(1, 1, 1);
+            m.vertexColors = true;
+            m.__rrStillColour = true;
+            d.baseColor = new THREE.Color(1, 1, 1);
+            d.rrStamp = 0;
+            delete d.rrCutRides; delete d.rrCutWas;
+            const shine = from.rrShine;
+            if (shine && shine.vector) {
+                d.rrShine = { vector: new THREE.Vector4(shine.vector.x, shine.vector.y, shine.vector.z, shine.vector.w), tint: shine.tint.clone(), albedo: { value: shine.albedo ? shine.albedo.value : 0 } };
+                if (first.__reactorReflects && Reactor3D.Reflections && Reactor3D.Reflections.hook) Reactor3D.Reflections.hook(m);
+            }
+            // The same program but for the vertex colours, and the same values: or no group.
+            let same = false;
+            try {
+                same = m.customProgramCacheKey() === first.customProgramCacheKey();
+                if (same) {
+                    const a = this._numbers, count = this.colourNumbers(first, a), b = new Float64Array(count);
+                    this.colourNumbers(m, b);
+                    for (let i = this.COLOUR_OWN; i < count && same; i++) if (a[i] !== b[i] && i !== this.COLOUR_AT.vertexColors) same = false;
+                    entry = { key, material: m, numbers: b, users: 0, lost: false };
+                }
+            } catch (error) { same = false; }
+            if (!same) { m.dispose(); return null; }
+            this._colourMaterials.set(key, entry);
+        }
+        entry.users++;
+        return entry;
+    },
+    giveColourMaterial(entry) {
+        if (!entry || --entry.users > 0) return;
+        // Kept while any model is merged (the next group of its key draws with it, its program ready); one
+        // something wrote to goes now.
+        if (entry.lost) this.disposeColourMaterial(entry);
+    },
+    disposeColourMaterial(entry) {
+        const m = entry.material, twin = m.__rrUnlitTwin;
+        if (twin && twin.__rrTwinOf === m && typeof twin.dispose === "function") twin.dispose();
+        m.dispose();
+    },
+    sameColourNumbers(m, numbers, from) {
+        const now = this._numbers, count = this.colourNumbers(m, now);
+        if (count !== numbers.length) return false;
+        for (let i = from; i < count; i++) if (now[i] !== numbers[i]) return false;
+        return true;
+    },
+    /** Whether every source material of a group by colour, and the copy it draws with, is as it was merged. */
+    coloursHold(group) {
+        for (const source of group.sources) {
+            if (!this.materialFits(source.material) || !this.sameColourNumbers(source.material, source.numbers, 0)) return false;
+        }
+        const drawn = group.drawn;
+        return !!drawn && !drawn.lost && this.sameColourNumbers(drawn.material, drawn.numbers, 0);
+    },
+    /**
+     * While a model waits to be merged: how many updates its plain-coloured materials have stood unchanged
+     * (their stamps, versions, colours and every other number of `colourNumbers`).
+     */
+    quietFor(record) {
+        const seen = record.seen || (record.seen = new Map()), now = this._numbers;
+        let changed = false;
+        record.inner.traverse(node => {
+            const m = node.isMesh ? node.material : null;
+            if (!m || !m.isMeshBasicMaterial || !m.__reactorLit || m.map || !m.color) return;
+            const count = this.colourNumbers(m, now), was = seen.get(m);
+            if (!was || was.length !== count) { seen.set(m, Float64Array.from(now.subarray(0, count))); changed = true; return; }
+            for (let i = 0; i < count; i++) if (was[i] !== now[i]) { was.set(now.subarray(0, count)); changed = true; break; }
+        });
+        if (changed || record.quietAt === undefined) record.quietAt = this._tick;
+        return this._tick - record.quietAt;
+    },
+    /** Whether this draw is the view's own (not a reflection's capture, a mirror's or the depth pass before it). */
+    viewDraw() {
+        const R = Reactor3D;
+        return !(R.Reflections && R.Reflections._capturing) && !(R.Mirrors && R.Mirrors._rendering) && !(R.DepthFirst && R.DepthFirst._drawing);
+    },
+    /** The model's parts any of its rules can move (a rule names a part of each one's chain). */
+    movingParts(binding, rules) {
+        const moving = new Set();
+        const named = (rules || []).filter(rule => rule && rule.part && rule.type !== "clip" && rule.type !== "glow");
+        if (!named.length) return moving;
+        for (const entry of binding.meshes) {
+            for (const part of entry.parts || []) {
+                const name = String(part && part.name || "").toLowerCase();
+                if (!name) continue;
+                const hit = named.some(rule => {
+                    const want = String(rule.part).toLowerCase();
+                    return rule.exact === true ? name === want : name.indexOf(want) === 0;
+                });
+                if (hit) { moving.add(entry.mesh); break; }
+            }
+        }
+        return moving;
+    },
+    /** A part's local transform, ten numbers: position, quaternion, scale. */
+    numbersOf(node, out, at) {
+        const p = node.position, q = node.quaternion, s = node.scale;
+        out[at] = p.x; out[at + 1] = p.y; out[at + 2] = p.z;
+        out[at + 3] = q.x; out[at + 4] = q.y; out[at + 5] = q.z; out[at + 6] = q.w;
+        out[at + 7] = s.x; out[at + 8] = s.y; out[at + 9] = s.z;
+    },
+    sameNumbers(node, numbers, at) {
+        const p = node.position, q = node.quaternion, s = node.scale;
+        return p.x === numbers[at] && p.y === numbers[at + 1] && p.z === numbers[at + 2]
+            && q.x === numbers[at + 3] && q.y === numbers[at + 4] && q.z === numbers[at + 5] && q.w === numbers[at + 6]
+            && s.x === numbers[at + 7] && s.y === numbers[at + 8] && s.z === numbers[at + 9];
+    },
+    /**
+     * One geometry of `list` ([{ geometry, matrix }]): each part's triangles in its order, the vertices they use
+     * (a carved piece shares its whole mesh's vertices) taken through its matrix. Pure; for the tests too.
+     */
+    merge(list) {
+        // By colour (`tint`): the parts' own colour attribute is not copied; each vertex takes its part's colour.
+        const tinted = !!list[0].tint;
+        const first = list[0].geometry, names = Object.keys(first.attributes).filter(name => !(tinted && name === "color"));
+        const used = [];
+        let vertices = 0, indices = 0;
+        for (const { geometry } of list) {
+            const n = geometry.attributes.position.count, index = geometry.index ? geometry.index.array : null;
+            const remap = new Int32Array(n).fill(-1);
+            let count = 0;
+            const total = index ? geometry.index.count : n;
+            for (let i = 0; i < total; i++) {
+                const v = index ? index[i] : i;
+                if (remap[v] < 0) remap[v] = count++;
+            }
+            used.push({ remap, count, total });
+            vertices += count;
+            indices += total;
+        }
+        const out = {};
+        for (const name of names) {
+            const a = first.attributes[name];
+            out[name] = new a.array.constructor(vertices * a.itemSize);
+        }
+        const index = vertices > 65535 ? new Uint32Array(indices) : new Uint16Array(indices);
+        const normalMatrix = new THREE.Matrix3();
+        let base = 0, k = 0;
+        list.forEach(({ geometry, matrix }, p) => {
+            const { remap, count, total } = used[p];
+            const e = matrix.elements, identity = this.isIdentity(matrix);
+            normalMatrix.getNormalMatrix(matrix);
+            const nm = normalMatrix.elements;
+            const flip = matrix.determinant() < 0;
+            const n = geometry.attributes.position.count;
+            for (const name of names) {
+                const a = geometry.attributes[name], size = a.itemSize, src = a.array, dst = out[name];
+                // One loop per kind, the kind chosen once an attribute (a merge is tens of thousands of vertices).
+                const kind = identity ? 0 : name === "position" ? 1 : name === "normal" ? 2 : name === "tangent" ? 3 : 0;
+                if (kind === 1) {
+                    for (let v = 0; v < n; v++) {
+                        const o = remap[v];
+                        if (o < 0) continue;
+                        const at = (base + o) * 3, from = v * 3, x = src[from], y = src[from + 1], z = src[from + 2];
+                        dst[at] = e[0] * x + e[4] * y + e[8] * z + e[12];
+                        dst[at + 1] = e[1] * x + e[5] * y + e[9] * z + e[13];
+                        dst[at + 2] = e[2] * x + e[6] * y + e[10] * z + e[14];
+                    }
+                } else if (kind === 2) {
+                    // Through the normal matrix and not renormalized: the shader's own normal matrix and
+                    // normalize then give exactly the direction, and interpolation, the part had.
+                    for (let v = 0; v < n; v++) {
+                        const o = remap[v];
+                        if (o < 0) continue;
+                        const at = (base + o) * 3, from = v * 3, x = src[from], y = src[from + 1], z = src[from + 2];
+                        dst[at] = nm[0] * x + nm[3] * y + nm[6] * z;
+                        dst[at + 1] = nm[1] * x + nm[4] * y + nm[7] * z;
+                        dst[at + 2] = nm[2] * x + nm[5] * y + nm[8] * z;
+                    }
+                } else if (kind === 3) {
+                    for (let v = 0; v < n; v++) {
+                        const o = remap[v];
+                        if (o < 0) continue;
+                        const at = (base + o) * 4, from = v * 4, x = src[from], y = src[from + 1], z = src[from + 2];
+                        dst[at] = e[0] * x + e[4] * y + e[8] * z;
+                        dst[at + 1] = e[1] * x + e[5] * y + e[9] * z;
+                        dst[at + 2] = e[2] * x + e[6] * y + e[10] * z;
+                        dst[at + 3] = src[from + 3];
+                    }
+                } else {
+                    for (let v = 0; v < n; v++) {
+                        const o = remap[v];
+                        if (o < 0) continue;
+                        const at = (base + o) * size, from = v * size;
+                        for (let c = 0; c < size; c++) dst[at + c] = src[from + c];
+                    }
+                }
+            }
+            const source = geometry.index ? geometry.index.array : null;
+            for (let i = 0; i < total; i += 3) {
+                const a = base + remap[source ? source[i] : i], b = base + remap[source ? source[i + 1] : i + 1], c = base + remap[source ? source[i + 2] : i + 2];
+                // A mirrored part was drawn with its winding turned by its own matrix: here the triangle is turned.
+                if (flip) { index[k++] = a; index[k++] = c; index[k++] = b; }
+                else { index[k++] = a; index[k++] = b; index[k++] = c; }
+            }
+            base += count;
+        });
+        const geometry = new THREE.BufferGeometry();
+        for (const name of names) {
+            const a = first.attributes[name];
+            geometry.setAttribute(name, new THREE.BufferAttribute(out[name], a.itemSize, a.normalized));
+        }
+        if (tinted) {
+            // The material's colour, times the vertex colour the part drew with (`own`: its material had them on).
+            const colours = new Float32Array(vertices * 3);
+            let at = 0;
+            list.forEach(({ geometry: g, tint, own }, p) => {
+                const { remap, count } = used[p], c = own ? g.attributes.color : null, n = g.attributes.position.count;
+                for (let v = 0; v < n; v++) {
+                    const o = remap[v];
+                    if (o < 0) continue;
+                    const k = (at + o) * 3;
+                    colours[k] = c ? tint[0] * c.getX(v) : tint[0];
+                    colours[k + 1] = c ? tint[1] * c.getY(v) : tint[1];
+                    colours[k + 2] = c ? tint[2] * c.getZ(v) : tint[2];
+                }
+                at += count;
+            });
+            geometry.setAttribute("color", new THREE.BufferAttribute(colours, 3));
+        }
+        geometry.setIndex(new THREE.BufferAttribute(index, 1));
+        geometry.computeBoundingBox();
+        geometry.computeBoundingSphere();
+        geometry.name = "still-parts";
+        geometry.userData.rrStillParts = true;
+        return geometry;
+    },
+    isIdentity(m) {
+        const e = m.elements;
+        for (let i = 0; i < 16; i++) if (e[i] !== (i % 5 === 0 ? 1 : 0)) return false;
+        return true;
+    },
+    /** A hash of an index's numbers, kept per attribute and version: carved pieces of every instance have their own. */
+    indexHash(attribute) {
+        const known = this._hashes.get(attribute);
+        if (known && known.version === attribute.version) return known.hash;
+        const a = attribute.array;
+        let h1 = 0x811c9dc5, h2 = 0x9747b28c;
+        for (let i = 0; i < a.length; i++) {
+            h1 = Math.imul(h1 ^ a[i], 16777619) >>> 0;
+            h2 = Math.imul(h2 + a[i] + 1, 2246822519) >>> 0;
+        }
+        const hash = h1.toString(36) + "." + h2.toString(36) + "." + a.length;
+        this._hashes.set(attribute, { version: attribute.version, hash });
+        return hash;
+    },
+    /** What makes a merged geometry: each part's buffers (by identity; an index by its numbers) and its place. */
+    geometryKey(list) {
+        let key = "";
+        for (const { geometry, matrix, tint, own } of list) {
+            for (const name of Object.keys(geometry.attributes).sort()) {
+                if (tint && !own && name === "color") continue;
+                key += name + this.idOf(geometry.attributes[name]) + ",";
+            }
+            key += geometry.index ? "i" + this.indexHash(geometry.index) : "n";
+            key += "@" + Array.prototype.join.call(matrix.elements, ",");
+            if (tint) key += "#" + tint[0] + "," + tint[1] + "," + tint[2] + (own ? "v" : "");
+            key += "|";
+        }
+        return key;
+    },
+    /** Whether a shared geometry was made from exactly these parts' numbers (a hash is checked, never trusted). */
+    sameSources(entry, list) {
+        if (entry.sources.length !== list.length) return false;
+        for (let i = 0; i < list.length; i++) {
+            const a = entry.sources[i], b = list[i].geometry.index;
+            if (!a !== !b) return false;
+            if (!a || a === b.array) continue;
+            const x = b.array;
+            if (a.length !== x.length) return false;
+            for (let j = 0; j < a.length; j++) if (a[j] !== x[j]) return false;
+        }
+        return true;
+    },
+    take(list) {
+        const key = this.geometryKey(list);
+        let entry = this._shared.get(key);
+        if (entry && !this.sameSources(entry, list)) entry = null;
+        if (!entry) {
+            entry = { key, geometry: this.merge(list), users: 0, sources: list.map(({ geometry }) => geometry.index ? geometry.index.array : null) };
+            if (!this._shared.has(key)) this._shared.set(key, entry);
+        }
+        entry.users++;
+        return entry;
+    },
+    give(entry) {
+        if (!entry || --entry.users > 0) return;
+        if (this._shared.get(entry.key) === entry) this._shared.delete(entry.key);
+        entry.geometry.dispose();
+    },
+    /** The nodes from the model's root down to its animation root, top first; null when the root is not under it. */
+    pathOf(object, inner) {
+        const path = [];
+        for (let node = inner; node; node = node.parent) {
+            path.unshift(node);
+            if (node === object) return path;
+        }
+        return null;
+    },
+    /** A merged mesh's world matrix: its parent's, then each node of the path's own transform as it stands now. */
+    place(record, mesh) {
+        const parent = mesh.parent;
+        if (!parent) return;
+        const out = mesh.matrixWorld, local = this._local || (this._local = new THREE.Matrix4());
+        out.copy(parent.matrixWorld);
+        for (const node of record.path) {
+            if (node.matrixAutoUpdate) out.multiply(local.compose(node.position, node.quaternion, node.scale));
+            else out.multiply(node.matrix);
+        }
+    },
+    /**
+     * The merged meshes are placed again whenever their model's own matrices are walked, not only when the whole
+     * scene's are: the frames between game updates (Graphics.FramePacing.swapPoses) move a model and walk it alone,
+     * and its merged meshes, beside it in the group, stood where the update left them. A ridden motorcycle's frame
+     * showed at each update's place while its wheels and rider moved on: an echo at a fast screen's rate (2026-11-07).
+     */
+    follow(record) {
+        const object = record.object, self = this;
+        if (object.__rrStillFollow !== undefined) { object.__rrStillFollow = record; return; }
+        const update = object.updateMatrixWorld;
+        object.__rrStillFollow = record;
+        object.updateMatrixWorld = function(force) {
+            update.call(this, force);
+            const own = this.__rrStillFollow;
+            if (!own || !own.groups.length) return;
+            for (const group of own.groups) if (group.mesh && group.mesh.parent) self.place(own, group.mesh);
+        };
+    },
+    /** Whether the model a merged mesh stands for is shown, every node down to its root. */
+    shown(record, mesh) {
+        const object = record.object;
+        if (object.parent !== mesh.parent) return false;
+        for (const node of record.path) if (!node.visible) return false;
+        return true;
+    },
+    makeMesh(record, group) {
+        const self = this;
+        const mesh = new THREE.Mesh(group.entry.geometry, group.colour ? group.drawn.material : group.material);
+        mesh.name = "still-parts";
+        // (By colour: the update the view last drew it, for `colourReady`.)
+        if (group.colour) mesh.onAfterRender = function() { if (self.viewDraw()) group.drawnAt = self._tick; };
+        mesh.matrixAutoUpdate = false;
+        mesh.matrixWorldAutoUpdate = false;
+        mesh.layers.mask = group.mask;
+        mesh.castShadow = false;
+        mesh.receiveShadow = group.receiveShadow;
+        mesh.renderOrder = group.renderOrder;
+        mesh.userData.rrStillParts = true;
+        mesh.userData.rrStillPartsFor = record.object;
+        // Placed at its model's root each time the scene's matrices are walked, whatever order the group holds them in.
+        mesh.updateMatrixWorld = function() { self.place(record, this); };
+        mesh.updateWorldMatrix = function(updateParents) {
+            if (updateParents && this.parent) this.parent.updateWorldMatrix(true, false);
+            self.place(record, this);
+        };
+        // A ray that reaches it meets the parts it draws, where they stand (they are off the view's layer).
+        mesh.raycast = function(raycaster, intersects) { for (const part of group.parts) part.mesh.raycast(raycaster, intersects); };
+        // Shown with its model: a pass that hides the model (a reflection taken from inside it) hides it too.
+        let own = true;
+        Object.defineProperty(mesh, "visible", {
+            configurable: true,
+            get() { return own && self.shown(record, this); },
+            set(value) { own = !!value; }
+        });
+        return mesh;
+    },
+    start(holder) {
+        const object = holder.object, binding = holder.binding, character = holder.character;
+        const record = { holder, object, binding, inner: binding.root, path: null, rules: null, moving: null,
+            groups: [], planned: [], volatile: new Set(), buildAt: this._tick + this.SETTLE, builds: 0, skip: false };
+        const remote = typeof Game_RemotePlayer !== "undefined" && character instanceof Game_RemotePlayer;
+        if (remote || (character && Reactor3D.partyCharacter(character)) || holder.wornRest || binding.mixer
+            || (binding.clips && binding.clips.length)) record.skip = true;
+        if (!record.skip) object.traverse(node => { if (node.isSkinnedMesh) record.skip = true; });
+        record.path = this.pathOf(object, binding.root);
+        if (!record.path) record.skip = true;
+        holder.rrStillParts = record;
+        this._records.add(record);
+        return record;
+    },
+    /** The record's merged meshes are taken away and its parts draw themselves. */
+    breakGroup(record, group) {
+        for (const part of group.parts) part.mesh.layers.enable(0);
+        if (group.mesh && group.mesh.parent) group.mesh.parent.remove(group.mesh);
+        this.give(group.entry);
+        group.entry = null;
+        group.shown = false;
+        group.warming = false;
+        if (group.drawn) { this.giveColourMaterial(group.drawn); group.drawn = null; }
+    },
+    dissolve(record) {
+        for (const group of record.groups) this.breakGroup(record, group);
+        // (A planned group by colour holds its material already.)
+        for (const group of record.planned) if (group.drawn) { this.giveColourMaterial(group.drawn); group.drawn = null; }
+        record.groups.length = 0;
+        record.planned.length = 0;
+    },
+    release(record) {
+        if (!record) return;
+        this.dissolve(record);
+        this._records.delete(record);
+        if (record.holder && record.holder.rrStillParts === record) record.holder.rrStillParts = null;
+        // No model left (a map let go): the materials made for groups by colour go with their programs.
+        if (!this._records.size && this._colourMaterials.size) {
+            for (const entry of this._colourMaterials.values()) { entry.lost = true; if (!entry.users) this.disposeColourMaterial(entry); }
+            this._colourMaterials.clear();
+        }
+    },
+    releaseAll() {
+        for (const record of Array.from(this._records)) this.release(record);
+    },
+    /** Whether a merged group still draws exactly what its parts would; `moved` collects the parts that moved. */
+    holds(record, group, moved, live) {
+        const m = group.material, layer = live === false ? 0 : 1, colour = !!group.colour;
+        // By colour: every source material as it was merged, by its stamp and by its numbers.
+        if (colour) { if (!this.coloursHold(group)) { this._colourChanged = true; return false; } }
+        else if (!this.materialFits(m)) return false;
+        let ok = true;
+        for (const part of group.parts) {
+            const mesh = part.mesh, nodes = part.nodes;
+            // A live group's parts are off the view's layer; a planned group's still on it.
+            if (mesh.material !== (colour ? part.material : m) || mesh.geometry !== part.geometry || (mesh.layers.mask & 1) === layer || !mesh.visible
+                || mesh.receiveShadow !== group.receiveShadow || mesh.renderOrder !== group.renderOrder) { ok = false; continue; }
+            // Moved itself: something no rule names moves it, and it draws itself from now on.
+            if (!this.sameNumbers(mesh, part.numbers, 0)) { moved.push(mesh); ok = false; continue; }
+            // A node above it changed (a wrapper's transform): made again, the part not marked.
+            if (nodes[nodes.length - 1].parent !== record.inner) { ok = false; continue; }
+            for (let i = 1; i < nodes.length; i++) {
+                if (nodes[i - 1].parent !== nodes[i] || !nodes[i].visible || !this.sameNumbers(nodes[i], part.numbers, i * 10)) { ok = false; break; }
+            }
+        }
+        return ok;
+    },
+    check(record) {
+        const holder = record.holder, object = record.object;
+        let changed = false;
+        // The path to the animation root as it was (a transform's wrapper put above it changes it).
+        const path = record.path;
+        for (let i = 1; i < path.length; i++) if (path[i].parent !== path[i - 1]) { changed = true; break; }
+        if (changed) {
+            record.path = this.pathOf(object, record.inner);
+            if (!record.path) { this.dissolve(record); record.skip = true; return; }
+        }
+        if (holder.rules !== record.rules) {
+            record.rules = holder.rules;
+            const moving = this.movingParts(record.binding, holder.rules);
+            record.moving = moving;
+            // (Groups planned and not yet merged too: they were planned without that rule.)
+            for (const list of [record.groups, record.planned]) {
+                for (const group of list) if (!group.resting && group.parts.some(part => moving.has(part.mesh))) { changed = true; break; }
+            }
+        }
+        if (changed) { this.dissolve(record); record.buildAt = this._tick + this.SETTLE; return; }
+        if (!record.groups.length) return;
+        const moved = this._moved || (this._moved = []);
+        moved.length = 0;
+        let broken = false;
+        this._colourChanged = false;
+        for (const group of record.groups) {
+            // The parts a rule can move have their own check (`rest`).
+            if (group.resting) continue;
+            if (!group.mesh.parent || group.mesh.parent !== object.parent) {
+                // The model went to another group (a crossing into the next map): its merged meshes follow.
+                if (object.parent) object.parent.add(group.mesh);
+            }
+            // Whatever a pass did to it last frame, it is shown again with its model.
+            group.mesh.visible = true;
+            // (A group by colour not yet drawn by the view: its parts are still on the view's layer, under it.)
+            if (!this.holds(record, group, moved, group.warming ? false : undefined)) broken = true;
+            else if (group.warming && this.colourReady(group)) {
+                for (const part of group.parts) part.mesh.layers.disable(0);
+                group.warming = false;
+            }
+        }
+        if (moved.length) for (const part of moved) record.volatile.add(part);
+        if (broken) {
+            // (A flash or a fade let a group by colour go: that is no fault of the model's, and is not counted
+            // towards MAX_BUILDS; its materials must stand unchanged for SETTLE updates first, `quietFor`.)
+            if (this._colourChanged && record.builds > 0) record.builds--;
+            this.dissolve(record); record.buildAt = this._tick + this.SETTLE;
+        }
+        // Merged and held a good while: the count starts over. MAX_BUILDS is for a model something keeps
+        // breaking, not for one whose distance level or fade changed twelve times in a long stay.
+        else if (record.builds && this._tick - record.buildAt > this.SETTLE * 10) record.builds = 0;
+    },
+    /** The record's parts grouped where they stand now, each group to be merged by `makeGroup`. */
+    plan(record) {
+        this.dissolve(record);
+        record.builds++;
+        if (record.builds > this.MAX_BUILDS) { record.skip = true; return; }
+        const holder = record.holder;
+        if (record.rules !== holder.rules || !record.moving) { record.rules = holder.rules; record.moving = this.movingParts(record.binding, holder.rules); }
+        const inner = record.inner, hidden = this.shadowBits(), groups = new Map();
+        const local = new THREE.Matrix4();
+        // By colour: the still parts that could share a group, by everything of their materials but the colour.
+        const byColour = this.byColour && !record.plainOnly, colourKeys = byColour ? new Map() : null, buckets = byColour ? new Map() : null;
+        const found = [];
+        record.seen = null;
+        inner.traverse(node => {
+            if (node === inner || !node.isMesh || record.volatile.has(node)) return;
+            // A part a rule can move goes with the others at rest, never with the parts that cannot move.
+            const resting = record.moving.has(node);
+            if ((resting && !this.atRest) || !this.partFits(node)) return;
+            // Its nodes up to the animation root, each shown and placed by its own numbers.
+            const nodes = [];
+            for (let at = node; at && at !== inner; at = at.parent) {
+                if (!at.visible || !at.matrixAutoUpdate) return;
+                nodes.push(at);
+            }
+            if (!nodes.length || nodes[nodes.length - 1].parent !== inner) return;
+            const matrix = new THREE.Matrix4();
+            const numbers = new Float64Array(nodes.length * 10);
+            for (let i = nodes.length - 1; i >= 0; i--) {
+                matrix.multiply(local.compose(nodes[i].position, nodes[i].quaternion, nodes[i].scale));
+                this.numbersOf(nodes[i], numbers, i * 10);
+            }
+            const m = node.material, mask = node.layers.mask & ~hidden;
+            const entry = { node, nodes, numbers, matrix, resting, mask, taken: false };
+            found.push(entry);
+            if (!byColour || resting) return;
+            let colourKey = colourKeys.get(m);
+            if (colourKey === undefined) colourKeys.set(m, colourKey = this.colourKey(m));
+            if (colourKey === null) return;
+            // Its own vertex colours, when its material draws them: three numbers a vertex, or it keeps its own group.
+            const own = node.geometry.attributes.color;
+            if (m.vertexColors && !(own && own.itemSize === 3)) return;
+            const key = colourKey + "|" + (node.receiveShadow ? 1 : 0) + "|" + node.renderOrder + "|" + mask + "|" + this.attributeKey(node.geometry, true);
+            let bucket = buckets.get(key);
+            if (!bucket) buckets.set(key, bucket = { key: colourKey, list: [], materials: new Set() });
+            bucket.list.push(entry);
+            bucket.materials.add(m);
+        });
+        if (byColour) for (const bucket of buckets.values()) {
+            // One material alone is its own group as before, drawn with itself.
+            if (bucket.materials.size < 2 || bucket.list.length < this.MIN_PARTS) continue;
+            const first = bucket.list[0].node, drawn = this.colourMaterial(bucket.key, first.material);
+            if (!drawn) continue;
+            const group = { material: null, colour: true, drawn, sources: [], mask: bucket.list[0].mask, receiveShadow: first.receiveShadow, renderOrder: first.renderOrder,
+                parts: [], mesh: null, entry: null, resting: false, shown: false, still: 0, bakes: 0, warming: false, warm: 0, drawnAt: -1 };
+            for (const m of bucket.materials) {
+                const count = this.colourNumbers(m, this._numbers);
+                group.sources.push({ material: m, numbers: Float64Array.from(this._numbers.subarray(0, count)) });
+            }
+            for (const entry of bucket.list) {
+                const node = entry.node, m = node.material;
+                entry.taken = true;
+                group.parts.push({ mesh: node, geometry: node.geometry, matrix: entry.matrix, nodes: entry.nodes, numbers: entry.numbers,
+                    material: m, tint: [m.color.r, m.color.g, m.color.b], own: !!m.vertexColors });
+            }
+            record.planned.push(group);
+        }
+        for (const entry of found) {
+            if (entry.taken) continue;
+            const node = entry.node, m = node.material, mask = entry.mask, resting = entry.resting;
+            const key = (resting ? "rest|" : "") + m.id + "|" + (node.receiveShadow ? 1 : 0) + "|" + node.renderOrder + "|" + mask + "|" + this.attributeKey(node.geometry);
+            let group = groups.get(key);
+            if (!group) groups.set(key, group = { material: m, mask, receiveShadow: node.receiveShadow, renderOrder: node.renderOrder, parts: [], mesh: null, entry: null,
+                resting, shown: false, still: 0, bakes: 0 });
+            group.parts.push({ mesh: node, geometry: node.geometry, matrix: resting ? null : entry.matrix, nodes: entry.nodes, numbers: entry.numbers });
+        }
+        // (A group at rest is merged by `rest`, once its parts have stood for SETTLE updates.)
+        for (const group of groups.values()) if (group.parts.length >= this.MIN_PARTS) (group.resting ? record.groups : record.planned).push(group);
+    },
+    /**
+     * A group at rest as it stands now: 0 when a part is no longer what was planned (let go), 1 when a number of a
+     * part or of a node above it changed since the last look (the numbers are taken again), 2 when all stand.
+     */
+    restState(record, group) {
+        const m = group.material, off = group.shown;
+        if (!this.materialFits(m)) return 0;
+        let still = true;
+        for (const part of group.parts) {
+            const mesh = part.mesh, nodes = part.nodes;
+            // A shown group's parts are off the view's layer; one whose parts draw themselves, on it.
+            if (mesh.material !== m || mesh.geometry !== part.geometry || ((mesh.layers.mask & 1) === 0) !== off || !mesh.visible
+                || mesh.receiveShadow !== group.receiveShadow || mesh.renderOrder !== group.renderOrder) return 0;
+            if (nodes[nodes.length - 1].parent !== record.inner) return 0;
+            for (let i = 0; i < nodes.length; i++) {
+                if (i && (nodes[i - 1].parent !== nodes[i] || !nodes[i].visible)) return 0;
+                if (!nodes[i].matrixAutoUpdate) return 0;
+                if (!this.sameNumbers(nodes[i], part.numbers, i * 10)) { still = false; this.numbersOf(nodes[i], part.numbers, i * 10); }
+            }
+        }
+        return still ? 2 : 1;
+    },
+    /** Whether a group at rest stands exactly where its merged geometry was made. */
+    restWhereMerged(group) {
+        if (!group.entry) return false;
+        for (const part of group.parts) {
+            const now = part.numbers, then = part.merged;
+            if (!then || then.length !== now.length) return false;
+            for (let i = 0; i < now.length; i++) if (now[i] !== then[i]) return false;
+        }
+        return true;
+    },
+    /** A group at rest shown in its parts' place: merged where they stand now, unless that is where it was merged. */
+    restShow(record, group) {
+        if (!this.restWhereMerged(group)) {
+            const local = this._restLocal || (this._restLocal = new THREE.Matrix4());
+            const list = group.parts.map(part => {
+                const matrix = new THREE.Matrix4(), nodes = part.nodes;
+                for (let i = nodes.length - 1; i >= 0; i--) matrix.multiply(local.compose(nodes[i].position, nodes[i].quaternion, nodes[i].scale));
+                return { geometry: part.geometry, matrix };
+            });
+            // (Taken before the last is given back: one another instance holds is shared, not copied again.)
+            const entry = this.take(list), last = group.entry;
+            if (last) this.give(last);
+            group.bakes++;
+            group.entry = entry;
+            for (const part of group.parts) part.merged = Float64Array.from(part.numbers);
+        }
+        const entry = group.entry;
+        if (!group.mesh) group.mesh = this.makeMesh(record, group);
+        else if (group.mesh.geometry !== entry.geometry) group.mesh.geometry = entry.geometry;
+        this.follow(record);
+        if (group.mesh.parent !== record.object.parent) record.object.parent.add(group.mesh);
+        for (const part of group.parts) part.mesh.layers.disable(0);
+        group.mesh.visible = true;
+        group.shown = true;
+    },
+    /** A group at rest drawn by its parts again; its merged geometry is kept for when they stand there again. */
+    restHide(group) {
+        for (const part of group.parts) part.mesh.layers.enable(0);
+        if (group.mesh) group.mesh.visible = false;
+        group.shown = false;
+    },
+    /**
+     * Each update, after `check`: the record's groups at rest, each shown only while every part stands exactly
+     * where it was merged. `room()` says whether this update may still merge; `made()` counts a merge.
+     */
+    rest(record, room, made) {
+        const groups = record.groups, object = record.object;
+        for (let g = groups.length - 1; g >= 0; g--) {
+            const group = groups[g];
+            if (!group.resting) continue;
+            const state = this.restState(record, group);
+            if (state === 0) { this.breakGroup(record, group); groups.splice(g, 1); continue; }
+            if (state === 1) { group.still = 0; if (group.shown) this.restHide(group); continue; }
+            group.still++;
+            if (!this.atRest) { if (group.shown) this.restHide(group); continue; }
+            if (group.shown) {
+                // The model went to another group (a crossing into the next map): its merged mesh follows.
+                if (object.parent && group.mesh.parent !== object.parent) object.parent.add(group.mesh);
+                // Whatever a pass did to it last frame, it is shown again with its model.
+                group.mesh.visible = true;
+                if (group.bakes && group.still > this.SETTLE * 10) group.bakes = 0;
+                continue;
+            }
+            if (group.still < this.SETTLE || !object.parent) continue;
+            // Back where it was merged: shown again as it is. Somewhere new is a copy and an upload: each waits a
+            // SETTLE longer than the last (a wheel that stops at another angle every second is soon left to its
+            // own draws), and one that keeps coming to rest somewhere new is let go.
+            if (!this.restWhereMerged(group)) {
+                if (group.still < this.SETTLE * (1 + group.bakes) || !room()) continue;
+                if (group.bakes >= this.MAX_BUILDS) { this.breakGroup(record, group); groups.splice(g, 1); continue; }
+                made();
+            }
+            this.restShow(record, group);
+        }
+    },
+    /** One planned group merged and shown in its parts' place; false when its parts changed since the plan. */
+    makeGroup(record, group) {
+        if (!record.object.parent || !this.holds(record, group, [], false)) {
+            if (group.drawn) { this.giveColourMaterial(group.drawn); group.drawn = null; }
+            return false;
+        }
+        group.entry = this.take(group.parts.map(part => ({ geometry: part.geometry, matrix: part.matrix, tint: part.tint, own: part.own })));
+        for (const part of group.parts) part.matrix = null;
+        group.mesh = this.makeMesh(record, group);
+        this.follow(record);
+        record.object.parent.add(group.mesh);
+        // Placed now, not at the scene's next walk of its matrices: a draw may come before one (a frame held still
+        // drew a mesh merged in it where nothing stands, 2026-11-11).
+        this.place(record, group.mesh);
+        // By colour: its parts stay in the view under it until the view has drawn it (`colourReady`).
+        if (group.colour) { group.warming = true; group.warm = 0; group.drawnAt = -1; }
+        else for (const part of group.parts) part.mesh.layers.disable(0);
+        record.groups.push(group);
+        return true;
+    },
+    /**
+     * Whether the view has drawn a group by colour for WARM updates in a row. Its material is new to the renderer:
+     * while its program compiles its mesh is held back (ShaderWarmup), and parts taken from the view before it
+     * draws would leave a hole for those frames.
+     */
+    colourReady(group) {
+        if (group.drawnAt >= this._tick - 1) group.warm++; else group.warm = 0;
+        return group.warm >= this.WARM;
+    },
+    /** Once an update, after every model was placed and posed (syncCharacterModels). */
+    update(mapScene) {
+        this._tick++;
+        if (!this.enabled) { if (this._records.size) this.releaseAll(); return; }
+        // `byColour` switched: the models it concerns are grouped again, the other way.
+        if (this.byColour !== this._colourWas) {
+            const first = this._colourWas === undefined;
+            this._colourWas = this.byColour;
+            if (!first) for (const record of this._records) {
+                // (One with nothing to merge by its own materials is asked again soon, not at its long wait's end.)
+                if (!record.groups.length && !record.planned.length) { if (this.byColour && !record.skip) record.buildAt = Math.min(record.buildAt, this._tick + this.SETTLE); continue; }
+                if (!this.byColour && !record.groups.some(group => group.colour) && !record.planned.some(group => group.colour)) continue;
+                this.dissolve(record);
+                record.buildAt = this._tick + this.SETTLE;
+            }
+        }
+        // A model gone from its scene without being released lets its merged meshes go.
+        for (const record of this._records) {
+            if (!record.object.parent || record.holder.object !== record.object || record.holder.binding !== record.binding) this.release(record);
+        }
+        const instances = mapScene && mapScene._modelInstances;
+        if (!instances || !instances.size) return;
+        // The merging is spread: a group at least each update, more while BUDGET lasts (a group of a large model
+        // is several milliseconds of copying the first time; its other instances share it).
+        const clock = typeof performance !== "undefined" ? performance : Date;
+        let started = 0, made = 0;
+        const room = () => made === 0 || clock.now() - started < this.BUDGET;
+        const merged = () => { if (!made) started = clock.now(); made++; };
+        for (const holder of instances.values()) {
+            const object = holder.object;
+            if (!object || !holder.binding || !object.parent) continue;
+            const record = holder.rrStillParts || this.start(holder);
+            if (record.skip) continue;
+            this.check(record);
+            if (record.skip) continue;
+            if (record.groups.length) this.rest(record, room, merged);
+            // Grouped by its own materials because they would not rest: once they have, it is grouped again, by colour.
+            if (record.plainOnly && this.byColour && record.groups.length && this.quietFor(record) >= this.SETTLE) {
+                this.dissolve(record);
+                record.plainOnly = false;
+                record.buildAt = this._tick;
+                if (record.builds > 0) record.builds--;
+            }
+            if (!record.planned.length) {
+                if (record.groups.length) continue;
+                // By colour: its plain-coloured materials are watched from a SETTLE before it is due, and it waits
+                // until they have stood unchanged that long (a flash still fading, a cutaway still opening); one
+                // whose materials never rest is grouped by its own materials alone, as before.
+                const quiet = this.byColour && record.buildAt - this._tick <= this.SETTLE ? this.quietFor(record) : Infinity;
+                if (this._tick < record.buildAt || !room()) continue;
+                record.plainOnly = false;
+                if (quiet < this.SETTLE) {
+                    if (this._tick - record.buildAt < this.SETTLE * 4) continue;
+                    record.plainOnly = true;
+                }
+                this.plan(record);
+                // Nothing to merge (every part moves, none shares a material, or a fade has them see-through):
+                // asked again much later, at most MAX_BUILDS times.
+                if (!record.planned.length) { record.buildAt = this._tick + this.SETTLE * 10; continue; }
+            }
+            while (record.planned.length && room()) {
+                if (!made) started = clock.now();
+                made++;
+                if (!this.makeGroup(record, record.planned.shift())) {
+                    // A part changed between the plan and its merge: drawn by its parts until it is still again.
+                    this.dissolve(record);
+                    record.buildAt = this._tick + this.SETTLE;
+                }
+            }
+        }
+    }
+};
+(function() {
+    const S = Reactor3D.StillParts;
+    // A merged mesh keeps the parts' own detail: it takes no distance levels of its own (GeometryDetail).
+    const detail = Reactor3D.GeometryDetail;
+    if (detail && typeof detail.eligible === "function") {
+        const eligible = S._detailEligible = detail.eligible;
+        detail.eligible = function(object) {
+            if (object && object.userData && object.userData.rrStillParts) return false;
+            return eligible.call(this, object);
+        };
+    }
+    const sync = Reactor3D.MapScene.prototype.syncCharacterModels;
+    Reactor3D.MapScene.prototype.syncCharacterModels = function() {
+        const out = sync.apply(this, arguments);
+        try { S.update(this); } catch (error) { console.warn("Reactor3D.StillParts", error); S.enabled = false; try { S.releaseAll(); } catch (e) { /* the parts draw themselves */ } }
+        return out;
+    };
+    const release = Reactor3D.releaseModelHolder;
+    Reactor3D.releaseModelHolder = function(holder) {
+        if (holder && holder.rrStillParts) S.release(holder.rrStillParts);
+        return release.apply(this, arguments);
+    };
+})();
 
 //-----------------------------------------------------------------------------
 // Model props
@@ -13424,6 +15515,997 @@ Reactor3D.installPropHooks = function() {
         return result;
     };
     Game_Map.prototype.setupEvents.__reactorProps = true;
+};
+
+//-----------------------------------------------------------------------------
+// Layered parts: a character made in the game, drawn in a few pieces
+//
+// The Character Builder saves a character as the parts it built it from: the body, each garment, its seams,
+// stitching, buckles and linings, 17 to 39 meshes, each with its own material and pictures. Each is a draw in
+// every view, mirror and capture, and a crowd of forty is a thousand draws a frame where forty of the Demo's
+// actor would be forty. Here the parts that draw alike become one mesh: their vertices one after another, in the
+// file's order, each carrying its part's row (`rrLayer`) in a small table of what that part had: which picture,
+// which relief and surface maps, their scales, its shine and glow, the alpha it is cut out at and the side it is
+// drawn from (a single-sided part's back faces are discarded, as culling would have).
+//
+// Pictures go into texture arrays, a layer each. Large ones (an outfit sheet, the skin, the shoes) by their exact
+// size, one array per size, copied as they are; small ones (fabric weaves, seams, stitching, all 512 or under)
+// together at the largest one's size, each still repeating on its own coordinates; relief, surface and cavity maps
+// in one array of their own. Every picture is drawn at its own resolution or more, every part keeps its own maps
+// and values, and nothing is seen to change; the draws are a few per character.
+//
+// One mesh holds the whole outfit, in the file's order: a pocket, a collar or a seam lies exactly on the garment
+// under it, and wins that tie by being drawn after it, as it did when each was its own draw.
+//
+// Parts with shapes (the face: eyes, lids, teeth, tongue, lashes, its skin) make a group of their own, whose
+// shapes are the union of theirs by name, zero where a part has none: speech and expressions find them by name
+// on whatever mesh holds them (reactor_3d_speech.js), as before. Left as they are: the body (a worn piece masks
+// its skin, Worn), hair and facial hair (a helmet hides them by name), blended parts (they sort by distance) and
+// a glow with a picture. Done once per character, when its template is made (ReactorCharacters.template and
+// loadModel for a library character), before anything is drawn.
+
+Reactor3D.LayeredParts = {
+    enabled: true,
+    // Fewer parts than this in a group are left alone.
+    MIN_PARTS: 2,
+    // The largest side a picture may have to share an array with others of other sizes.
+    ARRAY_MAX: 512,
+    // Picture arrays one group draws from (samplers rrBase0..3): the small pictures' and the large ones', by size.
+    CLASSES: 4,
+    // Rows in one table (a part each), under a byte.
+    MAX_ROWS: 250,
+    // How long a picture may take to decode before its parts are left out.
+    READY_MS: 20000,
+    // Whether parts with shapes merge (into their own group).
+    SHAPES: true,
+    SPLIT_SHINE: true,
+    // Whether a merged character is drawn once offscreen before it is shown (warm), and the longest its programs are waited for.
+    WARM: true,
+    WARM_WAIT_MS: 3000,
+    // Parts other code finds by name: worn pieces hide hair and beards (Worn), and mask the body's skin.
+    KEEP_NAMED: /^(body|hair|hairsoft|facialhair|facialhairsoft|beard|beardsoft)$/,
+    // The body joins the face's group (the parts with shapes) when it carries the face's shapes, as a built body
+    // does: one draw fewer for every built character. Worn masks its skin by the body's own triangles in the merged
+    // mesh (`rrBodyRanges`), and the group draws first, as the body did, so a garment on the skin still wins that tie.
+    BODY: true,
+    // A part whose glow has a picture of its own (a garment's lit panels: the Character Builder's outfit glow sheet)
+    // joins its group, the glow picture a layer beside the others, read where the part's row says (table texel F).
+    // Elija's uniform and trench coat were three draws of their own for that alone.
+    GLOW_MAPS: true,
+    // A worn prop's rigid pieces (Reactor3D.Worn: a Database armor's model held by a hand bone, the Grappler's three)
+    // drawn merged on whoever wears it (`rigid`, Worn.mergePieces). The prop's template stays as it is.
+    WORN: true,
+    NONE: -1,
+
+    /**
+     * The pictures a part's material draws with, by slot: those its own program reads. A relief, surface or cavity
+     * map on the first coordinates is read only where the part has a picture (three gives the coordinates, vMapUv, to
+     * a material with a map: Reactor3D.faceGlsl, injectShine, injectSurfaceOcclusion), and a glow picture the same
+     * (glowKey): the Grappler's metal carries a surface map on its first coordinates and no picture, and draws without it.
+     */
+    maps(material) {
+        const d = material.userData || {};
+        const tex = t => (t && t.isTexture ? t : null);
+        const base = tex(material.map), read = (t, uv1) => (uv1 || base ? tex(t) : null);
+        const glows = !!(d.rrEmissive && d.rrEmissive.isColor && (d.rrEmissive.r > 0 || d.rrEmissive.g > 0 || d.rrEmissive.b > 0));
+        return { base, normal: read(d.rrNormalMap, d.rrNormalUv1), surface: read(d.rrSurfaceMap, d.rrSurfaceUv1), occlusion: read(d.rrOcclusionMap, d.rrOcclusionUv1),
+            glow: this.GLOW_MAPS && glows && base ? tex(d.rrEmissiveMap) : null };
+    },
+
+    /**
+     * Every picture a material holds, read or not: what a part that stays keeps (a variant may give it the picture
+     * that makes a map on the first coordinates read), and what a merged part lets go of.
+     */
+    textures(material) {
+        const d = material.userData || {};
+        return [material.map, d.rrNormalMap, d.rrSurfaceMap, d.rrOcclusionMap, d.rrEmissiveMap].filter(t => t && t.isTexture);
+    },
+
+    /** A part's name as the file gave it: the mesh's, the part a flattened file keeps (`userData.parts`), or its node's. */
+    nameOf(mesh) {
+        const parts = mesh.userData && mesh.userData.parts;
+        return mesh.name || (Array.isArray(parts) && parts[0] && parts[0].name) || (mesh.parent && mesh.parent.name) || "";
+    },
+
+    /** Whether a part is the body (Worn masks its skin by its triangles). */
+    isBody(mesh) {
+        const named = String(mesh.name || (mesh.parent && mesh.parent.name) || "").replace(/[^a-z]/gi, "").toLowerCase();
+        return named === "body" || !!(mesh.geometry && mesh.geometry.userData.rrBodyUV);
+    },
+
+    hasShapes(mesh) {
+        const morph = mesh.geometry && mesh.geometry.morphAttributes;
+        return !!(morph && morph.position && morph.position.length);
+    },
+
+    /** Whether a part may join a group: what it is drawn with is all in the table. */
+    eligible(mesh) {
+        if (!mesh.isSkinnedMesh || !mesh.skeleton || Array.isArray(mesh.material) || mesh.bindMode !== THREE.AttachedBindMode) return false;
+        const g = mesh.geometry, m = mesh.material;
+        if (!g || !g.index || !g.attributes.position || !g.attributes.normal || !g.attributes.skinIndex || !g.attributes.skinWeight || g.groups.length) return false;
+        if (g.drawRange.start !== 0 || g.drawRange.count < g.index.count) return false;
+        const named = String(mesh.name || (mesh.parent && mesh.parent.name) || "").replace(/[^a-z]/gi, "").toLowerCase();
+        // The body only with the face's shapes (BODY): it goes in their group.
+        const body = this.isBody(mesh);
+        if (body ? !(this.BODY && this.hasShapes(mesh)) : this.KEEP_NAMED.test(named)) return false;
+        if (this.hasShapes(mesh)) {
+            // Shapes merge as relative moves of the places alone, bound at the identity.
+            if (!this.SHAPES || !g.morphTargetsRelative || Object.keys(g.morphAttributes).some(k => k !== "position" && g.morphAttributes[k].length)) return false;
+            if (!(Reactor3D.CasterMerge && Reactor3D.CasterMerge.isIdentity(mesh.bindMatrix))) return false;
+        }
+        return this.drawnAlike(m);
+    },
+
+    /** Whether a part's material draws as a row of the table does: lit, opaque or cut out, its maps plain pictures. */
+    drawnAlike(m) {
+        const d = m && m.userData;
+        if (!m || !m.isMeshBasicMaterial || !m.__reactorLit || !m.__reactorModel || m.__reactorSelfLit || !d || d.rrInspectionPbr) return false;
+        if (m.transparent || m.blending !== THREE.NormalBlending || d.rrHair || d.rrLook || d.rrDetail || d.rrLayers) return false;
+        // A glow is a color in the table, and its picture a layer (GLOW_MAPS); without that, one with a picture stays apart.
+        if (!this.GLOW_MAPS && d.rrEmissive && d.rrEmissiveMap && d.rrEmissiveMap.isTexture) return false;
+        for (const t of Object.values(this.maps(m))) {
+            if (t && (t.isCompressedTexture || t.isDataArrayTexture || t.isCubeTexture || t.isVideoTexture)) return false;
+            // A picture moved, turned or scaled on its part (offset, repeat) is read as it is: not through a layer.
+            if (t && !t.matrix.equals(new THREE.Matrix3())) return false;
+        }
+        return true;
+    },
+
+    /**
+     * Whether a rigid piece of a worn prop may join a group (`rigid`): a plain mesh straight under the prop's root,
+     * no shapes, drawn as a row of the table is.
+     */
+    eligibleRigid(mesh) {
+        if (!mesh.isMesh || mesh.isSkinnedMesh || mesh.isInstancedMesh || mesh.isBatchedMesh || mesh.isLine || mesh.isPoints || Array.isArray(mesh.material)) return false;
+        const g = mesh.geometry;
+        if (!g || !g.index || !g.attributes.position || !g.attributes.normal || g.groups.length || this.hasShapes(mesh)) return false;
+        if (g.drawRange.start !== 0 || g.drawRange.count < g.index.count) return false;
+        return this.drawnAlike(mesh.material);
+    },
+
+    imageSize(texture) {
+        const i = texture && texture.image;
+        return i ? [i.naturalWidth || i.width || 0, i.naturalHeight || i.height || 0] : [0, 0];
+    },
+
+    /** Resolves when a texture holds its decoded picture (not the one-pixel stand-in of fitModelTexture), false on timeout. */
+    ready(texture) {
+        const decoded = () => {
+            const i = texture.image;
+            return !!i && i !== Reactor3D._fitStandIn && (i.complete !== false) && this.imageSize(texture)[0] > 0;
+        };
+        if (decoded()) return Promise.resolve(true);
+        const until = performance.now() + this.READY_MS;
+        return new Promise(resolve => {
+            const look = () => { if (decoded()) resolve(true); else if (performance.now() > until) resolve(false); else setTimeout(look, 40); };
+            setTimeout(look, 40);
+        });
+    },
+
+    /** The array class of a picture: "small" (shares one array, resized to its largest), or its exact size. */
+    classOf(texture) {
+        const [w, h] = this.imageSize(texture);
+        return w > this.ARRAY_MAX || h > this.ARRAY_MAX ? w + "x" + h : "small";
+    },
+
+    /** The groups of eligible parts: { parts }. A group per skeleton and kind (shapes or not), in the file's order. */
+    plan(parts) {
+        const families = new Map();
+        for (const part of parts) {
+            const maps = this.maps(part.material);
+            // A relief or surface map over the array's size would be shrunk on a layer: its part stays as it is.
+            if ([maps.normal, maps.surface, maps.occlusion].some(t => t && this.classOf(t) !== "small")) continue;
+            // Parts that shine (the Builder's metal) draw together: the shine's code in a program changed what the
+            // rest of a group read (cloth beside a buckle came out grey), and a group without it never compiles it.
+            const d = part.material.userData, shines = !!(d.glbShineOwn && d.glbShine && d.glbShine.reflect > 0);
+            // Skinned parts by their skeleton; a worn prop's rigid pieces by the node that holds them (`rigid`).
+            const holder = part.isSkinnedMesh ? part.skeleton.uuid : "rigid:" + (part.parent ? part.parent.uuid : "");
+            const family = holder + (this.hasShapes(part) ? "|shapes" : "") + (shines && this.SPLIT_SHINE ? "|shines" : "");
+            if (!families.has(family)) families.set(family, []);
+            families.get(family).push(part);
+        }
+        const groups = [];
+        for (const list of families.values()) {
+            // In order, a new group only where a part would bring one picture class too many (rare: CLASSES sizes in one outfit).
+            let group = null;
+            for (const part of list) {
+                const maps = this.maps(part.material);
+                // Its picture's class and its glow picture's (the same arrays hold both).
+                const kinds = new Set([maps.base, maps.glow].filter(Boolean).map(t => this.classOf(t)));
+                const fresh = group ? Array.from(kinds).filter(kind => !group.classes.has(kind)).length : 0;
+                if (!group || group.parts.length >= this.MAX_ROWS || (fresh && group.classes.size + fresh > this.CLASSES)) {
+                    group = { parts: [], classes: new Set() };
+                    groups.push(group);
+                }
+                group.parts.push(part);
+                for (const kind of kinds) group.classes.add(kind);
+            }
+        }
+        return groups.filter(group => group.parts.length >= this.MIN_PARTS);
+    },
+
+    /** Pixels of every picture at width x height, one after another (RGBA bytes, top row first as the GLB reads them). */
+    async pixels(images, width, height, give) {
+        // A bitmap nothing else will draw goes to the worker itself; any other is copied (a copy of a 1024 sheet
+        // was most of a merge's main-thread time). The worker draws each to the layer's size.
+        // A bitmap still drawn elsewhere is sent to the worker as it is, without handing it over: the browser shares
+        // the decoded picture with the worker instead of a copy made here (`createImageBitmap` of a bitmap, 266 ms of
+        // main thread over the Reactor room's first seconds, 2026-11-05). The worker draws each onto the same 2D
+        // canvas either way, so the pixels read back are the same. Only a picture element is made into a bitmap here.
+        const isBitmap = image => typeof ImageBitmap !== "undefined" && image instanceof ImageBitmap;
+        const worker = this.worker();
+        const shared = !!worker && this.SHARE_BITMAPS;
+        const owned = images.map((image, i) => !(isBitmap(image) && (shared || (give && give[i]))) || !!(give && give[i]));
+        const bitmaps = await Promise.all(images.map((image, i) => (isBitmap(image) && (shared || (give && give[i])) ? image : this.decode(image))));
+        if (worker) {
+            const id = (this._jobs = (this._jobs || 0) + 1);
+            const data = await new Promise(resolve => {
+                (this._pending || (this._pending = new Map())).set(id, resolve);
+                worker.postMessage({ id, width, height, bitmaps, owned }, bitmaps.filter((bitmap, i) => owned[i]));
+            });
+            // The worker's own bytes, as they came: copied into an array made here they were 110 to 200 ms of each second
+            // of an arrival's merges (a group's pictures are tens of megabytes, made and filled twice).
+            if (data) return new Uint8Array(data);
+        }
+        // Without a worker (or if it failed): here, on a canvas.
+        const out = new Uint8Array(width * height * 4 * images.length);
+        const canvas = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(width, height) : Object.assign(document.createElement("canvas"), { width, height });
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        context.imageSmoothingQuality = "high";
+        bitmaps.forEach((bitmap, i) => {
+            context.clearRect(0, 0, width, height);
+            try { context.drawImage(bitmap, 0, 0, width, height); out.set(context.getImageData(0, 0, width, height).data, i * width * height * 4); } catch (error) { /* closed by a failed worker: left empty */ }
+            if (bitmap.close && owned[i]) bitmap.close();
+        });
+        return out;
+    },
+    /** False copies every picture still drawn elsewhere on the main thread before the worker reads it, as before. */
+    SHARE_BITMAPS: true,
+
+    /**
+     * A bitmap of a picture as the GLB reads it. A picture element goes to the image worker, which decodes it from
+     * the picture's own bytes: `createImageBitmap` of an <img> decoded it again on the main thread (50 ms of every
+     * second of North Haven's arrival with the shaders already cached, 2026-11-10). Here when the worker cannot
+     * (a canvas; a picture whose bytes and address it cannot read). `DECODE_FAR = false` decodes here, as before.
+     */
+    decode(image) {
+        const options = { premultiplyAlpha: "none", colorSpaceConversion: "none" };
+        const W = Reactor3D.ImageWorker;
+        const far = this.DECODE_FAR && image && image.tagName === "IMG" && W && W.bitmap ? W.bitmap(image, options) : null;
+        if (!far) return createImageBitmap(image, options);
+        this.decodedFar = (this.decodedFar || 0) + 1;
+        return far.catch(() => createImageBitmap(image, options));
+    },
+    DECODE_FAR: true,
+
+    /** The worker that reads the pictures' pixels, off the main thread. */
+    worker() {
+        if (this._worker !== undefined) return this._worker;
+        this._worker = null;
+        if (typeof Worker === "undefined" || typeof OffscreenCanvas === "undefined" || typeof Blob === "undefined") return null;
+        const source = "onmessage = e => { const { id, width, height, bitmaps, owned } = e.data; try { const canvas = new OffscreenCanvas(width, height), c = canvas.getContext('2d', { willReadFrequently: true });"
+            + " c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high';"
+            + " const size = width * height * 4, out = new Uint8Array(size * bitmaps.length); bitmaps.forEach((b, i) => { c.clearRect(0, 0, width, height); c.drawImage(b, 0, 0, width, height); out.set(c.getImageData(0, 0, width, height).data, i * size); if (!owned || owned[i]) b.close(); });"
+            + " postMessage({ id, data: out.buffer }, [out.buffer]); } catch (error) { postMessage({ id, data: null }); } };";
+        try {
+            const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+            this._worker = new Worker(url);
+            URL.revokeObjectURL(url);
+            this._worker.onmessage = e => { const done = this._pending && this._pending.get(e.data.id); if (done) { this._pending.delete(e.data.id); done(e.data.data); } };
+            this._worker.onerror = () => { for (const done of (this._pending || new Map()).values()) done(null); if (this._pending) this._pending.clear(); this._worker = null; };
+        } catch (error) {
+            this._worker = null;
+        }
+        return this._worker;
+    },
+
+    /** A texture array of these pictures at one size: their own for a large class, the largest one's (a power of two) for small ones. */
+    async array(images, kind, color, give) {
+        if (!images.length) return null;
+        let width, height;
+        if (kind === "small") {
+            let side = 1;
+            for (const image of images) side = Math.max(side, image.naturalWidth || image.width || 1, image.naturalHeight || image.height || 1);
+            width = height = Math.min(this.ARRAY_MAX, Math.pow(2, Math.ceil(Math.log2(side))));
+        } else {
+            [width, height] = kind.split("x").map(Number);
+        }
+        const data = await this.pixels(images, width, height, give);
+        const array = new THREE.DataArrayTexture(data, width, height, images.length);
+        array.format = THREE.RGBAFormat;
+        array.type = THREE.UnsignedByteType;
+        array.colorSpace = color ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+        array.wrapS = array.wrapT = THREE.RepeatWrapping;
+        array.magFilter = THREE.LinearFilter;
+        array.minFilter = THREE.LinearMipmapLinearFilter;
+        array.generateMipmaps = true;
+        array.flipY = false;
+        array.anisotropy = Reactor3D.modelAnisotropy ? Reactor3D.modelAnisotropy() : 1;
+        array.userData.rrLayeredArray = true;
+        // Its pixels go once they are on the GPU: a crowd's arrays held a gigabyte in the page, and NW.js's renderer
+        // ran out of memory and stopped about fifteen seconds into North Haven's square.
+        // (After the last of its layers when they go up a frame at a time: `preload`.)
+        array.onUpdate = () => { if (array.image && !(array.userData.rrLayersLeft > 0)) array.image.data = null; };
+        array.needsUpdate = true;
+        return array;
+    },
+
+    /** One-layer stand-ins for an array a group has none of, and the white picture its material's `map` is. */
+    blank(kind) {
+        const cache = this._blank || (this._blank = {});
+        if (cache[kind]) return cache[kind];
+        let texture;
+        if (kind === "map") {
+            texture = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+            texture.colorSpace = THREE.SRGBColorSpace;
+        } else {
+            texture = new THREE.DataArrayTexture(new Uint8Array([255, 255, 255, 255]), 1, 1, 1);
+            if (kind === "base") texture.colorSpace = THREE.SRGBColorSpace;
+        }
+        texture.needsUpdate = true;
+        return (cache[kind] = texture);
+    },
+
+    /**
+     * The group's parts as one geometry: places and normals through each bind matrix, every attribute laid end to end.
+     * A worn prop's rigid pieces (`rigid`) carry no skin; each is placed in its first piece's frame.
+     */
+    geometry(parts, colorOf) {
+        const rigid = !parts[0].isSkinnedMesh;
+        let vertices = 0, indices = 0;
+        for (const part of parts) { vertices += part.geometry.attributes.position.count; indices += part.geometry.index.count; }
+        const position = new Float32Array(vertices * 3), normal = new Float32Array(vertices * 3), uv = new Float32Array(vertices * 2), uv1 = new Float32Array(vertices * 2);
+        const color = new Float32Array(vertices * 3), layer = new Uint8Array(vertices);
+        const skinIndex = rigid ? null : new Uint16Array(vertices * 4), skinWeight = rigid ? null : new Float32Array(vertices * 4);
+        const index = vertices > 65535 ? new Uint32Array(indices) : new Uint16Array(indices);
+        const at = new THREE.Vector3(), turn = new THREE.Matrix3();
+        const lead = parts[0], unlead = new THREE.Matrix4();
+        if (rigid) { for (const part of parts) part.updateMatrix(); unlead.copy(lead.matrix).invert(); }
+        // Where the body's triangles lie (Worn masks its skin by them): [first index, count].
+        const bodies = [];
+        let v = 0, k = 0;
+        parts.forEach((part, row) => {
+            const g = part.geometry, a = g.attributes, n = a.position.count;
+            if (g.userData.rrBodyUV) bodies.push({ layout: g.userData.rrBodyUV, range: [k, g.index.count] });
+            // A piece standing where the first one does is copied as it is (the matrices compared, not worked out).
+            const bind = rigid ? (part.matrix.equals(lead.matrix) ? new THREE.Matrix4() : new THREE.Matrix4().multiplyMatrices(unlead, part.matrix)) : part.bindMatrix;
+            const identity = Reactor3D.CasterMerge ? Reactor3D.CasterMerge.isIdentity(bind) : false;
+            turn.getNormalMatrix(bind);
+            const tint = colorOf(part), c = part.material.vertexColors ? a.color : null;
+            // Whole arrays at once where they are plain (a GLB's always are): reading a vertex at a time through
+            // getX was most of a merge's 5 to 15 ms, a character at a time as a crowd arrived.
+            const plain = x => !x || (!x.isInterleavedBufferAttribute && !x.normalized && x.array && x.array.length === x.count * x.itemSize);
+            if (identity && [a.position, a.normal, a.uv, a.uv1].concat(rigid ? [] : [a.skinIndex, a.skinWeight]).every(plain) && (!c || plain(c))) {
+                position.set(a.position.array, v * 3);
+                normal.set(a.normal.array, v * 3);
+                if (a.uv && a.uv.itemSize === 2) uv.set(a.uv.array, v * 2);
+                if (a.uv1 && a.uv1.itemSize === 2) uv1.set(a.uv1.array, v * 2);
+                if (!rigid) { skinIndex.set(a.skinIndex.array, v * 4); skinWeight.set(a.skinWeight.array, v * 4); }
+                const ca = c ? c.array : null, cs = c ? c.itemSize : 0;
+                for (let i = 0; i < n; i++) {
+                    const o = (v + i) * 3;
+                    color[o] = (ca ? ca[i * cs] : 1) * tint.r; color[o + 1] = (ca ? ca[i * cs + 1] : 1) * tint.g; color[o + 2] = (ca ? ca[i * cs + 2] : 1) * tint.b;
+                }
+                layer.fill(row, v, v + n);
+                const src = g.index.array;
+                for (let i = 0; i < src.length; i++) index[k++] = src[i] + v;
+                v += n;
+                return;
+            }
+            for (let i = 0; i < n; i++) {
+                const o = v + i;
+                at.set(a.position.getX(i), a.position.getY(i), a.position.getZ(i));
+                if (!identity) at.applyMatrix4(bind);
+                position[o * 3] = at.x; position[o * 3 + 1] = at.y; position[o * 3 + 2] = at.z;
+                at.set(a.normal.getX(i), a.normal.getY(i), a.normal.getZ(i));
+                if (!identity) at.applyMatrix3(turn).normalize();
+                normal[o * 3] = at.x; normal[o * 3 + 1] = at.y; normal[o * 3 + 2] = at.z;
+                if (a.uv) { uv[o * 2] = a.uv.getX(i); uv[o * 2 + 1] = a.uv.getY(i); }
+                if (a.uv1) { uv1[o * 2] = a.uv1.getX(i); uv1[o * 2 + 1] = a.uv1.getY(i); }
+                color[o * 3] = (c ? c.getX(i) : 1) * tint.r; color[o * 3 + 1] = (c ? c.getY(i) : 1) * tint.g; color[o * 3 + 2] = (c ? c.getZ(i) : 1) * tint.b;
+                if (!rigid) for (let j = 0; j < 4; j++) { skinIndex[o * 4 + j] = a.skinIndex.getComponent(i, j); skinWeight[o * 4 + j] = a.skinWeight.getComponent(i, j); }
+                layer[o] = row;
+            }
+            const src = g.index;
+            // A piece mirrored against the first one (a negative scale on one of them): three turned its front for it,
+            // and here its triangles are wound the other way instead, so the same side faces out.
+            if (rigid && bind.determinant() < 0) for (let i = 0; i + 2 < src.count; i += 3) { index[k++] = src.getX(i) + v; index[k++] = src.getX(i + 2) + v; index[k++] = src.getX(i + 1) + v; }
+            else for (let i = 0; i < src.count; i++) index[k++] = src.getX(i) + v;
+            v += n;
+        });
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(position, 3));
+        geometry.setAttribute("normal", new THREE.BufferAttribute(normal, 3));
+        geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+        geometry.setAttribute("uv1", new THREE.BufferAttribute(uv1, 2));
+        geometry.setAttribute("color", new THREE.BufferAttribute(color, 3));
+        if (!rigid) {
+            geometry.setAttribute("skinIndex", new THREE.BufferAttribute(skinIndex, 4));
+            geometry.setAttribute("skinWeight", new THREE.BufferAttribute(skinWeight, 4));
+        }
+        geometry.setAttribute("rrLayer", new THREE.BufferAttribute(layer, 1));
+        geometry.setIndex(new THREE.BufferAttribute(index, 1));
+        if (bodies.length) {
+            geometry.userData.rrBodyUV = bodies[0].layout;
+            geometry.userData.rrBodyRanges = bodies.map(b => b.range);
+        }
+        // Shapes: every name any part has, each part's moves at its own vertices.
+        const names = [];
+        for (const part of parts) for (const a of (part.geometry.morphAttributes.position || [])) if (names.indexOf(a.name) < 0) names.push(a.name);
+        if (names.length) {
+            geometry.morphAttributes.position = names.map(name => {
+                const values = new Float32Array(vertices * 3);
+                let start = 0;
+                for (const part of parts) {
+                    const list = part.geometry.morphAttributes.position || [], a = list.find(x => x.name === name), n = part.geometry.attributes.position.count;
+                    // Whole where it is plain, as the places above are.
+                    if (a && !a.isInterleavedBufferAttribute && !a.normalized && a.itemSize === 3 && a.array && a.array.length === n * 3) values.set(a.array, start * 3);
+                    else if (a) for (let i = 0; i < n; i++) { values[(start + i) * 3] = a.getX(i); values[(start + i) * 3 + 1] = a.getY(i); values[(start + i) * 3 + 2] = a.getZ(i); }
+                    start += n;
+                }
+                const attribute = new THREE.BufferAttribute(values, 3);
+                attribute.name = name;
+                return attribute;
+            });
+            geometry.morphTargetsRelative = true;
+        }
+        this.bounds(geometry);
+        return geometry;
+    },
+
+    /**
+     * The geometry's box and sphere, read straight from its arrays: the same numbers three works out, which reads
+     * every vertex through a Vector3, and every shape's twice more (a face's dozens of shapes: 50 ms of every
+     * second of North Haven's arrival, 2026-11-10). `FAST_BOUNDS = false` leaves it to three.
+     */
+    FAST_BOUNDS: true,
+    bounds(geometry) {
+        const attribute = geometry.attributes.position, shapes = geometry.morphAttributes.position || [];
+        const plain = a => a && !a.isInterleavedBufferAttribute && !a.isGLBufferAttribute && !a.normalized && a.itemSize === 3 && a.array && a.array.length === a.count * 3;
+        if (!this.FAST_BOUNDS || !plain(attribute) || !attribute.count || !shapes.every(plain)) {
+            geometry.computeBoundingBox();
+            geometry.computeBoundingSphere();
+            return;
+        }
+        const extent = array => {
+            let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+            for (let i = 0; i < array.length; i += 3) {
+                const x = array[i], y = array[i + 1], z = array[i + 2];
+                if (x < x0) x0 = x; if (x > x1) x1 = x;
+                if (y < y0) y0 = y; if (y > y1) y1 = y;
+                if (z < z0) z0 = z; if (z > z1) z1 = z;
+            }
+            return [x0, y0, z0, x1, y1, z1];
+        };
+        const reach = (box, x, y, z) => {
+            if (x < box[0]) box[0] = x; if (x > box[3]) box[3] = x;
+            if (y < box[1]) box[1] = y; if (y > box[4]) box[4] = y;
+            if (z < box[2]) box[2] = z; if (z > box[5]) box[5] = z;
+        };
+        const position = attribute.array, relative = !!geometry.morphTargetsRelative, box = extent(position);
+        for (const shape of shapes) {
+            const e = extent(shape.array);
+            // As three does: a shape that moves its vertices reaches from the box's corners by its own least and greatest moves.
+            if (relative) { reach(box, box[0] + e[0], box[1] + e[1], box[2] + e[2]); reach(box, box[3] + e[3], box[4] + e[4], box[5] + e[5]); }
+            else { reach(box, e[0], e[1], e[2]); reach(box, e[3], e[4], e[5]); }
+        }
+        const cx = (box[0] + box[3]) * 0.5, cy = (box[1] + box[4]) * 0.5, cz = (box[2] + box[5]) * 0.5;
+        let far = 0;
+        for (let i = 0; i < position.length; i += 3) {
+            const dx = cx - position[i], dy = cy - position[i + 1], dz = cz - position[i + 2], d = dx * dx + dy * dy + dz * dz;
+            if (d > far) far = d;
+        }
+        for (const shape of shapes) {
+            const moves = shape.array;
+            if (relative) for (let i = 0; i < moves.length; i += 3) {
+                const mx = moves[i], my = moves[i + 1], mz = moves[i + 2];
+                // A vertex the shape leaves where it is was counted above (most of a face's shapes move a few).
+                if (mx === 0 && my === 0 && mz === 0) continue;
+                const dx = cx - (mx + position[i]), dy = cy - (my + position[i + 1]), dz = cz - (mz + position[i + 2]), d = dx * dx + dy * dy + dz * dz;
+                if (d > far) far = d;
+            } else for (let i = 0; i < moves.length; i += 3) {
+                const dx = cx - moves[i], dy = cy - moves[i + 1], dz = cz - moves[i + 2], d = dx * dx + dy * dy + dz * dz;
+                if (d > far) far = d;
+            }
+        }
+        geometry.boundingBox = new THREE.Box3(new THREE.Vector3(box[0], box[1], box[2]), new THREE.Vector3(box[3], box[4], box[5]));
+        geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(cx, cy, cz), Math.sqrt(far));
+    },
+
+    /**
+     * The table: a row per part, five texels. A: its picture's layer (NONE: white), relief, surface and cavity
+     * layers (NONE: it has none). B: the relief's scale, the cavities' strength, which maps ride the second
+     * coordinates (1 relief, 2 surface, 4 cavities) and its side (8 front only, 16 back only). C: its shine
+     * (reflect, roughness, metal, how much paint stays), zero where it does not shine. D: its clear coat (strength,
+     * roughness) and the alpha it is cut out under (0: opaque). E: its glow, and which array its picture is in.
+     * F, only in a group where some part's glow has a picture (GLOW_MAPS): that picture's layer (NONE: none) and array.
+     */
+    table(rows) {
+        const width = rows.some(row => row.f) ? 6 : 5, size = width * 4;
+        const data = new Float32Array(rows.length * size);
+        rows.forEach((row, r) => data.set([].concat(row.a, row.b, row.c, row.d, row.e, width > 5 ? row.f || [this.NONE, -1, 0, 0] : []), r * size));
+        const table = new THREE.DataTexture(data, width, rows.length, THREE.RGBAFormat, THREE.FloatType);
+        table.magFilter = table.minFilter = THREE.NearestFilter;
+        table.generateMipmaps = false;
+        table.needsUpdate = true;
+        return table;
+    },
+
+    /** Merge the template's parts that draw alike. Returns how many meshes went and how many came. */
+    async apply(template) {
+        if (!this.enabled || !template || typeof THREE === "undefined" || !THREE.DataArrayTexture || typeof createImageBitmap !== "function") return null;
+        const candidates = [];
+        template.traverse(child => { if (child.isMesh && this.eligible(child)) candidates.push(child); });
+        if (candidates.length < this.MIN_PARTS) return null;
+        // Every picture decoded first: a layer is copied from it.
+        const waits = new Map();
+        for (const part of candidates) for (const t of Object.values(this.maps(part.material))) if (t && !waits.has(t)) waits.set(t, this.ready(t));
+        const settled = new Map();
+        for (const [t, wait] of waits) settled.set(t, await wait);
+        const parts = candidates.filter(p => Object.values(this.maps(p.material)).every(t => !t || settled.get(t)));
+        const report = { before: 0, after: 0, groups: 0 };
+        template.traverse(child => { if (child.isMesh) report.before++; });
+        // Arriving in a crowd, each step its own frame: a group's arrays, its geometry, the bounds, each layer's upload.
+        const groups = this.plan(parts), shared = this.sharing(template, groups);
+        const made = [];
+        for (const group of groups) {
+            const one = await this.mergeGroup(group, shared);
+            if (one) made.push(one);
+            await this.nextFrame();
+        }
+        // Swapped in all at once, after every await: the template is whole the moment anything clones it. Each merged
+        // mesh takes its first part's place among the parts that stay, so the model's own order is kept.
+        for (const { mesh, parts: merged } of made) {
+            const lead = merged[0], parent = lead.parent;
+            parent.add(mesh);
+            parent.children.splice(parent.children.indexOf(mesh), 1);
+            parent.children.splice(parent.children.indexOf(lead), 0, mesh);
+            for (const part of merged) { if (part.parent) part.parent.remove(part); part.geometry.dispose(); }
+            const list = template.userData.glbTextures;
+            if (Array.isArray(list)) for (const t of mesh.material.userData.rrLayers.own) list.push(t);
+            report.groups++;
+        }
+        template.traverse(child => { if (child.isMesh) report.after++; });
+        template.userData.rrLayered = report;
+        if (made.length) this.release(template, made);
+        // The first clone would work these out (every vertex of each part): here, in a frame of their own.
+        if (Reactor3D.presetSkinnedBounds) { Reactor3D.presetSkinnedBounds(template); await this.nextFrame(); }
+        await this.within(this.preload(made.map(entry => entry.mesh.material.userData.rrLayers.own)), this.WARM_WAIT_MS * 4);
+        await this.within(this.warm(template), this.WARM_WAIT_MS + 1000);
+        return report;
+    },
+
+    /**
+     * A worn prop's rigid pieces merged (WORN), made once per prop model: { ready, promise }, `ready` null until the
+     * merge is done, then { made: [{ mesh, parts }] } (each `mesh` stands for its `parts`, pieces straight under the
+     * template's root, in their order) or false where nothing merges. The template itself is left as it is: a map's
+     * prop of the same model, or code that finds a piece by name (Rope.grapplerOf), sees its pieces as before.
+     * Each wearer's copy takes the merged meshes in place of the pieces (Worn.mergePieces). Their pictures stay: the
+     * template's pieces still draw them elsewhere.
+     */
+    rigid(template) {
+        if (!this.enabled || !this.WORN || !template || typeof THREE === "undefined" || !THREE.DataArrayTexture || typeof createImageBitmap !== "function") return null;
+        const cache = this._rigid || (this._rigid = new WeakMap());
+        let entry = cache.get(template);
+        if (!entry) {
+            entry = { ready: null, promise: null };
+            entry.promise = this.mergeRigid(template).then(made => (entry.ready = made), error => {
+                console.warn("Reactor3D: a worn prop's pieces stay apart:", error && error.message || error);
+                return (entry.ready = false);
+            });
+            cache.set(template, entry);
+        }
+        return entry;
+    },
+
+    async mergeRigid(template) {
+        const candidates = template.children.filter(child => this.eligibleRigid(child));
+        if (candidates.length < this.MIN_PARTS) return false;
+        const waits = new Map();
+        for (const part of candidates) for (const t of Object.values(this.maps(part.material))) if (t && !waits.has(t)) waits.set(t, this.ready(t));
+        const settled = new Map();
+        for (const [t, wait] of waits) settled.set(t, await wait);
+        const parts = candidates.filter(p => Object.values(this.maps(p.material)).every(t => !t || settled.get(t)));
+        const made = [];
+        for (const group of this.plan(parts)) {
+            const one = await this.mergeGroup(group, null);
+            if (one) made.push(one);
+        }
+        if (!made.length) return false;
+        // Its arrays go with the model's own pictures when the model is let go (ModelUse).
+        const list = template.userData.glbTextures;
+        if (Array.isArray(list)) for (const { mesh } of made) for (const t of mesh.material.userData.rrLayers.own) list.push(t);
+        await this.within(this.preload(made.map(entry => entry.mesh.material.userData.rrLayers.own)), this.WARM_WAIT_MS * 4);
+        return { made };
+    },
+
+    /**
+     * The character drawn once where nobody sees it, before it is first shown: its programs compiled off the main
+     * thread (compileAsync), then a draw into a few pixels that sends what three otherwise sends at a model's first
+     * draw: its geometry, the face's shape texture (a float array of every shape) and the pictures of the parts that
+     * stay. Turning the camera onto a square of sleepers not yet seen sent those for each as it came into view: 164
+     * array uploads, 443 ms, a frame of 250 ms in ten seconds of turning. On the uploads' queue: one character a turn.
+     */
+    warm(template) {
+        const run = () => this.warmNow(template);
+        const turn = (this._uploads || Promise.resolve()).then(run, run);
+        this._uploads = turn.catch(() => null);
+        return turn;
+    },
+
+    async warmNow(template) {
+        const viewport = Reactor3D.viewport && Reactor3D.viewport(), renderer = viewport && viewport._renderer;
+        const camera = viewport && typeof viewport.camera === "function" ? viewport.camera() : null;
+        const target = viewport && typeof viewport.scene === "function" ? viewport.scene() : null;
+        if (!this.WARM || !renderer || !camera || typeof renderer.compileAsync !== "function" || !template || template.parent) return;
+        const scene = this._warmScene || (this._warmScene = new THREE.Scene());
+        // Set up as the view's own target is (Viewport: sRGB written in the shader, RGBA8): a plain target makes three
+        // write linear colour, another program for every material, compiled on the spot and waited for.
+        let pixels = this._warmTarget;
+        if (!pixels) {
+            pixels = this._warmTarget = new THREE.WebGLRenderTarget(4, 4);
+            pixels.isXRRenderTarget = true;
+            pixels.texture.internalFormat = "RGBA8";
+        }
+        // As an instance will wear it: the Builder's metal shines (applyModelSurface), another program.
+        if (Reactor3D.applyModelSurface) Reactor3D.applyModelSurface(template, null);
+        scene.add(template);
+        try {
+            template.updateMatrixWorld(true);
+            // Never waited for long: the player's own character waits on this, and the map on it (a lost context
+            // answers no program's status, and three's wait would poll it for ever).
+            const W = Reactor3D.ShaderWarmup, compiling = renderer.compileAsync(scene, camera, target || null).then(() => true);
+            if (W && W.track) W.track(compiling);
+            const ready = await this.within(compiling, this.WARM_WAIT_MS);
+            this.handBack(viewport);
+            // Not ready in time: drawing now would wait on those same programs, so it is drawn where first seen instead.
+            if (ready !== true) return;
+            // Its draw reads its programs: not while others are still building (ShaderWarmup.readWhenQuiet).
+            if (W && W.whenQuiet) await W.whenQuiet();
+            await this.nextFrame();
+            this.plainUnpack(renderer);
+            const was = renderer.getRenderTarget();
+            renderer.setRenderTarget(pixels);
+            try { renderer.render(scene, camera); } finally { renderer.setRenderTarget(was); this.handBack(viewport); }
+        } catch (error) {
+            // Drawn for the first time where it is first seen, as before.
+        } finally {
+            scene.remove(template);
+        }
+    },
+
+    /**
+     * The unpack state a texture array's upload needs, set outright: the 2D layer (PIXI) shares the context and
+     * leaves UNPACK_FLIP_Y / PREMULTIPLY_ALPHA on, three's own record of them says off and sets nothing, and WebGL
+     * refuses either for a 3D upload ("texSubImage3D: FLIP_Y or PREMULTIPLY_ALPHA isn't allowed"): the layer
+     * stayed empty and the character drew without its pictures.
+     */
+    plainUnpack(renderer) {
+        // three's record of the context matched to what is really set, and the flags cleared (as Viewport does
+        // before its own pass), then, once done (handBack), PIXI's record matched too: this runs between frames.
+        try { renderer.resetState(); } catch (error) { /* a lost context */ }
+        try { Reactor3D.clearUnpackState(renderer.getContext()); } catch (error) { /* likewise */ }
+    },
+
+    /** PIXI's caches after three has driven the shared context outside the frame. */
+    handBack(viewport) {
+        try { if (viewport && typeof viewport._resetPixi === "function") viewport._resetPixi(); } catch (error) { /* a lost context */ }
+    },
+
+    /** Resolves with `promise`, or with nothing after `ms`: a wait in a character's loading never holds it for ever. */
+    within(promise, ms) {
+        return Promise.race([promise, new Promise(resolve => setTimeout(resolve, ms))]);
+    },
+
+    /** A frame from now (or a moment, where frames do not come: a hidden window). */
+    nextFrame() {
+        return new Promise(resolve => {
+            let done = false;
+            const go = () => { if (!done) { done = true; resolve(); } };
+            if (typeof requestAnimationFrame === "function") requestAnimationFrame(go);
+            setTimeout(go, 50);
+        });
+    },
+
+    /**
+     * Which pictures may go to the merge's worker whole: those no part that stays draws, at their last use among the
+     * groups. `uses` counts what each group still needs; `kept` the pictures a remaining part shows.
+     */
+    sharing(template, groups) {
+        const merged = new Set(), uses = new Map(), kept = new Set();
+        for (const group of groups) for (const part of group.parts) {
+            merged.add(part);
+            for (const t of Object.values(this.maps(part.material))) if (t && t.image) uses.set(t.image, (uses.get(t.image) || 0) + 1);
+        }
+        template.traverse(child => {
+            if (!child.isMesh || merged.has(child)) return;
+            for (const m of [].concat(child.material || [])) {
+                if (!m) continue;
+                for (const t of this.textures(m)) if (t.image) kept.add(t.image);
+            }
+        });
+        return { uses, kept };
+    },
+
+    /**
+     * Each array's layers up to the GPU a frame at a time, before the character is first drawn: drawn first, three
+     * sent a whole array in that frame (20 to 50 ms for a crowd's arrival each second). Without the game's renderer
+     * (the editor's views) they go up whole when first drawn, as before.
+     */
+    preload(lists) {
+        // One layer a frame for the whole game: characters arriving together take turns.
+        const run = () => this.preloadNow(lists);
+        const turn = (this._uploads || Promise.resolve()).then(run, run);
+        this._uploads = turn.catch(() => null);
+        return turn;
+    },
+
+    async preloadNow(lists) {
+        const viewport = Reactor3D.viewport && Reactor3D.viewport(), renderer = viewport && viewport._renderer;
+        if (!renderer || typeof renderer.initTexture !== "function") return;
+        for (const list of lists) for (const array of list) {
+            if (!array || !array.isDataArrayTexture || !array.image || !array.image.data || typeof array.addLayerUpdate !== "function") continue;
+            const depth = array.image.depth, mips = array.generateMipmaps;
+            array.userData.rrLayersLeft = depth;
+            for (let layer = 0; layer < depth; layer++) {
+                array.addLayerUpdate(layer);
+                array.userData.rrLayersLeft--;
+                // The mip levels made once, after the last layer: three makes them for the whole array after every
+                // upload (49 ms a layer for a 1024 array). The first upload keeps them on, which sizes the storage with its levels.
+                array.generateMipmaps = mips && (layer === 0 || layer === depth - 1);
+                array.needsUpdate = true;
+                this.plainUnpack(renderer);
+                try { renderer.initTexture(array); } catch (error) { array.userData.rrLayersLeft = 0; array.clearLayerUpdates(); array.generateMipmaps = mips; array.needsUpdate = true; break; }
+                finally { this.handBack(viewport); }
+                await this.nextFrame();
+            }
+            array.generateMipmaps = mips;
+        }
+    },
+
+    /**
+     * The pictures only merged parts drew from: copied into the arrays, never uploaded, still decoded in memory.
+     * Let go of each one no part that stays draws (by the picture itself: two textures may show one).
+     */
+    release(template, made) {
+        const kept = new Set();
+        template.traverse(child => {
+            if (!child.isMesh || (child.material && child.material.userData && child.material.userData.rrLayers)) return;
+            for (const m of [].concat(child.material || [])) if (m) for (const t of this.textures(m)) if (t.image) kept.add(t.image);
+        });
+        for (const { parts } of made) for (const part of parts) for (const t of this.textures(part.material)) {
+            if (!t.image || kept.has(t.image)) continue;
+            const image = t.image;
+            t.image = null;
+            if (typeof image.close === "function") image.close();
+        }
+    },
+
+    async mergeGroup(group, shared) {
+        const { parts } = group;
+        // Pictures by class (one array each), the same picture once however many parts or textures show it.
+        // A picture is known by the file's image it came from: each texture over it was decoded on its own.
+        const classes = [], detail = { images: [], keys: [] };
+        const keyOf = texture => (texture.userData && texture.userData.rrGlbImage != null ? "glb" + texture.userData.rrGlbImage : texture.image);
+        const place = (list, texture) => { const key = keyOf(texture); let i = list.keys.indexOf(key); if (i < 0) { i = list.keys.length; list.keys.push(key); list.images.push(texture.image); } return i; };
+        const baseOf = texture => {
+            const kind = this.classOf(texture);
+            let entry = classes.find(c => c.kind === kind);
+            if (!entry) classes.push(entry = { kind, images: [], keys: [] });
+            return [place(entry, texture), classes.indexOf(entry)];
+        };
+        const rows = parts.map(part => {
+            const m = part.material, d = m.userData, maps = this.maps(m);
+            const [base, array] = maps.base ? baseOf(maps.base) : [this.NONE, -1];
+            const slot = t => (t ? place(detail, t) : this.NONE);
+            const normal = slot(maps.normal), surface = slot(maps.surface), occlusion = slot(maps.occlusion);
+            const scale = d.rrNormalScale && d.rrNormalScale.isVector2 ? d.rrNormalScale : new THREE.Vector2(1, 1);
+            const flags = (maps.normal && d.rrNormalUv1 ? 1 : 0) + (maps.surface && d.rrSurfaceUv1 ? 2 : 0) + (maps.occlusion && d.rrOcclusionUv1 ? 4 : 0)
+                + (m.side === THREE.FrontSide ? 8 : m.side === THREE.BackSide ? 16 : 0);
+            const shine = d.glbShineOwn && d.glbShine && d.glbShine.reflect > 0 ? d.glbShine : null;
+            const coat = d.rrClearcoat || null, glow = d.rrEmissive && d.rrEmissive.isColor ? d.rrEmissive : null;
+            // Its glow's picture in the arrays beside the pictures (its own size, or the small ones' array).
+            const lit = maps.glow ? baseOf(maps.glow) : null;
+            return {
+                a: [base, normal, surface, occlusion],
+                b: [scale.x, scale.y, d.rrOcclusionStrength != null ? d.rrOcclusionStrength : 1, flags],
+                c: shine ? [shine.reflect, 1 - shine.gloss, shine.metal, Reactor3D.BUILDER_METAL_KEEP || 0] : [0, 0, 0, 0],
+                d: [coat ? coat.factor || 0 : 0, coat ? coat.roughness || 0 : 0, m.alphaTest > 0 ? m.alphaTest : 0, 0],
+                e: glow ? [glow.r, glow.g, glow.b, array] : [0, 0, 0, array],
+                f: lit ? [lit[0], lit[1], 0, 0] : null
+            };
+        });
+        if (classes.length > this.CLASSES || classes.some(c => c.images.length > 255) || detail.images.length > 255) return null;
+        // A picture is given away at its last use (no later group needs it), unless a part that stays draws it or
+        // this group reads it twice (as a picture and as a map).
+        const counted = new Map(), lists = new Map();
+        if (shared) for (const part of parts) for (const t of Object.values(this.maps(part.material))) if (t && t.image) counted.set(t.image, (counted.get(t.image) || 0) + 1);
+        for (const list of [detail.images].concat(classes.map(c => c.images))) for (const image of list) lists.set(image, (lists.get(image) || 0) + 1);
+        const give = list => list.map(image => !!shared && lists.get(image) === 1 && !shared.kept.has(image)
+            && (shared.uses.get(image) || 0) - (counted.get(image) || 0) <= 0);
+        let arrays, detailArray;
+        try {
+            [detailArray, ...arrays] = await Promise.all([this.array(detail.images, "small", false, give(detail.images))].concat(classes.map(c => this.array(c.images, c.kind, true, give(c.images)))));
+            if (shared) for (const [image, n] of counted) shared.uses.set(image, (shared.uses.get(image) || 0) - n);
+        } catch (error) {
+            console.warn("Reactor3D: a character's parts stay apart:", error && error.message || error);
+            return null;
+        }
+        const geometry = this.geometry(parts, part => part.material.color || new THREE.Color(1, 1, 1));
+        // Drawn from both sides when any part is (the rest discard their back faces); cut out per part, in the shader.
+        const sides = new Set(parts.map(p => p.material.side)), side = sides.size === 1 ? parts[0].material.side : THREE.DoubleSide;
+        // `map` only asks three for the picture coordinates (vMapUv): every picture comes from an array.
+        const material = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true, side, fog: false, map: this.blank("map") });
+        material.name = "Layered parts";
+        material.__reactorModel = true;
+        material.userData.baseColor = material.color.clone();
+        const table = this.table(rows), base = [0, 1, 2, 3].map(i => arrays[i] || this.blank("base"));
+        material.userData.rrLayers = { table, base, detail: detailArray || this.blank("detail"), rows: rows.length,
+            own: [table].concat(arrays, detailArray ? [detailArray] : []), cut: rows.some(r => r.d[2] > 0), sided: sides.size > 1, classes: classes.length,
+            glow: rows.some(r => r.f) };
+        const any = k => rows.some(r => r.a[k] >= 0);
+        const detailTexture = material.userData.rrLayers.detail;
+        // The light's code samples these where they are set (injectLightShader, injectShine, injectSurfaceOcclusion); here
+        // they say only that some part has one, and inject() points each at its layer.
+        if (any(1)) { material.userData.rrNormalMap = detailTexture; material.userData.rrNormalUv1 = true; material.userData.rrNormalScale = new THREE.Vector2(1, 1); }
+        if (any(2)) { material.userData.rrSurfaceMap = detailTexture; material.userData.rrSurfaceUv1 = true; }
+        if (any(3)) { material.userData.rrOcclusionMap = detailTexture; material.userData.rrOcclusionUv1 = true; material.userData.rrOcclusionStrength = 1; }
+        // Any part that shines: the group takes the Builder's own shine (applyModelSurface), each part its own row's.
+        const shiny = rows.filter(r => r.c[0] > 0);
+        if (shiny.length) {
+            const top = shiny.reduce((a, r) => (r.c[0] > a.c[0] ? r : a));
+            material.userData.glbShine = { reflect: top.c[0], gloss: 1 - top.c[1], metal: top.c[2], tint: "#ffffff" };
+            material.userData.glbShineOwn = true;
+            if (rows.some(r => r.d[0] > 0)) material.userData.rrClearcoat = { factor: 1, roughness: 0 };
+        }
+        // A glow in some part: the light's glow code is asked for (injectSurfaceGlow), and reads each part's own.
+        if (rows.some(r => r.e[0] > 0 || r.e[1] > 0 || r.e[2] > 0)) material.userData.rrEmissive = new THREE.Color(1, 1, 1);
+        // A glow picture in some part: the glow's code reads a picture (glowKey "emit-map"), and inject() points it at
+        // the part's layer, white where a part has none (its glow a flat color, as its own program added it).
+        if (material.userData.rrLayers.glow) material.userData.rrEmissiveMap = this.blank("map");
+        Reactor3D.litMaterial(material);
+        const lead = parts[0], rigid = !lead.isSkinnedMesh;
+        const mesh = rigid ? new THREE.Mesh(geometry, material) : new THREE.SkinnedMesh(geometry, material);
+        mesh.name = "Layered parts";
+        mesh.frustumCulled = false;
+        mesh.castShadow = parts.some(p => p.castShadow);
+        mesh.receiveShadow = parts.some(p => p.receiveShadow);
+        mesh.layers.mask = lead.layers.mask;
+        // After the parts that stay apart (the body: a tight garment lies on its skin and won that tie by being drawn
+        // after it), and the metal after the cloth (a buckle or a plate on a garment). A group that holds the body
+        // draws where the body did: its garments' groups still come after it. A worn prop's pieces were all drawn
+        // at one order, and their group keeps it.
+        const body = parts.some(p => this.isBody(p));
+        mesh.renderOrder = lead.renderOrder + (rigid || body ? 0 : 1) + (!rigid && shiny.length === rows.length && this.SPLIT_SHINE ? 1 : 0);
+        mesh.position.copy(lead.position); mesh.quaternion.copy(lead.quaternion); mesh.scale.copy(lead.scale);
+        mesh.userData.rrLayeredParts = parts.map(p => this.nameOf(p));
+        if (geometry.morphAttributes.position) mesh.updateMorphTargets();
+        if (!rigid) {
+            mesh.bindMode = THREE.AttachedBindMode;
+            mesh.bind(lead.skeleton, new THREE.Matrix4());
+        }
+        return { mesh, parts };
+    },
+
+    /** The GLSL that picks each part's own: before the fragment's main, where every map it reads is declared. */
+    FRAGMENT_GLSL: [
+        // The colour pictures' mip bias (Reactor3D.MipBias), declared once wherever this or three's own lookup comes first.
+        "#ifndef RR_MIP_BIAS",
+        "#define RR_MIP_BIAS",
+        "uniform float rrMipBias;",
+        "#endif",
+        "vec2 rrLayerUv(float bit) { return mod(floor(vRRLayerB.w / bit), 2.0) > 0.5 ? vRRUv1 : vMapUv; }",
+        "vec4 rrLayerTexel(highp sampler2DArray s, float k, float bit, vec4 none) {",
+        "\tvec2 uv = rrLayerUv(bit), dx = dFdx(uv), dy = dFdy(uv);",
+        "\treturn k < -0.5 ? none : textureGrad(s, vec3(uv, k), dx, dy);",
+        "}",
+        "%BASE%",
+        // A single-sided part's other side, as culling would have left it.
+        "bool rrLayerCulled() {",
+        "\tfloat sides = floor(vRRLayerB.w / 8.0);",
+        "\treturn (mod(sides, 2.0) > 0.5 && !gl_FrontFacing) || (mod(floor(sides / 2.0), 2.0) > 0.5 && gl_FrontFacing);",
+        "}"
+    ].join("\n"),
+
+    /** The picture picker for a group with `count` arrays (a sampler each: none declared that no part reads). */
+    baseGlsl(count) {
+        const lines = ["vec4 rrLayerBase(vec2 uv) {", "\tfloat k = vRRLayerA.x;", "\tif (k < -0.5 || " + count + " == 0) return vec4(1.0);"];
+        if (count > 0) {
+            // The colour pictures read by explicit gradients: the mip bias is a scale of those.
+            lines.push("\tfloat bias = exp2(rrMipBias);", "\tvec2 dx = dFdx(uv) * bias, dy = dFdy(uv) * bias;", "\tvec3 at = vec3(uv, k);", "\tfloat c = vRRLayerE.w;");
+            for (let i = 0; i < count - 1; i++) lines.push("\tif (c < " + (i + 0.5).toFixed(1) + ") return textureGrad(rrBase" + i + ", at, dx, dy);");
+            lines.push("\treturn textureGrad(rrBase" + (count - 1) + ", at, dx, dy);");
+        }
+        lines.push("}");
+        return lines.join("\n");
+    },
+
+    /**
+     * The glow picture picker (GLOW_MAPS): the part's glow layer (row F) in the arrays the pictures are in, on the
+     * picture's coordinates as injectSurfaceGlow reads it; white where the part's glow has no picture.
+     */
+    glowGlsl(count) {
+        const lines = ["vec4 rrLayerGlow(vec2 uv) {", "\tvec2 dx = dFdx(uv), dy = dFdy(uv);", "\tfloat k = vRRLayerF.x;", "\tif (k < -0.5 || " + count + " == 0) return vec4(1.0);"];
+        if (count > 0) {
+            lines.push("\tvec3 at = vec3(uv, k);", "\tfloat c = vRRLayerF.y;");
+            for (let i = 0; i < count - 1; i++) lines.push("\tif (c < " + (i + 0.5).toFixed(1) + ") return textureGrad(rrBase" + i + ", at, dx, dy);");
+            lines.push("\treturn textureGrad(rrBase" + (count - 1) + ", at, dx, dy);");
+        }
+        lines.push("}");
+        return lines.join("\n");
+    },
+
+    /** Last in a lit material's chain (litMaterial): the part's row read in the vertex stage, and every map taken from its layer. */
+    inject(material, shader) {
+        const layers = material && material.userData && material.userData.rrLayers;
+        if (!layers || !layers.table || shader.vertexShader.indexOf("rrLayerTable") >= 0) return;
+        Reactor3D.injectUv1(shader);
+        shader.uniforms.rrLayerTable = { value: layers.table };
+        const count = layers.classes || 0;
+        for (let i = 0; i < count; i++) shader.uniforms["rrBase" + i] = { value: layers.base[i] };
+        shader.uniforms.rrDetailArray = { value: layers.detail };
+        // Only the row travels from the vertex (the same on every vertex of a part, so it arrives whole); the fragment
+        // reads the row itself. Five flat vectors from the vertex were packed by the driver beside the light's own
+        // varyings and came out as another row's where the shine's code was in the program.
+        shader.vertexShader = "attribute float rrLayer;\nvarying float vRRLayerRow;\n" + shader.vertexShader.replace("void main() {", "void main() {\n\tvRRLayerRow = rrLayer;");
+        let fs = shader.fragmentShader;
+        const swap = (from, to) => { fs = fs.split(from).join(to); };
+        // The picture: the part's layer, or white.
+        swap("#include <map_fragment>", "#ifdef USE_MAP\n\tdiffuseColor *= rrLayerBase(vMapUv);\n#endif");
+        // Each part's side and cut, before anything is worked out for a fragment that goes.
+        // (Only where some part needs it: a discard in the program can cost the GPU its early depth test.)
+        if (layers.sided) swap("#include <clipping_planes_fragment>", "#include <clipping_planes_fragment>\n\tif (rrLayerCulled()) discard;");
+        if (layers.cut) swap("#include <alphatest_fragment>", "if (diffuseColor.a < vRRLayerD.z) discard;");
+        // Glow (injectSurfaceGlow): each part's own color, black where it has none.
+        swap("uniform vec3 rrEmissive;", "#define rrEmissive vRRLayerE.rgb");
+        // Its picture (GLOW_MAPS): the part's own layer, white where its glow has none.
+        const glow = !!layers.glow && fs.indexOf("texture2D(rrEmissiveMap, vMapUv)") >= 0;
+        if (glow) {
+            swap("uniform sampler2D rrEmissiveMap;", "");
+            swap("texture2D(rrEmissiveMap, vMapUv)", "rrLayerGlow(vMapUv)");
+        }
+        // Relief (injectLightShader's faceGlsl and PERTURB_NORMAL_GLSL).
+        swap("uniform sampler2D rrNormalMap;", "");
+        swap("uniform vec2 rrNormalScale;", "#define rrNormalScale vRRLayerB.xy");
+        swap("texture2D(rrNormalMap, vRRUv1).xyz * 2.0 - 1.0, vRRUv1)", "rrLayerTexel(rrDetailArray, vRRLayerA.y, 1.0, vec4(0.5, 0.5, 1.0, 1.0)).xyz * 2.0 - 1.0, rrLayerUv(1.0))");
+        // Surface and shine (injectShine): a part that does not shine skips it.
+        swap("uniform sampler2D rrSurfaceMap;", "");
+        swap("texture2D(rrSurfaceMap, vRRUv1).rgb", "rrLayerTexel(rrDetailArray, vRRLayerA.z, 2.0, vec4(1.0)).rgb");
+        swap("uniform vec2 rrModelCoat;", "#define rrModelCoat vRRLayerD.xy");
+        swap("{\n\tvec3 rrN = rrFaceN;", "if (vRRLayerC.x > 0.0) {\n\tvec3 rrN = rrFaceN;");
+        swap("{\n\tvec3 rrN = normalize(vRRWorldNormal);", "if (vRRLayerC.x > 0.0) {\n\tvec3 rrN = normalize(vRRWorldNormal);");
+        // The part's shine inside the shine's own block only: a name for all the program would also rename the water's
+        // local `float rrShine` (reactor_3d_world.js), and that local would then stand in for every part's row.
+        const start = fs.indexOf("if (vRRLayerC.x > 0.0) {");
+        if (start >= 0) {
+            let depth = 0, end = fs.indexOf("{", start);
+            for (; end < fs.length; end++) { if (fs[end] === "{") depth++; else if (fs[end] === "}" && --depth === 0) break; }
+            fs = fs.slice(0, start) + fs.slice(start, end + 1).replace(/\brrShine\b/g, "vRRLayerC") + fs.slice(end + 1);
+        }
+        // Cavities (injectSurfaceOcclusion).
+        swap("uniform sampler2D rrOcclusionMap;\nuniform float rrOcclusionStrength;\n", "#define rrOcclusionStrength vRRLayerB.z\n");
+        swap("texture2D(rrOcclusionMap, vRRUv1).r", "rrLayerTexel(rrDetailArray, vRRLayerA.w, 4.0, vec4(1.0)).r");
+        fs = fs.replace("void main()", this.FRAGMENT_GLSL.replace("%BASE%", this.baseGlsl(count) + (glow ? "\n" + this.glowGlsl(count) : "")) + "\nvoid main()").replace("void main() {", [
+            "void main() {",
+            "\tint rrRow = int(vRRLayerRow + 0.5);",
+            "\tvRRLayerA = texelFetch(rrLayerTable, ivec2(0, rrRow), 0);",
+            "\tvRRLayerB = texelFetch(rrLayerTable, ivec2(1, rrRow), 0);",
+            "\tvRRLayerC = texelFetch(rrLayerTable, ivec2(2, rrRow), 0);",
+            "\tvRRLayerD = texelFetch(rrLayerTable, ivec2(3, rrRow), 0);",
+            "\tvRRLayerE = texelFetch(rrLayerTable, ivec2(4, rrRow), 0);"
+        ].concat(glow ? ["\tvRRLayerF = texelFetch(rrLayerTable, ivec2(5, rrRow), 0);"] : []).join("\n"));
+        const row = "varying float vRRLayerRow;\nuniform highp sampler2D rrLayerTable;\nvec4 vRRLayerA;\nvec4 vRRLayerB;\nvec4 vRRLayerC;\nvec4 vRRLayerD;\nvec4 vRRLayerE;\n"
+            + (glow ? "vec4 vRRLayerF;\n" : "");
+        let samplers = "";
+        for (let i = 0; i < count; i++) samplers += "uniform highp sampler2DArray rrBase" + i + ";\n";
+        if (fs.indexOf("rrDetailArray") >= 0) samplers += "uniform highp sampler2DArray rrDetailArray;\n";
+        shader.fragmentShader = row + samplers + fs;
+    },
+
+    programKey(material) {
+        const layers = material && material.userData && material.userData.rrLayers;
+        return layers ? "|layers" + (layers.classes || 0) + (layers.cut ? "-cut" : "") + (layers.sided ? "-sided" : "") + (layers.glow ? "-glow" : "") : "";
+    }
 };
 
 Reactor3D.Models = { file: "reactor_3d_models.js" };

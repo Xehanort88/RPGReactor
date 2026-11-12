@@ -1945,6 +1945,34 @@
         .database-item-column { display:flex; flex-direction:column; gap:16px; min-width:0; }
         .database-item-column > .database-section { margin-bottom:0; }
 
+        /* Columns of near the same height (RRDatabaseSections, COLUMN_SETS).
+         * The shell deals a page's cards among its columns and says how many
+         * columns it uses: the page's own count at this width, a third on a
+         * page of two wide enough for it, or fewer where that stands as
+         * short. A column it made for that looks like the page's own, and a
+         * column left without cards takes no room. */
+        [data-rr-columns] { grid-template-columns: repeat(var(--rr-db-columns, 2), minmax(0, 1fr)) !important; }
+        [data-rr-columns] > .rr-db-column { grid-column: auto !important; min-width: 0; }
+        .rr-db-column-made { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+        .rr-db-column-empty { display: none !important; }
+
+        /* Pages that are nothing but options (DatabaseFlowForm): cards fill the window's
+         * width in columns and cascade down as it narrows, and short fields share a row. */
+        .rr-flow-page { column-width: 350px; column-gap: 12px; padding: 12px; }
+        .rr-flow-page > .database-section { break-inside: avoid; margin: 0 0 12px; }
+        .rr-flow-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 12px; align-items: end; }
+        .rr-flow-field { min-width: 0; }
+        .rr-flow-field > label { display: block; margin-bottom: 3px; color: var(--color-text); font-size: 12px; }
+        .rr-flow-page .rr-flow-field > .rr-input, .rr-flow-page .rr-flow-field > select, .rr-flow-page .rr-flow-field > .rr-select { width: 100%; max-width: 100%; box-sizing: border-box; min-width: 0; font-size: 12px; }
+        .rr-flow-page .rr-flow-field > input { height: 26px; padding: 2px 6px; }
+        .rr-flow-field > textarea { resize: vertical; }
+        .rr-flow-wide { grid-column: 1 / -1; }
+        .rr-flow-check { display: flex; gap: 8px; align-items: center; min-height: 26px; color: var(--color-text); font-size: 12px; line-height: 1.25; cursor: pointer; }
+        .rr-flow-radios { display: flex; flex-wrap: wrap; gap: 4px 24px; }
+        .rr-flow-note { margin-top: 6px; color: var(--color-text-muted); font-size: 11px; line-height: 1.4; }
+        .rr-flow-off { opacity: 0.45; }
+        .rr-flow-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 3px 10px; max-height: 220px; overflow-y: auto; padding: 8px; background: var(--color-bg-panel); border: 1px solid var(--color-border); border-radius: 4px; }
+
         /* Two-column page rows (Actors' section pairs, Classes' columns).
          * Defined here rather than inline so the database-detail container
          * query can collapse them to one column when the pane narrows. */
@@ -5062,7 +5090,6 @@
         }
         .rr-ui-props .rr-ui-hint { margin-top: 4px; }
         .rr-ui-props .rr-ui-hint-row { grid-column: 2 / -1; margin-top: -2px; }
-        .rr-ui-props .rr-ui-empty { grid-column: 1 / -1; padding: 8px; }
         .rr-ui-property-section {
             grid-column: 1 / -1;
             min-width: 0;
@@ -7442,6 +7469,34 @@ details.mp-section:not([open]) > .mp-section-body { display:none; }
 #event-editor-modal.rr-event-editor-popped > .rr-modal > .rr-modal-header :is(button, input, select, a) {
     -webkit-app-region: no-drag;
 }
+/* The sides and corners of a window with no frame size it (RRDetachedWindow.addResizeGrip); the corner grip is the one that shows. */
+.rr-window-edge { position: fixed; z-index: 10001; -webkit-app-region: no-drag; }
+.rr-window-edge[data-edge="n"] { top: 0; left: 10px; right: 10px; height: 4px; cursor: ns-resize; }
+.rr-window-edge[data-edge="s"] { bottom: 0; left: 10px; right: 18px; height: 4px; cursor: ns-resize; }
+.rr-window-edge[data-edge="w"] { left: 0; top: 10px; bottom: 10px; width: 4px; cursor: ew-resize; }
+.rr-window-edge[data-edge="e"] { right: 0; top: 10px; bottom: 18px; width: 4px; cursor: ew-resize; }
+.rr-window-edge[data-edge="nw"] { left: 0; top: 0; width: 10px; height: 10px; cursor: nwse-resize; }
+.rr-window-edge[data-edge="ne"] { right: 0; top: 0; width: 10px; height: 10px; cursor: nesw-resize; }
+.rr-window-edge[data-edge="sw"] { left: 0; bottom: 0; width: 10px; height: 10px; cursor: nesw-resize; }
+/* The editor's open windows, a chip each, in the upper left corner of the map's area (RRDetachedWindow.refreshDock places it). */
+#rr-window-dock { position: fixed; left: 8px; top: 8px; z-index: 9000; display: flex; align-items: center; gap: 6px; box-sizing: border-box; overflow: hidden; padding: 6px 8px; background: var(--color-bg-toolbar); border: 1px solid var(--color-accent); border-radius: var(--radius-md, 5px); box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55); }
+.rr-window-dock-label { font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-text-muted); padding: 0 4px 0 2px; flex: 0 0 auto; }
+.rr-window-chip { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 260px; height: 28px; padding: 0 12px; border: 1px solid var(--color-border-input); border-radius: var(--radius-sm, 3px); background: var(--color-bg-surface); color: var(--color-text-strong, var(--color-text)); font-size: 12px; font-weight: 600; cursor: pointer; }
+.rr-window-chip:hover { border-color: var(--color-accent-bright, var(--color-accent)); background: var(--color-bg-hover, var(--color-bg-surface)); }
+.rr-window-chip:focus-visible { outline: 2px solid var(--color-accent-bright); outline-offset: 1px; }
+.rr-window-chip-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rr-window-chip-mark { flex: 0 0 12px; width: 12px; height: 10px; border: 1px solid currentColor; border-top-width: 3px; box-sizing: border-box; opacity: 0.8; }
+/* The one being looked for: a minimized window stands out, it is not dimmed. */
+.rr-window-chip.is-minimized { border-color: var(--color-accent); color: var(--color-accent); animation: rr-window-chip-in 0.9s ease-out 1; }
+.rr-window-chip.is-minimized .rr-window-chip-mark { height: 3px; border-width: 0 0 3px; align-self: flex-end; margin-bottom: 8px; opacity: 1; }
+@keyframes rr-window-chip-in { 0% { box-shadow: 0 0 0 0 var(--color-accent); } 60% { box-shadow: 0 0 0 6px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+/* The buttons a title bar would have (RRDetachedWindow): only in a window of its own, before its ×. */
+.rr-window-controls { display: none; align-items: center; gap: 2px; margin-inline-start: auto; margin-inline-end: 4px; flex: 0 0 auto; -webkit-app-region: no-drag; }
+html.rr-detached-window .rr-window-controls { display: inline-flex; }
+.rr-window-control { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: var(--radius-sm, 3px); background: transparent; color: var(--color-text-muted); cursor: pointer; -webkit-app-region: no-drag; }
+.rr-window-control:hover { background: var(--color-bg-hover, rgba(255, 255, 255, 0.08)); color: var(--color-text); }
+.rr-window-control:focus-visible { outline: 2px solid var(--color-accent-bright); outline-offset: -2px; }
+.rr-window-control[aria-pressed="true"] { color: var(--color-accent); }
 .rr-event-editor-grip,
 .rr-database-grip,
 .rr-forge-grip,
@@ -7689,6 +7744,8 @@ html.rr-detached-window.rr-repaint { clip-path: inset(0 round calc(var(--radius-
     background: radial-gradient(ellipse at 50% 40%, color-mix(in srgb, var(--color-bg-deep) 70%, #5a5e68) 0%, var(--color-bg-deep) 75%);
 }
 .rr-c3d-thumb img { width: 100%; height: 100%; display: block; object-fit: cover; }
+/* A picture swapped in under the pointer between a press and its release must not take the click from its tile. */
+.rr-c3d-thumb, .rr-c3d-thumb * { pointer-events: none; }
 .rr-c3d-thumb:empty::after { content: ''; display: block; width: 100%; height: 100%; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-text-muted) 12%, transparent), transparent); background-size: 200% 100%; animation: rr-c3d-shimmer 1.2s linear infinite; }
 @keyframes rr-c3d-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 .rr-c3d-tile-label { font-size: 10px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -8158,7 +8215,84 @@ input[type="search"]::-webkit-search-cancel-button:hover { background-color: var
 /* Forge export dimensions stay legible in each editor theme. */
 .rr-c3d-export input.rr-input[type="number"] { background: var(--color-bg-input); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 5px; padding: 6px 8px; width: 110px; }
 .rr-c3d-export input.rr-input[type="number"]:focus { border-color: var(--color-accent); outline: 2px solid color-mix(in srgb, var(--color-accent) 30%, transparent); }
-.rr-c3d-export .rr-c3d-export-preview { max-width: 100%; max-height: 260px; object-fit: contain; }
+.rr-c3d-export .rr-c3d-export-preview { max-width: 100%; max-height: 260px; object-fit: contain; cursor: zoom-in; }
+/* Generate Group (RRCharacterGroups): the export panel's frame, wide enough for the description beside the members. */
+.rr-c3d-export.rr-c3d-gen { width: min(760px, calc(100% - 24px)); overflow: hidden; }
+.rr-c3d-gen-body { display: grid; grid-template-columns: minmax(0, 330px) minmax(0, 1fr); gap: 10px; min-height: 0; flex: 1 1 auto; overflow: hidden; }
+.rr-c3d-gen-form { min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: 6px; }
+.rr-c3d-gen-side { min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.rr-c3d-gen-sidehead { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 11px; color: var(--color-text-muted); padding-bottom: 6px; }
+.rr-c3d-gen-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px; overflow-y: auto; min-height: 0; align-content: start; }
+.rr-c3d-gen-card { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 3px; background: var(--color-bg-input); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-sm, 3px); cursor: pointer; color: var(--color-text); }
+.rr-c3d-gen-card:hover { border-color: var(--color-accent); }
+.rr-c3d-gen-face { display: block; aspect-ratio: 1; background: var(--color-bg-deep); border-radius: 2px; overflow: hidden; }
+.rr-c3d-gen-face img { display: block; width: 100%; height: 100%; object-fit: cover; }
+/* The drawn stand-in shown at once, until the member's real picture is built. */
+/* (The baked picture a card shows until the member's own is built: a little dimmed, so the change reads as an arrival.) */
+.rr-c3d-gen-face img.rr-c3d-gen-standin { opacity: 0.7; }
+.rr-c3d-gen-name { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--color-text-muted); }
+/* The builder's sprite workspace (RRCharacterSpriteSheet.openPanel): the sheet's animations in place of the 3D model, its settings docked beside them. */
+.rr-c3d-view:has(.rr-c3d-spriteview) .rr-c3d-viewbar { display: none; }
+.rr-c3d-spriteview { position: absolute; inset: 0; z-index: 4; display: flex; background: var(--color-bg-deep); }
+.rr-c3d-spriteview-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.rr-c3d-spriteview-bar { display: flex; align-items: center; gap: 12px; padding: 8px 12px; min-height: 30px; border-bottom: 1px solid var(--color-border-subtle); flex: 0 0 auto; flex-wrap: wrap; }
+.rr-c3d-spriteview-bar .rr-c3d-seg { display: inline-flex; gap: 2px; }
+.rr-c3d-spriteview-bar .rr-btn-chip.is-active, .rr-c3d-export-sizes .rr-btn-chip.is-active { border-color: var(--color-accent); color: var(--color-accent); }
+.rr-c3d-spriteview-bar .rr-c3d-note { margin: 0 0 0 auto; }
+.rr-c3d-spriteview-grounds { display: inline-flex; gap: 4px; }
+.rr-c3d-ground { width: 18px; height: 18px; padding: 0; border: 1px solid var(--color-border-input); border-radius: 3px; cursor: pointer; background: repeating-conic-gradient(#8c8c8c 0% 25%, #c4c4c4 0% 50%) 0 0 / 8px 8px; }
+.rr-c3d-ground.is-active { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.rr-c3d-spriteview-stage { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 12px; box-sizing: border-box; }
+.rr-c3d-spriteview-stage[data-ground="checker"] { background: repeating-conic-gradient(#7d7d7d 0% 25%, #a9a9a9 0% 50%) 0 0 / 16px 16px; }
+.rr-c3d-spriteview-stage canvas { image-rendering: pixelated; }
+.rr-c3d-sprite-tiles { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; align-content: center; }
+.rr-c3d-sprite-tile { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.rr-c3d-sprite-tile figcaption { height: 14px; font-size: 10px; line-height: 14px; color: rgba(255, 255, 255, 0.86); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); text-transform: capitalize; white-space: nowrap; }
+.rr-c3d-spriteview-stage[data-ground="light"] .rr-c3d-sprite-tile figcaption { color: rgba(0, 0, 0, 0.75); text-shadow: none; }
+.rr-c3d-export.is-docked { position: static; flex: 0 0 340px; width: 340px; max-height: none; height: 100%; border: 0; border-left: 1px solid var(--color-border); border-radius: 0; box-shadow: none; padding: 10px 12px; z-index: auto; }
+.rr-c3d-export.is-docked .rr-c3d-export-preview { display: none; }
+.rr-c3d-export.is-docked .rr-c3d-export-foot { margin-top: auto; padding-top: 8px; }
+.rr-c3d-export.is-docked .rr-c3d-export-go { flex: 1 1 auto; justify-content: center; }
+.rr-c3d-export-sizes > span:last-child { display: flex; gap: 4px; flex-wrap: wrap; grid-column: 2 / -1; }
+.rr-c3d-spritebtn.is-active { border-color: var(--color-accent); color: var(--color-accent); }
+.rr-c3d-gen-sec .lit-section-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; color: var(--color-text-muted); font-size: 10px; }
+.rr-c3d-gen-sec .r3d-sec-title { flex: 0 0 auto; }
+.rr-c3d-gen-sec .rr-c3d-secbody { padding: 6px 8px 8px; }
+.rr-c3d-gen-sec .rr-c3d-secbody > .rr-c3d-note { margin: 0 0 4px; }
+.rr-c3d-gen-form > .rr-c3d-note { margin: 0 0 2px; }
+.rr-c3d-gen-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 2px 0; }
+.rr-c3d-gen-bar > span:last-child { display: flex; gap: 4px; flex: 0 0 auto; }
+.rr-c3d-gen-ticks label > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; }
+.rr-c3d-gen-ticks .rr-c3d-gen-share { flex: 0 0 44px; width: 44px; min-width: 0; padding: 0 2px; height: 18px; min-height: 0; font-size: 10px; box-sizing: border-box; }
+.rr-c3d-gen-ticks { grid-auto-rows: max-content; }
+.rr-c3d-gen-ticks label { min-height: 20px; }
+.rr-c3d-gen-ticks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px 8px; font-size: 11px; color: var(--color-text); padding: 2px 0 4px; }
+.rr-c3d-gen-ticks[data-list="species"] { max-height: 190px; background: var(--color-bg-input); overflow-y: auto; border: 1px solid var(--color-border-subtle); border-radius: var(--radius-sm, 3px); padding: 4px 6px; }
+.rr-c3d-gen-ticks label { display: flex; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rr-c3d-gen-sub { grid-column: 1 / -1; font-size: 10px; color: var(--color-text-muted); padding-top: 3px; }
+.rr-c3d-gen [data-off] { opacity: 0.45; }
+.rr-c3d-export .rr-c3d-row.rr-c3d-gen-range { grid-template-columns: 96px minmax(0, 1fr) auto minmax(0, 1fr); }
+.rr-c3d-export .rr-c3d-row.rr-c3d-gen-range > input, .rr-c3d-export .rr-c3d-row.rr-c3d-gen-out > input { width: 100%; min-width: 0; box-sizing: border-box; }
+/* A tick's wording in full: the description's choices are sentences, not field names. */
+.rr-c3d-gen .rr-c3d-row.rr-c3d-check { grid-template-columns: minmax(0, 1fr) auto; }
+.rr-c3d-gen .rr-c3d-row.rr-c3d-check > .rr-c3d-label { white-space: normal; overflow: visible; text-overflow: clip; }
+.rr-c3d-gen-to { font-size: 10px; color: var(--color-text-muted); }
+.rr-c3d-export .rr-c3d-row.rr-c3d-gen-out { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) 64px; }
+.rr-c3d-gen-outcheck { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--color-text); min-width: 0; }
+.rr-c3d-export .rr-c3d-row.rr-c3d-gen-palette { grid-template-columns: 96px minmax(0, 1fr); }
+.rr-c3d-gen-swatches { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.rr-c3d-gen .rr-c3d-export-status[data-kind="error"] { color: var(--color-danger, #e06c6c); }
+/* Forge › Character Groups: the panel as a page of its own. The builder that draws what is made stands out of sight. */
+.rr-c3d-genpage { position: relative; width: 100%; height: 100%; overflow: hidden; background: var(--color-bg-deep); }
+.rr-c3d-genpage-main { position: absolute; inset: 0; display: flex; }
+.rr-c3d-genpage-wait { margin: auto; }
+.rr-c3d-genpage-stage { position: absolute; left: -20000px; top: 0; width: 960px; height: 720px; overflow: hidden; pointer-events: none; }
+.rr-c3d-export.rr-c3d-gen.is-page { position: static; flex: 1 1 auto; width: auto; max-height: none; height: 100%; border: 0; border-radius: 0; box-shadow: none; padding: 12px 16px; }
+.rr-c3d-gen.is-page .rr-c3d-gen-body { grid-template-columns: minmax(0, 380px) minmax(0, 1fr); gap: 16px; }
+.rr-c3d-gen.is-page .rr-c3d-gen-grid { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }
+/* A click shows the sheet at its own size (the panel scrolls); another fits it again. */
+.rr-c3d-export .rr-c3d-export-preview.is-actual { width: auto; max-width: none; max-height: none; cursor: zoom-out; }
+.rr-c3d-export:has(.rr-c3d-export-preview.is-actual) { overflow: auto; }
 
 /* Database › Enemies: equipment columns and the Equipment window. */
 .enemy-param-readout { white-space: nowrap; color: var(--color-text-muted); text-align: right; }
@@ -8188,3 +8322,7 @@ input[type="search"]::-webkit-search-cancel-button:hover { background-color: var
 .rr-enemy-equip .ee-item-traits { margin: 4px 0 0; padding-left: 16px; }
 .rr-enemy-equip .ee-totals th, .rr-enemy-equip .ee-totals td { font-size: 11px; }
 .rr-enemy-equip .ee-note { flex: 0 0 auto; font-size: 11px; color: var(--color-text-muted); }
+
+/* User Interfaces: pictures and motion (2026-11-11). The Motion button over the canvas while it plays, and the parts of the Motion card. */
+.rr-ui-motion-play[aria-pressed="true"] { border-color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 22%, var(--color-bg-input)); color: var(--color-text-strong); }
+.rr-ui-props .rr-ui-motion-part { margin: 4px 0; }

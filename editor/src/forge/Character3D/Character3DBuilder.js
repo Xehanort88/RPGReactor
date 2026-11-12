@@ -31,7 +31,6 @@ class Character3DBuilder {
         this.folded = {};
         this._thumbs = new Map();
         this._thumbQueue = [];
-        this._thumbCache = {};
         this._lastChange = 0;
     }
 
@@ -73,6 +72,9 @@ class Character3DBuilder {
         this._pending = 0;
         this._closeOutfitImport?.();
         this._stopThumbs();
+        // The outfit store's listener holds this builder (its last build, its caches); `_start` registers it again.
+        this._takenPictures?.(); this._takenPictures = null;
+        this._galleryClose?.();
         const view = this._view;
         if (!view) return;
         this._dropHeldPreview();
@@ -93,6 +95,8 @@ class Character3DBuilder {
             this._thumbView = null;
             const release = () => {
                 for (const material of thumbnails.materials || []) material.dispose();
+                for (const material of thumbnails.kept ? thumbnails.kept.values() : []) material.dispose();
+                thumbnails.kept = null; thumbnails.blank?.dispose(); thumbnails.blank = null;
                 thumbnails.reflections?.dispose();
                 thumbnails.renderer.dispose(); thumbnails.renderer.forceContextLoss?.();
             };
@@ -153,19 +157,19 @@ class Character3DBuilder {
     }
 
     /** A catalog selection starts its own recipe and retires work from the previous body. */
-    _selectPreset(recipe, extreme = false) {
+    _selectPreset(recipe, extreme = false, keepView = false) {
         clearTimeout(this._settle); this._settle = 0;
         clearTimeout(this._shadeTimer);
         this._fast = null;
-        this._shapeWorkerRef?.terminate();
-        this._shapeWorkerRef = undefined;
+        // The shaper stays (it holds only the body pack, which no recipe changes, and starting one reads 13 MB on
+        // this thread): with no job, `_shapeDone` drops whatever it was still shaping.
         this._shapeJob = null;
         this._shapeGen = (this._shapeGen || 0) + 1;
         this.cache = {};
         this.extreme = extreme;
-        this.pose = 'idle';
+        // Undo and Redo keep the pose and the weapon in the hand (`keepView`): they are the view's, not the recipe's.
+        if (!keepView) { this.pose = 'idle'; this._heldName = ''; }
         this.openPicker = null;
-        this._heldName = '';
         this._dropHeldPreview();
         if (this._view) { this._view.structure = null; this._view.height = 0; }
         this._replace(recipe);
@@ -175,10 +179,13 @@ class Character3DBuilder {
         const from = direction < 0 ? this._undo : this._redo, to = direction < 0 ? this._redo : this._undo;
         if (!from.length) return;
         to.push(this._committed);
-        this._committed = from.pop();
-        this.recipe = RRCharacterModel.normalize(JSON.parse(this._committed));
+        // The step as `_replace` will take it: normalized once from the same text, so `_commit` finds nothing changed
+        // (normalizing a second time can move an ancestry weight by one bit, which put the step back and emptied Redo).
+        const step = from.pop();
+        this.recipe = RRCharacterModel.normalize(JSON.parse(step));
+        this._committed = JSON.stringify(this.recipe);
         this._syncHistory();
-        this._selectPreset(this.recipe);
+        this._selectPreset(JSON.parse(step), this.extreme, true);
     }
 
     _syncHistory() {
@@ -233,6 +240,7 @@ class Character3DBuilder {
                     <button class="rr-btn-chip rr-c3d-keep" title="${this._t('Keep this character\'s settings in the Forge to open and change later. No model is made.')}">${this._t('Save Design')}</button>
                     <span class="rr-c3d-spacer"></span>
                     <span class="rr-c3d-status" aria-live="polite"></span>
+                    ${this.human && !this.slime ? `<button class="rr-btn-chip rr-c3d-crowd" title="${this._t('Many characters at once to one description: a town, an army, a people')}">${this._t('Generate Group')}</button>` : ''}
                     <button class="rr-btn-chip rr-c3d-sheet">${this._t('Export Sprite Sheet')}</button>
                     <button class="rr-btn-chip rr-c3d-save">${this._t('Export Model To Project')}</button>
                 </div>
@@ -251,6 +259,7 @@ class Character3DBuilder {
                         <div class="rr-c3d-viewbar">
                             <button class="rr-btn-chip rr-c3d-frame" data-frame="body">${this._t('Whole Body')}</button>
                             <button class="rr-btn-chip rr-c3d-frame" data-frame="face">${this._t('Face')}</button>
+                            <button class="rr-btn-chip rr-c3d-spritebtn">${this._t('Sprite')}</button>
                         </div>
                         <div class="rr-c3d-hint">${this._t('Drag to turn, wheel to zoom')}</div>
                         <div class="rr-c3d-gallery" hidden></div>
@@ -276,7 +285,25 @@ class Character3DBuilder {
         this._renderDesignGroups();
         q('.rr-c3d-save').addEventListener('click', () => this.save());
         // Export sprite sheet: the panel and the rendering live in RRCharacterSpriteSheet.
-        q('.rr-c3d-sheet').addEventListener('click', () => { if (window.RRCharacterSpriteSheet && this._view) RRCharacterSpriteSheet.openPanel(this); });
+        // The sprite view's wording is the sheet module's, and English only for now (as its panel's).
+        if (window.RRCharacterSpriteSheet && RRCharacterSpriteSheet.SPRITE_VIEW_HINT) q('.rr-c3d-spritebtn').title = this._t(RRCharacterSpriteSheet.SPRITE_VIEW_HINT);
+        // One sprite workspace, from either button: the chip shows it or goes back to the model, Export Sprite Sheet shows it.
+        const sprites = keep => {
+            if (!window.RRCharacterSpriteSheet || !this._view) return;
+            this.root.querySelector('.rr-c3d-gen:not([data-busy])')?.remove();
+            if (this.root.querySelector('.rr-c3d-gen')) return;
+            if (keep && this.root.querySelector('.rr-c3d-spriteview')) return;
+            RRCharacterSpriteSheet.openPanel(this);
+        };
+        q('.rr-c3d-spritebtn').addEventListener('click', () => sprites(false));
+        q('.rr-c3d-sheet').addEventListener('click', () => sprites(true));
+        // The group's own page in the Forge, where there is one (this character is then whose outfit a uniform is);
+        // a builder standing alone opens the panel over its view.
+        q('.rr-c3d-crowd')?.addEventListener('click', () => {
+            const forge = window.reactor?.forgeManager;
+            if (forge && forge.character3dBuilder === this && typeof forge.openTool === 'function') forge.openTool('character-groups');
+            else if (window.RRCharacterGroups && this._view) RRCharacterGroups.openPanel(this);
+        });
         q('.rr-c3d-pose-picker').addEventListener('change', e => { this.pose = e.target.value; this._syncPose(); });
         this.root.querySelectorAll('.rr-c3d-frame').forEach(b => b.addEventListener('click', () => this._frame(b.dataset.frame)));
         this.root.querySelector('.rr-c3d-tabs').addEventListener('click', e => {
@@ -294,8 +321,13 @@ class Character3DBuilder {
         const panel = q('.rr-c3d-panel');
         panel.addEventListener('input', e => this._onInput(e, false));
         panel.addEventListener('change', e => this._onInput(e, true));
+        panel.addEventListener('pointerdown', e => {
+            const b = e.target.closest && e.target.closest('[data-act]');
+            this._pressed = b ? { act: b.dataset.act, id: b.dataset.id, path: b.dataset.path, at: Date.now() } : null;
+        }, true);
         panel.addEventListener('click', e => this._onClick(e));
-        panel.addEventListener('scroll', () => this._refreshThumbs(), { passive: true, capture: true });
+        // Once a frame at most: each look measures every tile.
+        panel.addEventListener('scroll', () => { if (this._scrollFrame) return; this._scrollFrame = requestAnimationFrame(() => { this._scrollFrame = 0; this._refreshThumbs(); }); }, { passive: true, capture: true });
         this._renderPanel();
         this._syncHistory();
     }
@@ -611,7 +643,15 @@ class Character3DBuilder {
     }
 
     _onClick(event) {
-        const b = event.target.closest('[data-act]');
+        let b = event.target.closest('[data-act]');
+        // A panel drawn again between the press and the release leaves the click on the panel itself, with the button
+        // that was pressed gone: the click then belongs to the same choice's new button under the pointer.
+        const pressed = this._pressed;
+        if (!b && pressed && Date.now() - pressed.at < 1500 && event.clientX !== undefined) {
+            const under = this.root.ownerDocument.elementFromPoint(event.clientX, event.clientY)?.closest('[data-act]');
+            if (under && under.dataset.act === pressed.act && under.dataset.id === pressed.id && under.dataset.path === pressed.path) b = under;
+        }
+        this._pressed = null;
         if (!b || b.isConnected === false) return;
         event.preventDefault();
         const act = b.dataset.act, r = JSON.parse(JSON.stringify(this.recipe));
@@ -1214,13 +1254,13 @@ class Character3DBuilder {
     _picker(path, label, options, kind) {
         const current = this._get(path), open = this.openPicker === path;
         const now = options.find(o => o.id === current) || options[0];
+        this._wantThumb(kind, now.id);
         const saved = this._thumbs.get(kind + ':' + now.id);
         const url = saved && (saved.sig === this._thumbSig(kind) || saved.project === (this._project()?.path || '')) ? saved.url : '';
         let html = `<div class="rr-c3d-row rr-c3d-pickrow"><span class="rr-c3d-label">${this._t(label)}</span>
             <button class="rr-c3d-pickcurrent${open ? ' is-open' : ''}" data-act="picker" data-id="${path}">`
             + `<span class="rr-c3d-thumb" data-thumb="${kind}:${rrEscapeHtml(now.id)}">${url ? `<img src="${url}" alt="">` : ''}</span>`
             + `<span>${rrEscapeHtml(this._t(now.label))}</span><span class="rr-c3d-caret">${open ? '▴' : '▾'}</span></button></div>`;
-        this._wantThumb(kind, now.id);
         if (open) html += `<div class="rr-c3d-pickgrid">${this._grid(options, o => this._tile('pick', o.id, o.label, kind, o.id === current, ` data-path="${path}"`))}</div>`;
         return html;
     }
@@ -1233,6 +1273,37 @@ class Character3DBuilder {
         return html;
     }
 
+    /**
+     * Who wears a picture of clothes, hair or a prop: this species and gender, in this skin,
+     * hair, eyes, head and body hair, at its default shape. Body and face sliders don't change it, so the pictures
+     * stay made, and their files are found again for any character alike. The big view
+     * shows the character exactly.
+     */
+    _thumbWearer(kind) {
+        const r = this.recipe;
+        if (!this.human || this.slime || r.plan === 'slime' || typeof RRCharacterModel === 'undefined') return r;
+        // A mannequin, not the character: a tile's picture shows the choice, and the character shows it worn once it
+        // is clicked. Drawn on the character, every tile was built again after each change to skin, hair, face or
+        // species (2.5 s a tile on the desktop), and a page of outfits never caught up. On a mannequin a picture is
+        // built once, kept on disk, and is the same in every project. One per sex (an outfit is cut differently);
+        // grey for what is worn, so the garment is what is seen, and plain for hair, which needs a face under it.
+        const female = this._thumbGender() < 0.5, plain = ['hair', 'facial', 'brows'].includes(kind);
+        const key = (female ? 'f' : 'm') + (plain ? 'p' : 'g'), made = this._mannequins || (this._mannequins = {});
+        if (!made[key]) {
+            const m = RRCharacterModel.withSpecies({ gender: female ? 0.25 : 0.75, seed: 1 }, 'human');
+            if (!plain) { m.skin = '#b7b4b2'; m.skinPattern = undefined; m.hair = Object.assign({}, m.hair, { style: 'bald' }); m.bodyHair = undefined; }
+            made[key] = m;
+        }
+        return made[key];
+    }
+
+    /** A species tile is that species as a man or as a woman, not at the slider's exact place: two pictures, kept. */
+    _thumbGender() {
+        if (!this.human || this.slime) return 0.5;
+        const r = this.recipe, sex = r.anatomy && r.anatomy.sex;
+        return (sex === 'male' || sex === 'female' ? sex === 'female' : !(r.gender >= 0.5)) ? 0.25 : 0.75;
+    }
+
     /** What a kind of picture depends on: the recipe, less what the picture itself varies. */
     _thumbSig(kind) {
         const project = this._project()?.path || '';
@@ -1241,13 +1312,14 @@ class Character3DBuilder {
         }
         const values = this._thumbSignatures.values;
         if (!values.has(kind)) {
-            const r = Object.assign({}, this.recipe);
+            const worn = ['hair', 'facial', 'brows', 'garment', 'prop', 'cyberlook', 'dress'].includes(kind);
+            const r = Object.assign({}, worn ? this._thumbWearer(kind) : this.recipe);
             if (['hair', 'facial', 'brows', 'garment', 'prop', 'cyberlook'].includes(kind)) { delete r.outfit; delete r.props; }
             if (kind === 'dress') delete r.outfit;
             if (kind === 'gear' || kind === 'gearset') delete r.gear;
             // Species tiles use that species' defaults, with the selected
             // gender. Body/outfit edits therefore need no new catalog images.
-            const shown = kind === 'kind' ? null : kind === 'species' ? { gender: this.human && !this.slime ? r.gender ?? .5 : .5 } : r;
+            const shown = kind === 'kind' ? null : kind === 'species' ? { gender: this._thumbGender() } : r;
             values.set(kind, JSON.stringify([project, shown]));
         }
         return values.get(kind);
@@ -1258,6 +1330,8 @@ class Character3DBuilder {
         const key = kind + ':' + id, sig = this._thumbSig(kind);
         const have = this._thumbs.get(key);
         if (have && have.sig === sig) return;
+        const shipped = this._shippedThumb(key, sig);
+        if (shipped) { this._thumbs.set(key, { url: shipped, sig, project: this._project()?.path || '' }); return; }
         if (this._thumbJob?.key === key && this._thumbJob.sig === sig) return;
         const queued = this._thumbQueue.find(q => q.key === key);
         if (queued) {
@@ -1288,8 +1362,53 @@ class Character3DBuilder {
         const dir = this._thumbDir();
         if (!dir) return null;
         // The pictures' look changes with the builder: a new version draws them again.
-        const name = require('crypto').createHash('sha1').update(Character3DBuilder.PREVIEW_VERSION + '|' + key + '|' + sig).digest('hex');
+        const name = require('crypto').createHash('sha1').update(Character3DBuilder.PREVIEW_VERSION + '|' + key + '|' + this._thumbShared(key, sig)).digest('hex');
         return require('path').join(dir, name + '.webp');
+    }
+
+    /**
+     * What names a picture on disk. A mannequin's picture of something the builder ships with is the same in every
+     * project, so the project is left out of its name: a new project opens with every picture already there. A
+     * garment taken from a project's own 3D model keeps the project in its name.
+     */
+    _thumbShared(key, sig) {
+        const at = key.indexOf(':'), kind = key.slice(0, at), id = key.slice(at + 1);
+        if (kind !== 'kind' && kind !== 'species' && (!this.human || this.slime)) return sig;
+        if (!['kind', 'species', 'hair', 'facial', 'brows', 'garment', 'prop', 'cyberlook', 'dress'].includes(kind)) return sig;
+        const T = window.RRCharacterOutfitTransfer, W = typeof RRCharacterWardrobe === 'undefined' ? null : RRCharacterWardrobe;
+        if (!W && (kind === 'garment' || kind === 'dress')) return sig;
+        const own = garment => { const def = W.BY_ID.get(garment); return !def || (!!def.transfer && !(T && T.BUILT_IN.includes(def.transfer))); };
+        if (kind === 'garment' && own(id)) return sig;
+        if (kind === 'dress') { const preset = W.PRESETS.find(p => p.id === id); if (!preset || preset.items.some(i => own(i.id))) return sig; }
+        try { return JSON.stringify(JSON.parse(sig).slice(1)); } catch (e) { return sig; }
+    }
+
+    /**
+     * A picture that came with the editor (`previews/<kind>-<f|m|x>.json`, baked by
+     * build-scripts/bake-character-previews.cjs): there on the first opening, with nothing built. Only for what
+     * `_thumbShared` says is the same everywhere, and only while the pack is of this version of the pictures.
+     */
+    _shippedThumb(key, sig) {
+        try {
+            if (this._thumbShared(key, sig) === sig) return null;
+            const at = key.indexOf(':'), kind = key.slice(0, at), id = key.slice(at + 1);
+            const tag = kind === 'kind' || !this.human || this.slime ? 'x' : this._thumbGender() < 0.5 ? 'f' : 'm';
+            return Character3DBuilder.shippedPicture(kind, tag, id);
+        } catch (error) { return null; }
+    }
+
+    /** One baked picture as a data URL (`kind` 'garment', `tag` 'f', 'm' or 'x'), or null: for whoever shows one. */
+    static shippedPicture(kind, tag, id) {
+        try {
+            const packs = Character3DBuilder._shippedPacks || (Character3DBuilder._shippedPacks = new Map()), name = kind + '-' + tag;
+            if (!packs.has(name)) {
+                let pack = null;
+                try { pack = JSON.parse(require('fs').readFileSync(require('path').join(RRHumanBody.dataFolder(), '..', 'previews', name + '.json'), 'utf8')); } catch (error) { /* none shipped */ }
+                packs.set(name, pack && pack.version === Character3DBuilder.PREVIEW_VERSION ? pack.pictures : null);
+            }
+            const picture = (packs.get(name) || {})[id];
+            return picture ? 'data:image/webp;base64,' + picture : null;
+        } catch (error) { return null; }
     }
 
     async _storedThumb(key, sig) {
@@ -1409,7 +1528,7 @@ class Character3DBuilder {
 
     _showThumb(item, url) {
         this._thumbs.set(item.key, { url, sig: item.sig, project: this._project()?.path || '' });
-        while (this._thumbs.size > 256) this._thumbs.delete(this._thumbs.keys().next().value);
+        while (this._thumbs.size > 1024) this._thumbs.delete(this._thumbs.keys().next().value);
         this.root.querySelectorAll(`.rr-c3d-thumb[data-thumb="${CSS.escape(item.key)}"]`).forEach(el => { el.innerHTML = `<img src="${url}" alt="">`; });
     }
 
@@ -1436,8 +1555,11 @@ class Character3DBuilder {
     }
 
     /** One build off the page, followed by one small render; no polling of hidden tiles. */
-    _pumpThumbs() {
-        if (this._thumbTimer || this._thumbReads || !this._thumbQueue.length) return;
+    _pumpThumbs(wait = 16) {
+        // A pump that is only waiting out a change (`wait` over 16) gives way to one asked for sooner.
+        if ((this._thumbTimer && !(this._thumbWaiting && wait <= 16)) || this._thumbReads || !this._thumbQueue.length) return;
+        clearTimeout(this._thumbTimer);
+        this._thumbWaiting = wait > 16;
         this._thumbTimer = setTimeout(async () => {
             this._thumbTimer = 0;
             if (!this.root) return;
@@ -1454,7 +1576,10 @@ class Character3DBuilder {
             if (this._thumbQueue.some(item => keys.has(item.key) && !item.stored)) { this._pumpThumbs(); return; }
             const index = this._thumbQueue.findIndex(q => keys.has(q.key));
             if (index < 0) return;
-            if (!this._view || !this.pack || !this._result || Date.now() - this._lastChange < 350) { this._pumpThumbs(); return; }
+            if (!this._view || !this.pack || !this._result) { this._pumpThumbs(); return; }
+            // A change under 350 ms ago (a slider being dragged): one timer for what is left of it, not one every 16 ms.
+            const rest = 350 - (Date.now() - this._lastChange);
+            if (rest > 0) { this._pumpThumbs(Math.max(17, rest)); return; }
             const item = this._thumbQueue.splice(index, 1)[0];
             item.root = this.root; item.epoch = this._thumbEpoch;
             this._thumbJob = item;
@@ -1526,16 +1651,17 @@ class Character3DBuilder {
             const gear = item.kind === 'gear' ? [{ id: item.id }] : RRCreatureGear.presetGear(item.id);
             return { recipe: Object.assign({}, r, { gear }), frame: 'side' };
         }
-        if (item.kind === 'species') return { recipe: RRCharacterModel.withSpecies({gender:this.human&&!this.slime?r.gender??.5:.5}, item.id), frame: 'body' };
+        if (item.kind === 'species') return { recipe: RRCharacterModel.withSpecies({ gender: this._thumbGender() }, item.id), frame: 'body' };
+        const wearer = this._thumbWearer(item.kind);
         if (item.kind === 'dress') {
             const preset = RRCharacterWardrobe.PRESETS.find(p => p.id === item.id);
-            return { recipe: Object.assign({}, r, { outfit: RRCharacterWardrobe.dressFor(preset.items, RRHumanBody.sexOf(r) === 'female') }), frame: 'body' };
+            return { recipe: Object.assign({}, wearer, { outfit: RRCharacterWardrobe.dressFor(preset.items, RRHumanBody.sexOf(r) === 'female') }), frame: 'body' };
         }
-        // The rest show one thing on the character as it stands, without its outfit or other accessories.
-        const base = Object.assign({}, r, { outfit: [], props: [] });
-        if (item.kind === 'hair') base.hair = RRCharacterHair.withStyle(r.hair, item.id);
-        if (item.kind === 'facial') base.hair = Object.assign({}, r.hair, { facial: Object.assign({}, r.hair.facial, { style: item.id }) });
-        if (item.kind === 'brows') base.hair = Object.assign({}, r.hair, { brows: Object.assign({}, r.hair.brows, { style: item.id }) });
+        // The rest show one thing on this species' stand-in, without its outfit or other accessories.
+        const base = Object.assign({}, wearer, { outfit: [], props: [] });
+        if (item.kind === 'hair') base.hair = RRCharacterHair.withStyle(wearer.hair, item.id);
+        if (item.kind === 'facial') base.hair = Object.assign({}, wearer.hair, { facial: Object.assign({}, wearer.hair.facial, { style: item.id }) });
+        if (item.kind === 'brows') base.hair = Object.assign({}, wearer.hair, { brows: Object.assign({}, wearer.hair.brows, { style: item.id }) });
         if (item.kind === 'garment') base.outfit = [{ id: item.id }];
         if (item.kind === 'prop') base.props = [{ id: item.id }];
         if (item.kind === 'cyberlook') base.props = ((window.RRCharacterCyberGear && RRCharacterCyberGear.LOOKS.find(l => l.id === item.id)) || { props: [] }).props;
@@ -1555,8 +1681,9 @@ class Character3DBuilder {
             const error = new Error('Character preview canceled'); error.name = 'AbortError'; throw error;
         }
         const result = await pool.build({ key: item.key + '|' + item.sig, recipe, cacheKey: item.kind,
+            // (`thumb`: a picture's build, without what cannot be seen at this size: sewn details, the knuckle pass, the rigs.)
             options: { quality: 'preview', skinSize: ['head', 'face', 'hands'].includes(frame) ? 256 : 128,
-                atlasSize: 256, hairBudget: 0.5, static: true } });
+                atlasSize: 256, hairBudget: 0.5, static: true, thumb: true } });
         return { result, frame };
     }
 
@@ -1747,12 +1874,22 @@ class Character3DBuilder {
             tv.scene.remove(group);
             for (const mesh of made) mesh.geometry.dispose();
             for (const texture of textures.values()) texture.dispose();
-            if (rendered) {
-                for (const material of tv.materials) material.dispose();
-                tv.materials = made.map(mesh => mesh.material);
-            } else {
-                for (const mesh of made) mesh.material.dispose();
+            // One material of each kind of shader stays for the session, its pictures swapped for a blank: a
+            // material let go takes its compiled program with it once no other uses it, and the next picture of that
+            // kind compiled it again (445 ms of every picture's 870 on the test display, 2026-11-10). The kinds are
+            // few: with or without a picture, relief, a reflection, vertex colours, a cut-out, two sides, a glow.
+            const kept = tv.kept || (tv.kept = new Map());
+            const blank = tv.blank || (tv.blank = (() => { const t = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1, THREE.RGBAFormat); t.needsUpdate = true; return t; })());
+            for (const mesh of made) {
+                const m = mesh.material;
+                const kind = rendered ? [!!m.map, !!m.normalMap, m.normalMap ? m.normalMap.channel : 0, !!m.envMap, !!m.vertexColors, m.alphaTest > 0, m.side, !!m.transparent, !!m.emissiveMap, !!m.alphaToCoverage, !!mesh.geometry.getAttribute('uv1'), mesh.geometry.getAttribute('uv') ? 1 : 0].join() : '';
+                if (kind && !kept.has(kind) && kept.size < 96) {
+                    if (m.map) m.map = blank; if (m.normalMap) m.normalMap = blank; if (m.emissiveMap) m.emissiveMap = blank;
+                    kept.set(kind, m);
+                } else m.dispose();
             }
+            for (const material of tv.materials) material.dispose();
+            tv.materials = [];
         }
     }
 
@@ -1859,7 +1996,8 @@ class Character3DBuilder {
                 // Centaur hook: the horse's coat rolls with the colors.
                 if (r.centaur && roll.centaur) for (const k of ['coat', 'marking', 'pattern']) r.centaur[k] = roll.centaur[k];
                 r.hair = Object.assign({}, r.hair, { color: roll.hair.color, tipColor: roll.hair.tipColor });
-                r.outfit = r.outfit.map((item, k) => Object.assign({}, item, roll.outfit[k % Math.max(1, roll.outfit.length)] ? { color: roll.outfit[k % roll.outfit.length].color } : {}));
+                // A rolled garment that shows its own picture has no colour to give: the worn one keeps its own.
+                r.outfit = r.outfit.map((item, k) => { const color = roll.outfit[k % Math.max(1, roll.outfit.length)]?.color; return color ? Object.assign({}, item, { color }) : item; });
                 break;
             default: Object.assign(r, roll, { anatomy: r.anatomy });
         }
@@ -2406,7 +2544,7 @@ class Character3DBuilder {
                     const out = Float32Array.from(shaped);
                     self.postMessage({ result: e.data.result, shaped: out.buffer, normals: normals.buffer, heads }, [out.buffer, normals.buffer]);
                 };`;
-            const worker = new Worker(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
+            const worker = (() => { const url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' })); const made = new Worker(url); URL.revokeObjectURL(url); return made; })();
             const data = RRHumanBody.dataFolder(), bin = fs.readFileSync(path.join(data, 'human.bin'));
             const buffer = bin.buffer.slice(bin.byteOffset, bin.byteOffset + bin.byteLength);
             const expressionUnits = window.RRCharacterExpressions?.units(this.pack) || null;
@@ -2628,8 +2766,13 @@ class Character3DBuilder {
             await this._configurePreview(pool, recipe, '_liveMarks');
             return pool.build({ key: 'live', cacheKey: 'live', recipe, options: { live: true, ...this._buildOptions() } });
         })().then(result => {
-            if (this._thumbEpoch !== epoch || !this._view) return;
+            // Free again whatever became of the result: a build left "busy" (the epoch moved on while it ran: a swatch,
+            // a scroll) would hold every later live build back until the tool was opened again.
             job.busy = false;
+            if (this._thumbEpoch !== epoch || !this._view) {
+                if (this._view) { job.owed = false; this._queueRebuild(); }
+                return;
+            }
             // A complete sampled shape can be shown while the same slider is
             // still moving. Discarding every older sample starved continuous
             // drags until release. Other recipe edits and ended drags still
@@ -2641,7 +2784,7 @@ class Character3DBuilder {
             if (this._settle) return;
             this.cache.skinKey = result.skinKey;
             if (result.textures?.['skin.png']) this.cache.skin = result.textures['skin.png'];
-            this._applyBuild(result);
+            this._applyBuild(result, recipe);
             if (!current || job.owed) { job.owed = false; this._queueRebuild(); }
         }, error => {
             job.busy = false;
@@ -2672,13 +2815,19 @@ class Character3DBuilder {
             this._status(this._t('This character could not be built.'), 'error');
             return;
         }
-        this._applyBuild(result);
+        this._applyBuild(result, this.recipe);
     }
 
-    /** A finished build into the view, from the page or the live worker alike. */
-    _applyBuild(result) {
+    /**
+     * A finished build into the view, from the page or the live worker alike. `asked` is the recipe the build was
+     * given: whether the view shows the builder's recipe is told by it (`_builtFor`), not by the result's own
+     * recipe, which the build normalized once more (that can move an ancestry weight by one bit, for good).
+     */
+    _applyBuild(result, asked = result.recipe) {
         const previous = (this._rangeDrag || this._rangeSettle || this._previewTween) && this._previewSnapshot();
         this._result = result;
+        this._builtFor = JSON.stringify(asked);
+        const exact = this._builtFor === JSON.stringify(this.recipe);
         if (this._talk) this._talk.stop();
         this._show(result);
         // The drag's fast path made ready while the page is idle, so the first move of a slider does not wait on it.
@@ -2688,7 +2837,7 @@ class Character3DBuilder {
         }
         this._showExpression();
         if (previous) this._tweenPreview(previous);
-        if (JSON.stringify(result.recipe) === JSON.stringify(this.recipe)) this._rangeSettle = null;
+        if (exact) this._rangeSettle = null;
         this._queueShading();
         const readout = this.root.querySelector('.rr-c3d-readout');
         if (readout) {
@@ -2698,7 +2847,7 @@ class Character3DBuilder {
             readout.title = count.outfit != null ? this._t('Outfit {outfit} · Hair {hair} · Body {body}', { outfit: count.outfit.toLocaleString(), hair: count.hair.toLocaleString(), body: count.body.toLocaleString() }) : '';
         }
         const opening = this._openingDesign;
-        if (opening && opening.recipe === JSON.stringify(result.recipe) && opening.recipe === JSON.stringify(this.recipe)) {
+        if (opening && exact && opening.recipe === this._builtFor) {
             this._openingDesign = null;
             this._status(this._t('Opened {name}.', { name: opening.name }), 'ok');
         }
@@ -3237,6 +3386,12 @@ class Character3DBuilder {
             if (P.next) this._pumpPainter();
             else this._queueRebuild();
         };
+        // A paint that throws answers nothing: the painter is freed (the skin keeps its tint) so the next ask is painted.
+        worker.onerror = event => {
+            console.warn('[Character3DBuilder] skin painter failed', event && event.message);
+            if (P.busy === job) P.busy = null;
+            if (P.next) this._pumpPainter();
+        };
         worker.postMessage({ key: job.key, args: job.args });
     }
 
@@ -3272,7 +3427,7 @@ class Character3DBuilder {
                     const detail = t.detail ? Object.assign(pk(t.detail), { normal: pk(t.detail.normal), emissive: pk(t.detail.emissive), layout: t.detail.layout }) : null;
                     self.postMessage({ key: e.data.key, width: t.width, height: t.height, data: t.data.buffer, normal, emissive, detail }, [t.data.buffer, ...list]);
                 };`;
-            const worker = new Worker(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
+            const worker = (() => { const url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' })); const made = new Worker(url); URL.revokeObjectURL(url); return made; })();
             const data = RRHumanBody.dataFolder();
             const bin = fs.readFileSync(path.join(data, 'human.bin'));
             const buffer = bin.buffer.slice(bin.byteOffset, bin.byteOffset + bin.byteLength);
@@ -3297,7 +3452,7 @@ class Character3DBuilder {
             const file = [path.join(RRHumanBody.dataFolder(), '..', 'CharacterShading.js')].find(f => fs.existsSync(f));
             const source = fs.readFileSync(file, 'utf8') + `
                 self.onmessage = e => { const ao = self.RRCharacterShading.ambientOcclusion(e.data.parts); self.postMessage({ id: e.data.id, ao }); };`;
-            this._worker = new Worker(URL.createObjectURL(new Blob([source.replace("typeof window !== 'undefined' ? window : globalThis", 'self')], { type: 'text/javascript' })));
+            this._worker = (() => { const url = URL.createObjectURL(new Blob([source.replace("typeof window !== 'undefined' ? window : globalThis", 'self')], { type: 'text/javascript' })); const made = new Worker(url); URL.revokeObjectURL(url); return made; })();
         } catch (error) {
             console.warn('[Character3DBuilder] shading worker', error);
             this._worker = null;
@@ -3348,12 +3503,14 @@ class Character3DBuilder {
         if (this.designGroup && !groups.includes(this.designGroup)) groups.push(this.designGroup);
         select.innerHTML = `<option value="">${rrEscapeHtml(this._t('No Group'))}</option>`
             + groups.map(g => `<option value="${rrEscapeHtml(g)}">${rrEscapeHtml(g)}</option>`).join('')
-            + `<option value="\u0000new">${rrEscapeHtml(this._t('New Group'))}</option>`;
+            + `<option value="::new::">${rrEscapeHtml(this._t('New Group'))}</option>`;
         select.value = this.designGroup || '';
     }
 
     async _chooseDesignGroup(value) {
-        if (value === '\u0000new') {
+        // ("::new::": a value no group's folder can be named. It was a NUL character, which markup cannot carry: the
+        // browser put U+FFFD there, this test never matched, and New Group made a group named "\uFFFDnew" unasked.)
+        if (value === '::new::') {
             const name = this._folderName(await RRDialog.prompt(this._t('Name the new group:'), { title: this._t('New Group'), value: '' }));
             if (name) this.designGroup = name;
         } else this.designGroup = value || '';
@@ -3363,6 +3520,8 @@ class Character3DBuilder {
     /** Keep the character's settings in the Forge under its name, in the chosen group: opened again from Open, nothing built. */
     async saveDesign() {
         if (!this._project()) return;
+        // The design's picture is taken from the view, which a sheet being drawn holds in one of its own poses.
+        if (this._sheetExporting) { this._status(this._t('The sprite sheet is being drawn. Try again in a moment.'), 'error'); return; }
         const fs = require('fs'), path = require('path');
         let name = this._folderName(this.name);
         if (!name) {
@@ -3444,14 +3603,25 @@ class Character3DBuilder {
                 : (loose ? section(this._t('Designs'), loose) : '') + groups.filter(g => g.cards).map(g => section(g.group, g.cards)).join(''))
             + section(this._t('Exported Models'), models, this._t('No models exported from this project yet. Export Model To Project puts one here.'))
             + '</div>';
+        // One Escape listener however often the gallery is shown: the one before goes first, and `detach` takes the last.
+        this._galleryClose?.();
         box.hidden = false;
-        const close = () => { box.hidden = true; document.removeEventListener('keydown', onKey, true); };
+        const close = () => { box.hidden = true; document.removeEventListener('keydown', onKey, true); if (this._galleryClose === close) this._galleryClose = null; };
         const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
         document.addEventListener('keydown', onKey, true);
+        this._galleryClose = close;
         box.onclick = e => {
             if (e.target.closest('[data-close]')) { close(); return; }
             const remove = e.target.closest('[data-delete]');
-            if (remove) { this._deleteDesign(remove.dataset.group || '', remove.dataset.delete).then(done => { if (done) this._showGallery(); }); return; }
+            if (remove) {
+                this._deleteDesign(remove.dataset.group || '', remove.dataset.delete).then(done => {
+                    if (!done || box.hidden) return;
+                    // Only the deleted card goes; every picture is read again only when its section is left empty.
+                    const gone = remove.closest('.rr-c3d-saved-card'), grid = gone && gone.parentElement;
+                    if (grid && grid.children.length > 1) gone.remove(); else this._showGallery();
+                });
+                return;
+            }
             const card = e.target.closest('.rr-c3d-saved');
             if (!card) return;
             close();
@@ -3543,17 +3713,10 @@ class Character3DBuilder {
         const pictures = this._emblemPictures;
         const share = () => {
             this.cache.wardrobe = this.cache.wardrobe || {};
-            const caches = [this.cache.wardrobe];
-            for (const kind of ['dress', 'garment', 'species','prop']) {
-                this._thumbCache[kind] = this._thumbCache[kind] || {};
-                this._thumbCache[kind].wardrobe = this._thumbCache[kind].wardrobe || {};
-                caches.push(this._thumbCache[kind].wardrobe);
-            }
-            for (const cache of caches) {
-                if (cache.emblemPictures !== pictures) delete cache.atlas;
-                cache.emblemPictures = pictures;
-            }
-            return caches;
+            const cache = this.cache.wardrobe;
+            if (cache.emblemPictures !== pictures) delete cache.atlas;
+            cache.emblemPictures = pictures;
+            return [cache];
         };
         share();
         const folder = require('path').join(project.path, 'img', 'pictures');
@@ -3809,6 +3972,8 @@ class Character3DBuilder {
         const fs = require('fs'), path = require('path');
         try {
             this._openRecord(name, JSON.parse(fs.readFileSync(path.join(this._charactersDir(), name, 'character.json'), 'utf8')));
+            // An exported model, not a design: a later Save Design must not take a design of the same name as this one's own.
+            this._openedDesign = null;
         } catch (error) {
             console.error('[Character3DBuilder] open', error);
             this._status(this._t('{name} could not be opened.', { name }), 'error');
@@ -3823,9 +3988,10 @@ class Character3DBuilder {
         const recipe = RRCharacterModel.normalize(data.recipe || data);
         // A recipe past the natural ranges opens with Extreme on, so its sliders reach its values.
         const extreme = this.extreme || JSON.stringify(RRHumanBody.naturalRecipe ? RRHumanBody.naturalRecipe(recipe) : recipe) !== JSON.stringify(RRHumanBody.normalizeRecipe(recipe));
-        this._openingDesign = { name, recipe: JSON.stringify(recipe) };
         this._status(this._t('Opening {name}…', { name }));
         this._selectPreset(recipe, extreme);
+        // Named by the recipe the builder took, so "Opened" is said when that one is shown (the build is a frame away).
+        this._openingDesign = { name, recipe: JSON.stringify(this.recipe) };
     }
 
     /** A picture as PNG bytes. */
@@ -3851,7 +4017,8 @@ class Character3DBuilder {
 
     async save() {
         this._stopPreviewTween();
-        if (this._savingModel || this._sheetExporting) return;
+        if (this._savingModel) return;
+        if (this._sheetExporting) { this._status(this._t('The sprite sheet is being drawn. Try again in a moment.'), 'error'); return; }
         this._savingModel = true;
         try { await this._saveModel(); }
         finally { this._savingModel = false; }
@@ -4030,7 +4197,7 @@ Character3DBuilder.rangeContext = function(recipe, path) {
 };
 
 /** Bumped when the previews' look changes, so pictures kept on disk are drawn again. */
-Character3DBuilder.PREVIEW_VERSION = 98;
+Character3DBuilder.PREVIEW_VERSION = 99;
 
 /** Rigidly fit authored grip markers in the hand's rest frame; its bone carries every pose. */
 Character3DBuilder.fitHeldPreview = function(object, shape, frame, T) {

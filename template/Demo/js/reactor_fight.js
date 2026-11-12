@@ -25,6 +25,8 @@
     F.TURNS = ["team", "initiative"];
     F.HOOKS = ["battleStart", "turnStart", "turnEnd", "unitDefeated", "unitEnters"];
     F.DEFAULT_MOVE = 4;
+    /** Whether a side is against the player's. There can be more than two: online, someone may fight for themselves. */
+    F.isFoeTeam = team => !!team && team !== "ally" && team !== "neutral" && team !== "any";
     // Rounds with no step taken and no action used before a stuck battle ends as an escape.
     F.IDLE_ROUNDS = 20;
     // A fallen unit's event fades over this many frames, after waiting at most this many for a shot on it to end.
@@ -109,7 +111,9 @@
 
     F.isMode = mode => F.MODES.includes(mode);
     F.isOnMap = mode => F.ON_MAP.includes(mode);
-    F.oppose = team => (team === "ally" ? "enemy" : team === "enemy" ? "ally" : "");
+    F.oppose = team => (typeof $gameFight !== "undefined" && $gameFight && $gameFight._manySides ? "!" + team : team === "ally" ? "enemy" : team === "enemy" ? "ally" : "");
+    /** Whether a side is what `F.oppose` answered: the one other side, or with more than two ("!ally") any but that one. */
+    F.isSide = (team, oppose) => (oppose[0] === "!" ? team !== "neutral" && team !== oppose.slice(1) : team === oppose);
 
     //-------------------------------------------------------------------------
     // Which mode a battle uses: the Change Battle Mode command's next-battle
@@ -441,6 +445,8 @@
 
     Game_Fight.prototype.clear = function() {
         this._active = false;
+        // An online battle's "more than two sides" is that battle's: later local ones oppose ally and enemy again.
+        this._manySides = false;
         this._mode = "";
         this._mapId = 0;
         this._units = [];
@@ -535,8 +541,10 @@
         if (unit.party) {
             const actor = $gameActors.actor(unit.actorId);
             if ($gameParty.leader() === actor) return $gamePlayer;
-            const follower = $gamePlayer.followers().data().find(f => f.actor() === actor);
-            return follower || null;
+            // The followers' own list, not a copy of it: this is asked for every unit in every frame's loops.
+            const followers = $gamePlayer.followers(), list = followers._data || followers.data();
+            for (const follower of list) if (follower.actor() === actor) return follower;
+            return null;
         }
         return null;
     };
@@ -1732,7 +1740,10 @@
                 .forEach(unit => this._queue.push({ kind: "unit", unitId: unit.id }));
             this._queue.push({ kind: "turnEnd", team: "any" });
         } else {
-            for (const team of ["ally", "enemy"]) {
+            // Any other side (a player fighting for themselves online) takes its own turn after these.
+            const teams = ["ally", "enemy"];
+            for (const unit of this._units) if (!teams.includes(unit.team) && unit.team !== "neutral") teams.push(unit.team);
+            for (const team of teams) {
                 this._queue.push({ kind: "turnStart", team });
                 this.units({ team, alive: true }).forEach(unit => this._queue.push({ kind: "unit", unitId: unit.id }));
                 this._queue.push({ kind: "turnEnd", team });
@@ -1825,7 +1836,11 @@
     Game_Fight.prototype.nearestOpponent = function(unit) {
         const character = this.character(unit);
         let best = null, bestDistance = Infinity;
-        for (const other of this.units({ team: F.oppose(unit.team), alive: true })) {
+        // (With more than two sides "the other side" is "everyone but ours", which no unit's team equals: asked for
+        // by team, the list was empty and nobody was ever found.)
+        const against = F.oppose(unit.team);
+        for (const other of this.units({ alive: true })) {
+            if (!F.isSide(other.team, against)) continue;
             const d = this.distance(character, this.character(other));
             if (d < bestDistance) { best = other; bestDistance = d; }
         }
@@ -2353,7 +2368,7 @@
         }
         if (goal.type === "defeatAll") {
             let left = 0;
-            for (const unit of this._units) if (unit.team === "enemy" && !unit.gone && this.isAlive(unit)) left++;
+            for (const unit of this._units) if (F.isFoeTeam(unit.team) && !unit.gone && this.isAlive(unit)) left++;
             return F.term("goalEnemiesLeft").replace("%1", left);
         }
         return this.goalText();
@@ -2614,8 +2629,10 @@
         }
         if (objective.type === "defeatUnit") {
             const target = this.unitOfEvent(objective.eventId) || this._units.find(unit => unit.eventId === objective.eventId);
-            if (target && target.defeated) this.end(F.WIN);
-            return;
+            if (target && target.defeated) { this.end(F.WIN); return; }
+            // A goal unit that left without falling (Remove Unit, an event erasing it) can no longer be beaten:
+            // the battle is won as a defeat-all one would be, rather than going on with no way to win.
+            if (!target || !target.gone) return;
         }
         if (objective.type === "switch") {
             if ($gameSwitches.value(objective.switchId)) this.end(F.WIN);
@@ -2652,7 +2669,7 @@
             if (!ending.quiet) {
                 if (ending.result === F.WIN) {
                     AudioManager.playMe($gameSystem.victoryMe());
-                    const enemies = this._units.filter(unit => unit.team === "enemy" && unit.enemy && !unit.gone).map(unit => unit.enemy);
+                    const enemies = this._units.filter(unit => F.isFoeTeam(unit.team) && unit.enemy && !unit.gone).map(unit => unit.enemy);
                     resultsOf = ending;
                     F.showResults(this, F.makeRewards(enemies), () => { if (resultsOf === ending) resultsOf = null; });
                 } else if (ending.result === F.LOSE) {
@@ -3155,6 +3172,23 @@
                 return $gameSystem.isMenuEnabled() && !$gameMessage.isBusy();
             }
             return isMenuEnabled.call(this);
+        };
+    }
+
+    // Arriving on a map whose battle plays the battle music (a load that reloads the map, an online wake, a
+    // transfer within the battle's map): the battle's music goes on, and the map's own is what it gives back at
+    // the end. Its background sound plays as usual.
+    if (typeof Game_Map !== "undefined") {
+        const autoplay = Game_Map.prototype.autoplay;
+        Game_Map.prototype.autoplay = function() {
+            const fight = typeof $gameFight !== "undefined" ? $gameFight : null;
+            if (!fight || !fight.isHere() || !fight._options || fight._options.bgm !== "battle"
+                || typeof AudioManager === "undefined") return autoplay.call(this);
+            if ($dataMap.autoplayBgm && !$gamePlayer.isInVehicle()) {
+                fight._savedBgm = AudioManager.mapBgmObject($dataMap, this.mapId());
+            }
+            AudioManager.playBgm($gameSystem.battleBgm());
+            if ($dataMap.autoplayBgs) AudioManager.playBgs($dataMap.bgs);
         };
     }
 

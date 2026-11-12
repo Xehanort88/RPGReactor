@@ -37,7 +37,7 @@ function normalizeI18nLanguage(language) {
     return RR_LANGUAGES.find(candidate => candidate.id.toLowerCase() === normalized)?.id || 'en';
 }
 
-const RR_APP_VERSION = '0.99.4';
+const RR_APP_VERSION = '0.99.5';
 
 const RR_DB_TYPE_KEYS = {
     actors: 'menu.actors', classes: 'menu.classes', skills: 'menu.skills', items: 'menu.items',
@@ -8670,23 +8670,23 @@ Object.assign(RR_TEXT_TRANSLATIONS.tr, { 'Width Scale': 'Genişlik ölçeği', '
     const KEYS = ['Behavior Matrix', 'Flight Prediction', 'Corner 1', 'Corner 2', 'Corner 3', 'Path Label'];
     // Mesh layout option + Flight Prediction shape sliders
     const EXTRA = {
-        ja: { Mesh: 'メッシュ', 'Path Arc': 'パスの弧', Branches: '分岐数', 'Bar Meter': 'バーメーター', Orientation: '向き', Vertical: '縦', Horizontal: '横', Battery: 'バッテリー', Fill: '充電', Drain: '放電', Short: 'ショート' },
-        es: { Mesh: 'Malla', 'Path Arc': 'Arco de la ruta', Branches: 'Ramas', 'Bar Meter': 'Medidor de barras', Orientation: 'Orientación', Vertical: 'Vertical', Horizontal: 'Horizontal', Battery: 'Batería', Fill: 'Carga', Drain: 'Descarga', Short: 'Cortocircuito' },
-        'zh-Hant': { Mesh: '網狀', 'Path Arc': '路徑弧度', Branches: '分支數', 'Bar Meter': '條形儀表', Orientation: '方向', Vertical: '垂直', Horizontal: '水平', Battery: '電池', Fill: '充電', Drain: '放電', Short: '短路' },
-        'zh-Hans': { Mesh: '网状', 'Path Arc': '路径弧度', Branches: '分支数', 'Bar Meter': '条形仪表', Orientation: '方向', Vertical: '垂直', Horizontal: '水平', Battery: '电池', Fill: '充电', Drain: '放电', Short: '短路' },
-        ru: { Mesh: 'Сетка', 'Path Arc': 'Дуга Пути', Branches: 'Ветви', 'Bar Meter': 'Столбчатый Индикатор', Orientation: 'Ориентация', Vertical: 'Вертикально', Horizontal: 'Горизонтально', Battery: 'Батарея', Fill: 'Зарядка', Drain: 'Разрядка', Short: 'Замыкание' },
-        pt: { Mesh: 'Malha', 'Path Arc': 'Arco Do Caminho', Branches: 'Ramificações', 'Bar Meter': 'Medidor De Barras', Orientation: 'Orientação', Vertical: 'Vertical', Horizontal: 'Horizontal', Battery: 'Bateria', Fill: 'Carregar', Drain: 'Descarregar', Short: 'Curto-Circuito' },
-        de: { Mesh: 'Netz', 'Path Arc': 'Pfadbogen', Branches: 'Verzweigungen', 'Bar Meter': 'Balkenanzeige', Orientation: 'Ausrichtung', Vertical: 'Vertikal', Horizontal: 'Horizontal', Battery: 'Batterie', Fill: 'Laden', Drain: 'Entladen', Short: 'Kurzschluss' },
-        fr: { Mesh: 'Maillage', 'Path Arc': 'Arc de trajectoire', Branches: 'Branches', 'Bar Meter': 'Indicateur à barres', Orientation: 'Orientation', Vertical: 'Vertical', Horizontal: 'Horizontal', Battery: 'Batterie', Fill: 'Charge', Drain: 'Décharge', Short: 'Court-circuit' },
-        el: { Mesh: 'Πλέγμα', 'Path Arc': 'Τόξο διαδρομής', Branches: 'Διακλαδώσεις', 'Bar Meter': 'Μετρητής ράβδων', Orientation: 'Προσανατολισμός', Vertical: 'Κατακόρυφα', Horizontal: 'Οριζόντια', Battery: 'Μπαταρία', Fill: 'Φόρτιση', Drain: 'Εκφόρτιση', Short: 'Βραχυκύκλωμα' },
-        ko: { Mesh: '메시', 'Path Arc': '경로 곡률', Branches: '분기 수', 'Bar Meter': '바 미터', Orientation: '방향', Vertical: '세로', Horizontal: '가로', Battery: '배터리', Fill: '충전', Drain: '방전', Short: '합선' },
-        ar: { Mesh: 'شبكة', 'Path Arc': 'قوس المسار', Branches: 'التفرعات', 'Bar Meter': 'مقياس شريطي', Orientation: 'الاتجاه', Vertical: 'عمودي', Horizontal: 'أفقي', Battery: 'بطارية', Fill: 'شحن', Drain: 'تفريغ', Short: 'قصر كهربائي' },
-        it: { Mesh: 'Maglia', 'Path Arc': 'Arco del percorso', Branches: 'Ramificazioni', 'Bar Meter': 'Misuratore a barre', Orientation: 'Orientamento', Vertical: 'Verticale', Horizontal: 'Orizzontale', Battery: 'Batteria', Fill: 'Carica', Drain: 'Scarica', Short: 'Cortocircuito' },
-        pl: { Mesh: 'Siatka', 'Path Arc': 'Łuk ścieżki', Branches: 'Odgałęzienia', 'Bar Meter': 'Miernik słupkowy', Orientation: 'Orientacja', Vertical: 'Pionowo', Horizontal: 'Poziomo', Battery: 'Bateria', Fill: 'Ładowanie', Drain: 'Rozładowanie', Short: 'Zwarcie' },
-        id: { Mesh: 'Jala', 'Path Arc': 'Busur Jalur', Branches: 'Cabang', 'Bar Meter': 'Meter Batang', Orientation: 'Orientasi', Vertical: 'Vertikal', Horizontal: 'Horizontal', Battery: 'Baterai', Fill: 'Isi Daya', Drain: 'Kuras', Short: 'Korsleting' },
-        vi: { Mesh: 'Lưới', 'Path Arc': 'Cung đường đi', Branches: 'Nhánh', 'Bar Meter': 'Đồng hồ thanh', Orientation: 'Hướng', Vertical: 'Dọc', Horizontal: 'Ngang', Battery: 'Pin', Fill: 'Sạc', Drain: 'Xả', Short: 'Đoản mạch' },
-        th: { Mesh: 'ตาข่าย', 'Path Arc': 'ส่วนโค้งเส้นทาง', Branches: 'กิ่งแยก', 'Bar Meter': 'มาตรวัดแท่ง', Orientation: 'แนวการวาง', Vertical: 'แนวตั้ง', Horizontal: 'แนวนอน', Battery: 'แบตเตอรี่', Fill: 'ชาร์จ', Drain: 'คายประจุ', Short: 'ลัดวงจร' },
-        tr: { Mesh: 'Ağ', 'Path Arc': 'Yol yayı', Branches: 'Dallar', 'Bar Meter': 'Çubuk gösterge', Orientation: 'Yön', Vertical: 'Dikey', Horizontal: 'Yatay', Battery: 'Pil', Fill: 'Şarj', Drain: 'Deşarj', Short: 'Kısa devre' },
+        ja: { Mesh: 'メッシュ', 'Path Arc': 'パスの弧', Branches: '分岐数', 'Bar Meter': 'バーメーター', Orientation: '向き', Vertical: '縦', Horizontal: '横', Battery: 'バッテリー', Charge: '充電', Drain: '放電', Short: 'ショート' },
+        es: { Mesh: 'Malla', 'Path Arc': 'Arco de la ruta', Branches: 'Ramas', 'Bar Meter': 'Medidor de barras', Orientation: 'Orientación', Vertical: 'Vertical', Horizontal: 'Horizontal', Battery: 'Batería', Charge: 'Carga', Drain: 'Descarga', Short: 'Cortocircuito' },
+        'zh-Hant': { Mesh: '網狀', 'Path Arc': '路徑弧度', Branches: '分支數', 'Bar Meter': '條形儀表', Orientation: '方向', Vertical: '垂直', Horizontal: '水平', Battery: '電池', Charge: '充電', Drain: '放電', Short: '短路' },
+        'zh-Hans': { Mesh: '网状', 'Path Arc': '路径弧度', Branches: '分支数', 'Bar Meter': '条形仪表', Orientation: '方向', Vertical: '垂直', Horizontal: '水平', Battery: '电池', Charge: '充电', Drain: '放电', Short: '短路' },
+        ru: { Mesh: 'Сетка', 'Path Arc': 'Дуга Пути', Branches: 'Ветви', 'Bar Meter': 'Столбчатый Индикатор', Orientation: 'Ориентация', Vertical: 'Вертикально', Horizontal: 'Горизонтально', Battery: 'Батарея', Charge: 'Зарядка', Drain: 'Разрядка', Short: 'Замыкание' },
+        pt: { Mesh: 'Malha', 'Path Arc': 'Arco Do Caminho', Branches: 'Ramificações', 'Bar Meter': 'Medidor De Barras', Orientation: 'Orientação', Vertical: 'Vertical', Horizontal: 'Horizontal', Battery: 'Bateria', Charge: 'Carregar', Drain: 'Descarregar', Short: 'Curto-Circuito' },
+        de: { Mesh: 'Netz', 'Path Arc': 'Pfadbogen', Branches: 'Verzweigungen', 'Bar Meter': 'Balkenanzeige', Orientation: 'Ausrichtung', Vertical: 'Vertikal', Horizontal: 'Horizontal', Battery: 'Batterie', Charge: 'Laden', Drain: 'Entladen', Short: 'Kurzschluss' },
+        fr: { Mesh: 'Maillage', 'Path Arc': 'Arc de trajectoire', Branches: 'Branches', 'Bar Meter': 'Indicateur à barres', Orientation: 'Orientation', Vertical: 'Vertical', Horizontal: 'Horizontal', Battery: 'Batterie', Charge: 'Charge', Drain: 'Décharge', Short: 'Court-circuit' },
+        el: { Mesh: 'Πλέγμα', 'Path Arc': 'Τόξο διαδρομής', Branches: 'Διακλαδώσεις', 'Bar Meter': 'Μετρητής ράβδων', Orientation: 'Προσανατολισμός', Vertical: 'Κατακόρυφα', Horizontal: 'Οριζόντια', Battery: 'Μπαταρία', Charge: 'Φόρτιση', Drain: 'Εκφόρτιση', Short: 'Βραχυκύκλωμα' },
+        ko: { Mesh: '메시', 'Path Arc': '경로 곡률', Branches: '분기 수', 'Bar Meter': '바 미터', Orientation: '방향', Vertical: '세로', Horizontal: '가로', Battery: '배터리', Charge: '충전', Drain: '방전', Short: '합선' },
+        ar: { Mesh: 'شبكة', 'Path Arc': 'قوس المسار', Branches: 'التفرعات', 'Bar Meter': 'مقياس شريطي', Orientation: 'الاتجاه', Vertical: 'عمودي', Horizontal: 'أفقي', Battery: 'بطارية', Charge: 'شحن', Drain: 'تفريغ', Short: 'قصر كهربائي' },
+        it: { Mesh: 'Maglia', 'Path Arc': 'Arco del percorso', Branches: 'Ramificazioni', 'Bar Meter': 'Misuratore a barre', Orientation: 'Orientamento', Vertical: 'Verticale', Horizontal: 'Orizzontale', Battery: 'Batteria', Charge: 'Carica', Drain: 'Scarica', Short: 'Cortocircuito' },
+        pl: { Mesh: 'Siatka', 'Path Arc': 'Łuk ścieżki', Branches: 'Odgałęzienia', 'Bar Meter': 'Miernik słupkowy', Orientation: 'Orientacja', Vertical: 'Pionowo', Horizontal: 'Poziomo', Battery: 'Bateria', Charge: 'Ładowanie', Drain: 'Rozładowanie', Short: 'Zwarcie' },
+        id: { Mesh: 'Jala', 'Path Arc': 'Busur Jalur', Branches: 'Cabang', 'Bar Meter': 'Meter Batang', Orientation: 'Orientasi', Vertical: 'Vertikal', Horizontal: 'Horizontal', Battery: 'Baterai', Charge: 'Isi Daya', Drain: 'Kuras', Short: 'Korsleting' },
+        vi: { Mesh: 'Lưới', 'Path Arc': 'Cung đường đi', Branches: 'Nhánh', 'Bar Meter': 'Đồng hồ thanh', Orientation: 'Hướng', Vertical: 'Dọc', Horizontal: 'Ngang', Battery: 'Pin', Charge: 'Sạc', Drain: 'Xả', Short: 'Đoản mạch' },
+        th: { Mesh: 'ตาข่าย', 'Path Arc': 'ส่วนโค้งเส้นทาง', Branches: 'กิ่งแยก', 'Bar Meter': 'มาตรวัดแท่ง', Orientation: 'แนวการวาง', Vertical: 'แนวตั้ง', Horizontal: 'แนวนอน', Battery: 'แบตเตอรี่', Charge: 'ชาร์จ', Drain: 'คายประจุ', Short: 'ลัดวงจร' },
+        tr: { Mesh: 'Ağ', 'Path Arc': 'Yol yayı', Branches: 'Dallar', 'Bar Meter': 'Çubuk gösterge', Orientation: 'Yön', Vertical: 'Dikey', Horizontal: 'Yatay', Battery: 'Pil', Charge: 'Şarj', Drain: 'Deşarj', Short: 'Kısa devre' },
     };
     for (const [loc, kv] of Object.entries(EXTRA)) Object.assign(RR_TEXT_TRANSLATIONS[loc], kv);
     for (const [loc, vals] of Object.entries(T)) {
@@ -20234,15 +20234,19 @@ class I18nManager {
         if (next === 'en') this._stopObserving();
         this._relabelServed(served);
         this.apply(document);
+        for (const doc of this._watchedDocuments || []) { this._relabelServed(served, doc); this.apply(doc); }
         if (next !== 'en' && this._observeWanted) this.observe();
         window.dispatchEvent(new CustomEvent('rr-language-changed', { detail: { language: next } }));
     }
 
     apply(root = document) {
         if (!root || !root.querySelectorAll) return;
-        document.documentElement.lang = this.language;
-        document.documentElement.dir = this.language === 'ar' ? 'rtl' : 'ltr';
-        this.applyApplicationTitle();
+        const page = root.ownerDocument || root;
+        for (const html of new Set([document.documentElement, page.documentElement].filter(Boolean))) {
+            html.lang = this.language;
+            html.dir = this.language === 'ar' ? 'rtl' : 'ltr';
+        }
+        if (page === document) this.applyApplicationTitle();
 
         root.querySelectorAll('[data-i18n]').forEach(el => {
             el.textContent = this.t(el.getAttribute('data-i18n'));
@@ -20270,12 +20274,12 @@ class I18nManager {
      * `data-rr-i18n-skip` stay untouched, and stamped elements are left to
      * applyText.
      */
-    _relabelServed(served) {
-        if (!served || !served.size || typeof document === 'undefined' || !document.body
-            || typeof document.createTreeWalker !== 'function') return;
+    _relabelServed(served, doc = (typeof document !== 'undefined' ? document : null)) {
+        if (!served || !served.size || !doc || !doc.body
+            || typeof doc.createTreeWalker !== 'function') return;
         const render = source => (source.key ? this.t(source.key) : this.tText(source.text));
         const frozen = element => !element || !!element.closest('[data-rr-i18n-skip], [data-i18n], [data-i18n-text-source], textarea, [contenteditable="true"], script, style');
-        const walker = document.createTreeWalker(document.body, 4);
+        const walker = doc.createTreeWalker(doc.body, 4);
         const texts = [];
         for (let node = walker.nextNode(); node; node = walker.nextNode()) texts.push(node);
         for (const node of texts) {
@@ -20287,7 +20291,7 @@ class I18nManager {
             if (next !== trimmed) node.nodeValue = value.replace(trimmed, next);
         }
         for (const attribute of ['title', 'aria-label', 'placeholder']) {
-            document.body.querySelectorAll(`[${attribute}]`).forEach(element => {
+            doc.body.querySelectorAll(`[${attribute}]`).forEach(element => {
                 if (element.closest('[data-rr-i18n-skip]')) return;
                 if (attribute === 'placeholder' && element.hasAttribute('data-i18n-placeholder-source')) return;
                 const source = served.get(element.getAttribute(attribute));
@@ -20331,7 +20335,9 @@ class I18nManager {
         let values = {};
         if (params) { try { values = JSON.parse(params) || {}; } catch {} }
         const translated = this.formatText(source, values);
-        if (translated === source && this.language !== 'en') return;
+        // Untranslated in this language: left alone, unless an earlier language wrote over it (a source is stored),
+        // in which case it goes back to the English (Turkish, then a language with no entry, kept the Turkish).
+        if (translated === source && this.language !== 'en' && !stored) return;
         const wanted = translated;
         // Write only what changes. Replacing a text node is itself a
         // childList mutation, and `observe()` re-runs this pass on the
@@ -20350,7 +20356,9 @@ class I18nManager {
         let values = {};
         if (params) { try { values = JSON.parse(params) || {}; } catch {} }
         const translated = this.formatText(source, values);
-        if (translated === source && this.language !== 'en') return;
+        // Untranslated in this language: left alone, unless an earlier language wrote over it (a source is stored),
+        // in which case it goes back to the English (Turkish, then a language with no entry, kept the Turkish).
+        if (translated === source && this.language !== 'en' && !stored) return;
         const wanted = translated;
         if (stored !== source) el.setAttribute('data-i18n-placeholder-source', source);
         if (el.getAttribute('placeholder') !== wanted) el.setAttribute('placeholder', wanted);
@@ -20374,24 +20382,57 @@ class I18nManager {
      */
     observe() {
         this._observeWanted = true;
-        if (this._observer || typeof MutationObserver === 'undefined' || typeof document === 'undefined' || !document.body) return;
+        if (typeof MutationObserver === 'undefined' || typeof document === 'undefined' || !document.body) return;
         if (this.language === 'en') return;
         this._observerTargets = this._observerTargets || new Set();
         this._observerAdded = this._observerAdded || new Set();
-        this._observer = new MutationObserver((mutations) => {
-            for (const m of mutations) {
-                if (!m.addedNodes || !m.addedNodes.length) continue;
-                for (const node of m.addedNodes) {
-                    if (node.nodeType === 1) this._observerAdded.add(node);
-                    else if (node.nodeType === 3 && m.target && m.target.nodeType === 1) this._observerTargets.add(m.target);
-                }
+        if (!this._observer) {
+            this._observer = new MutationObserver(mutations => this._onMutations(mutations));
+            this._observer.observe(document.body, { childList: true, subtree: true });
+        }
+        for (const doc of this._watchedDocuments || []) this._observeDocument(doc);
+    }
+
+    _onMutations(mutations) {
+        for (const m of mutations) {
+            if (!m.addedNodes || !m.addedNodes.length) continue;
+            for (const node of m.addedNodes) {
+                if (node.nodeType === 1) this._observerAdded.add(node);
+                else if (node.nodeType === 3 && m.target && m.target.nodeType === 1) this._observerTargets.add(m.target);
             }
-            if (!this._observerAdded.size && !this._observerTargets.size) return;
-            if (this._observerPending) return;
-            this._observerPending = true;
-            setTimeout(() => this._flushObserved(), 0);
-        });
-        this._observer.observe(document.body, { childList: true, subtree: true });
+        }
+        if (!this._observerAdded.size && !this._observerTargets.size) return;
+        if (this._observerPending) return;
+        this._observerPending = true;
+        setTimeout(() => this._flushObserved(), 0);
+    }
+
+    /**
+     * A pop-out window (the Database, the Forge, the Event Editor…) is a document of its own: what is built in it
+     * after it opens was never seen by the main window's observer, so its labels stayed in English unless their code
+     * translated them itself. Each one is translated on attach and watched like the main document while it is open.
+     */
+    watchDocument(doc) {
+        if (!doc || doc === document) return () => {};
+        (this._watchedDocuments = this._watchedDocuments || new Set()).add(doc);
+        if (this.language !== 'en') {
+            this.apply(doc);
+            if (this._observeWanted) this.observe();
+        }
+        return () => {
+            this._watchedDocuments.delete(doc);
+            const observer = this._documentObservers && this._documentObservers.get(doc);
+            if (observer) observer.disconnect();
+            if (this._documentObservers) this._documentObservers.delete(doc);
+        };
+    }
+
+    _observeDocument(doc) {
+        this._documentObservers = this._documentObservers || new Map();
+        if (this._documentObservers.has(doc) || !doc.body) return;
+        const observer = new MutationObserver(mutations => this._onMutations(mutations));
+        observer.observe(doc.body, { childList: true, subtree: true });
+        this._documentObservers.set(doc, observer);
     }
 
     _flushObserved() {
@@ -20417,6 +20458,8 @@ class I18nManager {
     _stopObserving() {
         if (this._observer) this._observer.disconnect();
         this._observer = null;
+        for (const observer of (this._documentObservers || new Map()).values()) observer.disconnect();
+        if (this._documentObservers) this._documentObservers.clear();
         this._observerPending = false;
         if (this._observerAdded) this._observerAdded.clear();
         if (this._observerTargets) this._observerTargets.clear();
@@ -21339,6 +21382,10 @@ Object.assign(RR_TEXT_TRANSLATIONS.th, {"Building":"อาคาร","Other plan
 Object.assign(RR_TEXT_TRANSLATIONS.tr, {"Building":"Bina","Other plans placed on this one, and paved paths between them.":"Bunun üzerine yerleştirilmiş başka planlar ve aralarındaki taş döşeli yollar.","Parts":"Parçalar","Click the plan to place it; on another shape, it sits on top. A tower is a cylinder with a dome on it.":"Yerleştirmek için plana tıklayın; başka bir şeklin üstüne tıklarsanız onun üstüne oturur. Kule, kubbeli bir silindirdir.","Draw a room to start the building, or place a shape.":"Binaya başlamak için bir oda çizin ya da bir şekil yerleştirin."});
 
 window.I18n = new I18nManager();
+// Each pop-out window (Database, Forge, Event Editor…) is translated and watched while it is attached.
+if (typeof window !== 'undefined' && window.RRPopoutBridge && typeof window.RRPopoutBridge.onAttach === 'function') {
+    window.RRPopoutBridge.onAttach(child => window.I18n.watchDocument(child.document));
+}
 
 // Early language apply: set <html lang> before the full app initializes.
 (function () {
@@ -22494,6 +22541,39 @@ const RR_CHARACTER_3D_TRANSLATIONS = {
 };
 RR_I18N_STRINGS.en['menu.character3dBuilder'] = '3D Character Builder';
 RR_I18N_STRINGS.en['forge.character3dBuilder.description'] = 'Shape 3D characters with sliders and save them to the project as models.';
+RR_I18N_STRINGS.en['menu.characterGroups'] = 'Character Groups';
+RR_I18N_STRINGS.en['forge.characterGroups.description'] = 'Make a whole town, army or people at once: many characters to one description, with their sheets and portraits.';
+// Forge › Character Groups: the entry's name and description, the builder's button and its hint. A first pass by machine; review welcome.
+{
+    const source = ['Generate Group', 'Many characters at once to one description: a town, an army, a people'];
+    const rows = {
+        ja: ['キャラクターグループ', '町や軍隊、民族をまとめて作成します。ひとつの設定から多数のキャラクターを、シートと顔グラフィックつきで作ります。', 'グループを生成', 'ひとつの設定から多数のキャラクターを一度に作成：町、軍隊、民族'],
+        es: ['Grupos de personajes', 'Crea de una vez un pueblo, un ejército o una nación entera: muchos personajes a partir de una descripción, con sus hojas y retratos.', 'Generar grupo', 'Muchos personajes a la vez a partir de una descripción: un pueblo, un ejército, una nación'],
+        ru: ['Группы персонажей', 'Создайте сразу целый город, армию или народ: множество персонажей по одному описанию, с листами спрайтов и портретами.', 'Создать группу', 'Много персонажей сразу по одному описанию: город, армия, народ'],
+        pt: ['Grupos de personagens', 'Crie de uma vez uma cidade, um exército ou um povo inteiro: muitos personagens a partir de uma descrição, com suas folhas e retratos.', 'Gerar grupo', 'Muitos personagens de uma vez a partir de uma descrição: uma cidade, um exército, um povo'],
+        de: ['Charaktergruppen', 'Erstelle eine ganze Stadt, Armee oder ein Volk auf einmal: viele Charaktere nach einer Beschreibung, mit ihren Sheets und Porträts.', 'Gruppe erzeugen', 'Viele Charaktere auf einmal nach einer Beschreibung: eine Stadt, eine Armee, ein Volk'],
+        fr: ['Groupes de personnages', 'Créez d\'un coup une ville, une armée ou un peuple entier : de nombreux personnages à partir d\'une description, avec leurs planches et portraits.', 'Générer un groupe', 'De nombreux personnages à la fois à partir d\'une description : une ville, une armée, un peuple'],
+        el: ['Ομάδες χαρακτήρων', 'Φτιάξτε μονομιάς μια ολόκληρη πόλη, έναν στρατό ή έναν λαό: πολλοί χαρακτήρες από μία περιγραφή, με τα φύλλα και τα πορτρέτα τους.', 'Δημιουργία ομάδας', 'Πολλοί χαρακτήρες μαζί από μία περιγραφή: μια πόλη, ένας στρατός, ένας λαός'],
+        ko: ['캐릭터 그룹', '마을, 군대, 민족 전체를 한 번에 만듭니다. 하나의 설정으로 많은 캐릭터를 시트와 초상화와 함께 만듭니다.', '그룹 생성', '하나의 설정으로 많은 캐릭터를 한 번에: 마을, 군대, 민족'],
+        ar: ['مجموعات الشخصيات', 'أنشئ بلدة أو جيشًا أو شعبًا كاملًا دفعة واحدة: شخصيات كثيرة من وصف واحد، مع أوراقها وصورها.', 'إنشاء مجموعة', 'شخصيات كثيرة دفعة واحدة من وصف واحد: بلدة، جيش، شعب'],
+        it: ['Gruppi di personaggi', 'Crea in una volta un\'intera città, un esercito o un popolo: molti personaggi da una descrizione, con i loro fogli e ritratti.', 'Genera gruppo', 'Molti personaggi in una volta da una descrizione: una città, un esercito, un popolo'],
+        pl: ['Grupy postaci', 'Stwórz naraz całe miasto, armię lub lud: wiele postaci według jednego opisu, z ich arkuszami i portretami.', 'Generuj grupę', 'Wiele postaci naraz według jednego opisu: miasto, armia, lud'],
+        id: ['Grup Karakter', 'Buat seluruh kota, pasukan, atau bangsa sekaligus: banyak karakter dari satu deskripsi, lengkap dengan lembar sprite dan potretnya.', 'Buat Grup', 'Banyak karakter sekaligus dari satu deskripsi: kota, pasukan, bangsa'],
+        vi: ['Nhóm nhân vật', 'Tạo cả một thị trấn, đội quân hay dân tộc cùng lúc: nhiều nhân vật theo một mô tả, kèm bảng sprite và chân dung.', 'Tạo nhóm', 'Nhiều nhân vật cùng lúc theo một mô tả: thị trấn, đội quân, dân tộc'],
+        th: ['กลุ่มตัวละคร', 'สร้างทั้งเมือง กองทัพ หรือชนชาติในครั้งเดียว: ตัวละครจำนวนมากจากคำอธิบายเดียว พร้อมชีตและภาพใบหน้า', 'สร้างกลุ่ม', 'ตัวละครจำนวนมากในครั้งเดียวจากคำอธิบายเดียว: เมือง กองทัพ ชนชาติ'],
+        'zh-Hans': ['角色群组', '一次生成整个城镇、军队或民族：按一份设定生成许多角色，并附带行走图与头像。', '生成群组', '按一份设定一次生成许多角色：城镇、军队、民族'],
+        'zh-Hant': ['角色群組', '一次生成整個城鎮、軍隊或民族：依一份設定生成許多角色，並附帶行走圖與頭像。', '生成群組', '依一份設定一次生成許多角色：城鎮、軍隊、民族'],
+        tr: ['Karakter Grupları', 'Bütün bir kasabayı, orduyu ya da halkı tek seferde oluşturun: tek bir tanımdan, sayfaları ve portreleriyle birçok karakter.', 'Grup Oluştur', 'Tek bir tanımdan aynı anda birçok karakter: bir kasaba, bir ordu, bir halk']
+    };
+    for (const locale of Object.keys(RR_I18N_STRINGS)) {
+        if (locale === 'en') continue;
+        const row = rows[locale] || [RR_I18N_STRINGS.en['menu.characterGroups'], RR_I18N_STRINGS.en['forge.characterGroups.description'], source[0], source[1]];
+        RR_I18N_STRINGS[locale]['menu.characterGroups'] = row[0];
+        RR_I18N_STRINGS[locale]['forge.characterGroups.description'] = row[1];
+        RR_TEXT_TRANSLATIONS[locale] = RR_TEXT_TRANSLATIONS[locale] || {};
+        source.forEach((text, i) => { if (!RR_TEXT_TRANSLATIONS[locale][text]) RR_TEXT_TRANSLATIONS[locale][text] = row[i + 2]; });
+    }
+}
 for (const [locale, list] of Object.entries(RR_CHARACTER_3D_TRANSLATIONS)) {
     RR_I18N_STRINGS[locale] = RR_I18N_STRINGS[locale] || {};
     RR_I18N_STRINGS[locale]['menu.character3dBuilder'] = list[0];

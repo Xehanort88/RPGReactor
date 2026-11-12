@@ -196,8 +196,12 @@ Reactor3D.LightGrid = {
         }
         return uniforms.rrLightGrid.value;
     },
-    /** Pure array packer, also used by geometry/light-intersection regressions. */
-    fill(data, origin, count, pos, color, aim, slot = -1, cells = null) {
+    /**
+     * Pure array packer, also used by geometry/light-intersection regressions. `slack` (optional, two numbers a
+     * light: a distance, then an angle in radians) packs each light as if it reached that much further and its
+     * cone or beam were turned by up to that angle: what `updateCached` keeps while a light moves within it.
+     */
+    fill(data, origin, count, pos, color, aim, slot = -1, cells = null, slack = null) {
         const [nx, ny, nz] = this.size, step = this.step, half = step / 2;
         const cellRadius = Math.sqrt(3) * half;
         if (data) data.fill(0);
@@ -205,10 +209,11 @@ Reactor3D.LightGrid = {
         const begin = slot < 0 ? 0 : slot, end = slot < 0 ? count : slot + 1;
         for (let i = begin; i < end; i++) {
             const a = i * 4, x = pos[a], y = pos[a + 1], z = pos[a + 2];
+            const grow = slack ? slack[i * 2] : 0, turn = slack ? slack[i * 2 + 1] : 0;
             // Padding covers Float32 shader arithmetic at cell/cone boundaries.
             const pad = 0.002 + (Math.abs(x) + Math.abs(y) + Math.abs(z) + Math.abs(pos[a + 3])) * 0.000002;
-            const radius = Math.max(pos[a + 3], 0.001) + pad;
-            const r2 = radius * radius, sr = cellRadius + pad, bit = (1 << i) >>> 0;
+            const radius = Math.max(pos[a + 3], 0.001) + pad + grow;
+            const r2 = radius * radius, sr = cellRadius + pad + grow, bit = (1 << i) >>> 0;
             const x0 = Math.max(0, Math.floor((x - radius - origin[0]) / step));
             const x1 = Math.min(nx - 1, Math.floor((x + radius - origin[0]) / step));
             const kind = color[a + 3];
@@ -221,7 +226,9 @@ Reactor3D.LightGrid = {
             const ax = aim[a], ay = aim[a + 1], az = aim[a + 2];
             const length = Math.hypot(ax, ay, az);
             const shaped = kind > 0.5 && kind < 2.5 && Math.abs(length - 1) < 0.0001;
-            const cosine = aim[a + 3] / length;
+            let cosine = aim[a + 3] / length;
+            // A cone turned by up to `turn` stays inside the same cone widened by it.
+            if (turn > 0 && kind < 1.5) cosine = cosine >= 1 ? Math.cos(turn) : Math.cos(Math.acos(Math.max(-1, cosine)) + turn);
             const sine = Math.sqrt(Math.max(0, 1 - cosine * cosine));
             for (let iz = z0; iz <= z1; iz++) {
                 const dz = origin[2] + (iz + 0.5) * step - z;
@@ -240,7 +247,8 @@ Reactor3D.LightGrid = {
                             const perp = Math.sqrt(Math.max(0, dx * dx + dy * dy + dz * dz - along * along));
                             if (kind > 1.5) {
                                 // A tiny aim-length error must not narrow the shader's beam.
-                                const beamPad = sr + radius * Math.abs(length - 1) * 2;
+                                // A beam turned by up to `turn` sweeps its far end sideways by up to its length times it.
+                                const beamPad = sr + radius * Math.abs(length - 1) * 2 + radius * turn;
                                 if (along + beamPad < 0 || along - beamPad > radius || perp - beamPad > aim[a + 3]) continue;
                             } else if (cosine > 0 && cosine < 1 && perp * cosine - along * sine > sr) continue;
                         }
@@ -329,9 +337,11 @@ Reactor3D.LightGrid.updateCached = function(uniforms, focus) {
     origin[2] = Math.floor(((focus?.y || 0) - 32) / 8) * 8;
     const data = texture.image.data, pos = uniforms.rrLightPos.value, color = uniforms.rrLightColor.value, aim = uniforms.rrLightAim.value;
     let state = this._cells.get(texture), changed = false;
-    if (!state || !state.cellLists || state.data !== data || state.step !== this.step
+    const slackOn = !!this.slackEnabled;
+    if (!state || !state.cellLists || state.data !== data || state.step !== this.step || state.slackOn !== slackOn
         || state.size.some((value, i) => value !== this.size[i]) || state.origin.some((value, i) => value !== origin[i])) {
-        state = { cellLists: true, data, origin: origin.slice(), step: this.step, size: this.size.slice(), entries: [], scratch: [], generation: 0, mask: new Uint32Array(data.length), dirty: [] };
+        state = { cellLists: true, data, origin: origin.slice(), step: this.step, size: this.size.slice(), entries: [], scratch: [], generation: 0, mask: new Uint32Array(data.length), dirty: [],
+            slackOn, slack: slackOn ? new Float64Array(64) : null };
         this._cells.set(texture, state); data.fill(0); changed = true;
     }
     const dirty = state.dirty; dirty.length = 0;
@@ -340,13 +350,24 @@ Reactor3D.LightGrid.updateCached = function(uniforms, focus) {
         let entry = state.entries[i], key = entry?.key;
         if (key && key[0] === pos[at] && key[1] === pos[at+1] && key[2] === pos[at+2] && key[3] === pos[at+3]
             && key[4] === color[at+3] && key[5] === aim[at] && key[6] === aim[at+1] && key[7] === aim[at+2] && key[8] === aim[at+3]) continue;
+        // Still inside the reach it was packed with (`slackEnabled`): its cells stand.
+        if (key && slackOn && this.withinSlack(key, state.slack, i, pos, color, aim)) continue;
         if (!entry) { entry = state.entries[i] = { key: new Float64Array(9), cells: [], generation: state.generation }; key = entry.key; }
-        key[0] = pos[at]; key[1] = pos[at+1]; key[2] = pos[at+2]; key[3] = pos[at+3]; key[4] = color[at+3];
-        key[5] = aim[at]; key[6] = aim[at+1]; key[7] = aim[at+2]; key[8] = aim[at+3];
         dirty.push(i);
     }
+    const pack = i => {
+        const at = i * 4, key = state.entries[i].key;
+        key[0] = pos[at]; key[1] = pos[at+1]; key[2] = pos[at+2]; key[3] = pos[at+3]; key[4] = color[at+3];
+        key[5] = aim[at]; key[6] = aim[at+1]; key[7] = aim[at+2]; key[8] = aim[at+3];
+        if (state.slack) { state.slack[i * 2] = Math.min(this.SLACK_MAX, Math.max(this.SLACK_MIN, Math.abs(pos[at+3]) * this.SLACK_SHARE)); state.slack[i * 2 + 1] = this.SLACK_TURN; }
+    };
     if (dirty.length > count * 0.75) {
-        this.fill(state.mask, origin, count, pos, color, aim);
+        // Every light packed afresh from where it stands now.
+        for (let i = 0; i < count; i++) {
+            if (!state.entries[i]) state.entries[i] = { key: new Float64Array(9), cells: [], generation: state.generation };
+            pack(i);
+        }
+        this.fill(state.mask, origin, count, pos, color, aim, -1, null, state.slack);
         for (let cell = 0; cell < data.length; cell++) if (data[cell] !== state.mask[cell]) { data[cell] = state.mask[cell]; changed = true; }
         state.generation++;
     } else for (const i of dirty) {
@@ -357,7 +378,8 @@ Reactor3D.LightGrid.updateCached = function(uniforms, focus) {
             for (let cell = 0; cell < data.length; cell++) if (data[cell] & bit) previous.push(cell);
             entry.generation = state.generation;
         }
-        this.fill(null, origin, count, pos, color, aim, i, cells);
+        pack(i);
+        this.fill(null, origin, count, pos, color, aim, i, cells, state.slack);
         let same = cells.length === previous.length;
         for (let j = 0; same && j < cells.length; j++) if (cells[j] !== previous[j]) same = false;
         if (same) continue;
@@ -376,6 +398,40 @@ Reactor3D.LightGrid.updateCached = function(uniforms, focus) {
 };
 /** The kill switch for the out-of-grid mask (see `spill`): false spills every light. */
 Reactor3D.LightGrid.spillEnabled = true;
+
+/**
+ * A light's cells packed with room to move: a tenth of its reach (a quarter of a unit to one unit) and two degrees
+ * of turn. A flickering lamp or a sweeping searchlight stays inside that for several frames, and its cells are not
+ * worked out again until it leaves: the Reactor Room's seven searchlights and seven flickering lamps were packed
+ * afresh every frame, 0.5 to 0.6 ms of the laptop's frame (i5-1145G7, 2026-11-08). The mask only ever holds a
+ * light in a few more cells than it reaches, which the shader's own falloff and cone test then light as nothing.
+ * false packs every light exactly where it stands, every time it moves.
+ */
+Reactor3D.LightGrid.slackEnabled = true;
+Reactor3D.LightGrid.SLACK_SHARE = 0.1;
+Reactor3D.LightGrid.SLACK_MIN = 0.25;
+Reactor3D.LightGrid.SLACK_MAX = 1;
+Reactor3D.LightGrid.SLACK_TURN = 0.035;
+/** Whether light `i` as it stands now lies inside what it was packed with (`key`, and its two slacks). */
+Reactor3D.LightGrid.withinSlack = function(key, slack, i, pos, color, aim) {
+    const at = i * 4, grow = slack[i * 2], turn = slack[i * 2 + 1], kind = color[at + 3];
+    if (kind !== key[4]) return false;
+    // Its sphere (centre moved, reach grown) inside the packed one.
+    const moved = Math.hypot(pos[at] - key[0], pos[at + 1] - key[1], pos[at + 2] - key[2]);
+    if (moved + Math.max(0, pos[at + 3] - key[3]) > grow) return false;
+    // Nor shrunk by more than the slack: a light gone small is packed small again.
+    if (pos[at + 3] < key[3] - grow) return false;
+    const shapedOf = (k, x, y, z) => k > 0.5 && k < 2.5 && Math.abs(Math.hypot(x, y, z) - 1) < 0.0001;
+    // Packed as a whole sphere: any aim is inside it.
+    if (!shapedOf(key[4], key[5], key[6], key[7])) return true;
+    if (!shapedOf(kind, aim[at], aim[at + 1], aim[at + 2])) return false;
+    const was = Math.hypot(key[5], key[6], key[7]), now = Math.hypot(aim[at], aim[at + 1], aim[at + 2]);
+    const swing = Math.acos(Math.max(-1, Math.min(1, (key[5] * aim[at] + key[6] * aim[at + 1] + key[7] * aim[at + 2]) / (was * now))));
+    if (kind > 1.5) return aim[at + 3] === key[8] && swing <= turn;
+    // A spot: turned, plus widened, within the turn it was packed with.
+    const angle = c => Math.acos(Math.max(-1, Math.min(1, c)));
+    return swing + Math.max(0, angle(aim[at + 3] / now) - angle(key[8] / was)) <= turn;
+};
 
 
 Reactor3D.lightUniforms = function() {
@@ -513,7 +569,7 @@ Reactor3D.shadowGlsl = function(taps) {
         "uniform float rrSunShade;",
         "float rrSunShaded = 0.0;",
         // The surface's own facing, from rrLight's derivatives (taken where every pixel runs them).
-        "vec3 rrSunNormal;",
+        "vec3 rrSunNormal = vec3(0.0);",
         "float rrSunCascade(int c, vec3 s) {",
         "\tfloat ref = s.z - (c == 0 ? rrSunShadowBias.x : rrSunShadowBias.y);",
         "\tbool dyn = mod(floor(rrSunShadowInfo.z / (c == 0 ? 1.0 : 2.0)), 2.0) > 0.5;",
@@ -656,7 +712,17 @@ Reactor3D.lightGlsl = function(shadows, taps) {
         "\t\t\tif (fall <= 0.0) continue;",
         "\t\t}",
         "\t\t}",
-        shadows ? "\t\tfloat sh = rrLightShadow[i];\n\t\tif (sh > " + ((this.SUN_SHADOW_ROW || 64) - 0.5).toFixed(1) + ") { float sv = rrSunShadowAt(p); rrSunShaded = fall * (1.0 - sv); fall *= sv; }\n\t\telse if (sh >= 0.0) fall *= rrShadowAt(int(sh + 0.5), p);" : "",
+        // A casting sun lights the side of a face turned to it only (Reactor3D.SUN_FACING): the side
+        // turned away is in the face's own shade, which the map cannot be trusted to hold — a
+        // building's shade there is stored from those very faces. A point with no face (the light
+        // volume's air) takes it all.
+        shadows ? "\t\tfloat sh = rrLightShadow[i];\n\t\tif (sh > " + ((this.SUN_SHADOW_ROW || 64) - 0.5).toFixed(1) + ") { float rrSF = 1.0;\n"
+            + "#ifdef RR_SUN_FACING\n"
+            + "\t\t\tvec3 rrSN = rrSunNormal; float rrSL = dot(rrSN, rrSN);"
+            + " if (rrSL > 0.0) { if (dot(rrSN, cameraPosition - p) < 0.0) rrSN = -rrSN;"
+            + " rrSF = smoothstep(0.0, " + (this.SUN_FACING || 0.1).toFixed(3) + ", dot(rrSN, rrLightAim[i].xyz) * inversesqrt(rrSL * max(dot(rrLightAim[i].xyz, rrLightAim[i].xyz), 1e-8))); }\n"
+            + "#endif\n"
+            + "\t\t\tfloat sv = rrSF > 0.0 ? rrSF * rrSunShadowAt(p) : 0.0; rrSunShaded = fall * (1.0 - sv); fall *= sv; }\n\t\telse if (sh >= 0.0) fall *= rrShadowAt(int(sh + 0.5), p);" : "",
         // Toward the light (a sun's direction is its aim): the side facing away keeps a floor of it.
         "\t\tif (rrFace > 0.0) {",
         "\t\t\tvec3 rrDL = lc.w > 2.5 ? rrLightAim[i].xyz : -d;",
@@ -848,6 +914,7 @@ Reactor3D.cacheUniformArrays = function(renderer) {
                 if (!program.__rrArraysCached) {
                     program.__rrArraysCached = true;
                     try { visit(uniforms && uniforms.seq); } catch (error) { /* a program that failed to link has none */ }
+                    try { Reactor3D.PinnedSamplers.apply(uniforms, renderer); } catch (error) { /* left to three's own units */ }
                 }
                 return uniforms;
             };
@@ -858,10 +925,555 @@ Reactor3D.cacheUniformArrays = function(renderer) {
         if (typeof program.isReady === "function" && !program.isReady()) { renderer.__rrCachedPrograms = -1; continue; }
         program.__rrArraysCached = true;
         try { visit(program.getUniforms().seq); } catch (error) { /* a program that failed to link has none */ }
+        try { Reactor3D.PinnedSamplers.apply(program.getUniforms(), renderer); } catch (error) { /* left to three's own units */ }
     }
 };
 /** False reads every linked program's uniforms as the draw begins (a wait on the GPU process per new program). */
 Reactor3D.lazyUniformArrays = true;
+
+/**
+ * The scene's own textures (the shadow atlases, the light grid, the light volume's three, the dynamic atlas, the
+ * far water) at texture units of their own, the top eight, in every lit program. three hands units out afresh at
+ * each bind, in the order a program declares its samplers, after a skinned body's bones and morphs: the light
+ * grid sat at unit 2 in a prop's program and at unit 7 in a layered body's, and each change of program between
+ * the two bound the same eight textures over again. In the Reactor Room that was 300 texture binds a frame for
+ * 139 draws (laptop, i5-1145G7 with Iris Xe through ANGLE, where each GL call costs the main thread a few
+ * microseconds; 2026-11-08). Held at fixed units they stay bound from one program to the next; only a program's
+ * own textures (its map, bones, layers, mirrors) move. A program with more samplers than fit below the eight
+ * keeps three's units. `enabled = false` goes back to three's units everywhere, from the next bind.
+ */
+Reactor3D.PinnedSamplers = {
+    enabled: true,
+    NAMES: ["rrShadowAtlas", "rrShadowDynAtlas", "rrLightGrid", "rrVolumeStatic", "rrVolumeFlicker", "rrVolumePulse", "rrDynAtlas", "rrWaterFar"],
+    SAMPLER_TYPES: new Set([0x8B5E, 0x8B5F, 0x8B60, 0x8B62, 0x8DC1, 0x8DC4, 0x8DC5, 0x8DCA, 0x8DCB, 0x8DCC, 0x8DCF, 0x8DD2, 0x8DD3, 0x8DD4, 0x8DD7]),
+    /** Pins `uniforms`' (a program's WebGLUniforms) scene samplers; whether any were. Once per program. */
+    apply(uniforms, renderer) {
+        if (!this.enabled || !uniforms || !Array.isArray(uniforms.seq) || uniforms.__rrPinned !== undefined) return false;
+        uniforms.__rrPinned = false;
+        const max = renderer && renderer.capabilities ? renderer.capabilities.maxTextures : 0;
+        if (!(max >= this.NAMES.length * 2)) return false;
+        const base = max - this.NAMES.length, pins = [];
+        let units = 0;
+        const count = list => {
+            for (const u of list) {
+                if (u.seq) { count(u.seq); continue; }
+                if (!this.SAMPLER_TYPES.has(u.type)) continue;
+                const k = u.size === undefined && list === uniforms.seq ? this.NAMES.indexOf(u.id) : -1;
+                if (k >= 0) pins.push(u, base + k);
+                else units += u.size === undefined ? 1 : u.size;
+            }
+        };
+        count(uniforms.seq);
+        // Three's own units run from 0 up to one under what it hands out; they must stay under the pinned ones.
+        if (!pins.length || units > base) return false;
+        for (let i = 0; i < pins.length; i += 2) {
+            const u = pins[i], unit = pins[i + 1], set = u.setValue, fixed = () => unit;
+            if (typeof set !== "function") continue;
+            u.setValue = function(gl, v, textures) {
+                if (!Reactor3D.PinnedSamplers.enabled) return set.call(this, gl, v, textures);
+                const allocate = textures.allocateTextureUnit;
+                textures.allocateTextureUnit = fixed;
+                try { set.call(this, gl, v, textures); } finally { textures.allocateTextureUnit = allocate; }
+            };
+        }
+        uniforms.__rrPinned = true;
+        return true;
+    }
+};
+
+/**
+ * The scene's values in one uniform buffer (a WebGL2 uniform block). A lit
+ * material carries the map's lights, shadow tables, light grid and volume,
+ * the cutaway and the water volumes: about sixty uniforms of the scene's
+ * beside a handful of its own, and three walks every one of them each time
+ * a material is bound (three arrays of 32 lights compared number by number
+ * in `sendUniformArray`), and sends each changed one to every program again,
+ * since GL keeps uniform values per program. In a block they are packed
+ * here into one buffer when `renderer.render` begins, uploaded only where
+ * they changed, and every program reads that one buffer: a bind walks only
+ * the material's own uniforms and its samplers. Samplers stay plain
+ * uniforms (a block holds none).
+ *
+ * On since 20261105.16: in North Haven's square on the laptop, 8.3 -> 7.5 ms of main thread a frame and
+ * 115 -> 126 fps, the frame the same as without it to the pixels that differ between two frames anyway (two
+ * characters seemed to vanish when it was switched on: they were hidden while their programs compiled).
+ * The checks below stay: the GLSL cannot be compiled outside the game,
+ * and the runtime turns three's shader checks off, so a broken block would
+ * draw nothing without a word. On, the first program to use the block on
+ * each renderer is held against the layout packed here (the driver's own
+ * offsets), and a program that fails to link turns it off again with the
+ * reason in the console and in `failed`. `set(true)` turns it on and
+ * recompiles the map's lit materials; the program key differs (KEY), so the
+ * two kinds never share a program.
+ *
+ * What it does not cover: a material holding values of its own for these
+ * names (the battle room's lights) keeps the loose uniforms, and so do the
+ * single-draw passes (the quarter-size light, the volume's bake), which
+ * bind once a frame anyway.
+ */
+Reactor3D.SceneUniformBlock = {
+    enabled: true,
+    /** Why the block turned itself off, or null. */
+    failed: null,
+    NAME: "RRScene",
+    KEY: "|scene-block",
+    /** A loose declaration of one of the block's names: type, name, array length. */
+    DECLARATION: /\buniform\s+(?:(?:highp|mediump|lowp)\s+)?(\w+)\s+(rr\w+)\s*(?:\[\s*(\d+)\s*\])?\s*;/g,
+    TYPES: {
+        float: { comps: 1, kind: "f" }, int: { comps: 1, kind: "i" }, uint: { comps: 1, kind: "u" },
+        vec2: { comps: 2, kind: "f" }, vec3: { comps: 3, kind: "f" }, vec4: { comps: 4, kind: "f" }, mat4: { comps: 16, kind: "f" }
+    },
+    _layout: null,
+    /** The renderer whose `render` is running (innermost), for values published from inside a draw (`touch`). */
+    _current: null,
+
+    /**
+     * Every member: [name, GLSL type, array length (0 for none), the shared set it is read from].
+     * The arrays first, then each vec3 with a scalar in its fourth place, so std140 pads little.
+     * The types and lengths are the ones the loose declarations carry (lightGlsl, shadowGlsl,
+     * LightGrid.gridGlsl, LightVolume.glsl, injectCutaway, WATER_VOLUME_GLSL); a declaration that
+     * differs leaves its material on the loose uniforms (`rewrite`).
+     */
+    members() {
+        const R = Reactor3D, n = R.SHADER_LIGHTS, slots = R.SHADOW_SLOTS || 8, volume = R.LightVolume;
+        const flicker = volume ? volume.FLICKER_SLOTS : 4, pulse = volume ? volume.PULSE_SLOTS : 4;
+        const water = R.WATER_VOLUME_MAX || 4;
+        return [
+            ["rrLightPos", "vec4", n, "light"],
+            ["rrLightColor", "vec4", n, "light"],
+            ["rrLightAim", "vec4", n, "light"],
+            ["rrLightShadow", "float", n, "light"],
+            ["rrShadowInfo", "vec4", slots, "light"],
+            ["rrShadowPos", "vec4", slots, "light"],
+            ["rrSunShadowMatrix", "mat4", 2, "light"],
+            ["rrVolumeFlickerColor", "vec3", flicker, "light"],
+            ["rrVolumePulseColor", "vec3", pulse, "light"],
+            ["rrVolumePulseRadius", "float", pulse, "light"],
+            ["rrCutFoci", "vec3", R.CUTAWAY_FOCI || 8, "cut"],
+            ["rrOpenBox", "vec4", R.CUTAWAY_OPENINGS || 24, "cut"],
+            ["rrOpenTop", "float", R.CUTAWAY_OPENINGS || 24, "cut"],
+            ["rrWaterBox", "vec4", water, "water"],
+            ["rrWaterLevel", "float", water, "water"],
+            ["rrWaterFog", "vec4", water, "water"],
+            ["rrKeyLight", "vec4", 0, "light"],
+            ["rrShadowGrid", "vec4", 0, "light"],
+            ["rrSunShadowInfo", "vec4", 0, "light"],
+            ["rrSunShadowBand", "vec4", 0, "light"],
+            ["rrSunShadowBias", "vec4", 0, "light"],
+            ["rrSunShadowDir", "vec4", 0, "light"],
+            ["rrSunShadowTexel", "vec4", 0, "light"],
+            ["rrWaterFarMap", "vec4", 0, "light"],
+            ["rrWaterFarBox", "vec4", 0, "light"],
+            ["rrCutBox", "vec4", 0, "cut"],
+            ["rrOpenAll", "vec4", 0, "cut"],
+            ["rrAmbient", "vec3", 0, "light"], ["rrLightCount", "int", 0, "light"],
+            ["rrKeyColor", "vec3", 0, "light"], ["rrShadowBias", "float", 0, "light"],
+            ["rrLightGridOrigin", "vec3", 0, "light"], ["rrLightGridEnabled", "int", 0, "light"],
+            ["rrVolumeOrigin", "vec3", 0, "light"], ["rrVolumeOn", "int", 0, "light"],
+            ["rrVolumeInvSize", "vec3", 0, "light"], ["rrVolumeOffset", "float", 0, "light"],
+            ["rrDynOrigin", "vec3", 0, "light"], ["rrDynVoxel", "float", 0, "light"],
+            ["rrDynCells", "vec3", 0, "light"], ["rrDynOn", "int", 0, "light"],
+            ["rrCutEye", "vec3", 0, "cut"], ["rrCutTop", "float", 0, "cut"],
+            ["rrCutFocus", "vec3", 0, "cut"], ["rrCutRadius", "float", 0, "cut"],
+            ["rrDynTiles", "vec2", 0, "light"], ["rrDynAtlasSize", "vec2", 0, "light"],
+            ["rrSunShade", "float", 0, "light"],
+            ["rrLightGridSpill", "uint", 0, "light"],
+            ["rrLightCached", "uint", 0, "light"],
+            ["rrLightAll", "uint", 0, "light"],
+            ["rrLightDynamic", "uint", 0, "light"],
+            ["rrWaterFarEdge", "float", 0, "light"],
+            ["rrWaterSheen", "float", 0, "light"],
+            ["rrCutFocusCount", "int", 0, "cut"],
+            ["rrOpenCount", "int", 0, "cut"],
+            ["rrOpenFeet", "int", 0, "cut"],
+            ["rrOpenLow", "float", 0, "cut"],
+            ["rrCutBattle", "float", 0, "cut"],
+            ["rrGhostWidth", "float", 0, "cut"],
+            ["rrWaterCount", "int", 0, "water"]
+        ];
+    },
+
+    /**
+     * Where each member lies, by std140: a scalar on 4 bytes, a vec2 on 8, a
+     * vec3 or vec4 on 16 (a vec3 leaves its fourth place to what follows), an
+     * array element or a matrix column every 16 bytes whatever its size. In
+     * 4-byte words. Built once, when first asked (every count is known by then).
+     */
+    layout() {
+        if (this._layout) return this._layout;
+        let at = 0;
+        const members = [], byName = Object.create(null);
+        for (const [name, type, count, set] of this.members()) {
+            const t = this.TYPES[type];
+            let align, size, stride = 0;
+            if (count > 0 || type === "mat4") {
+                stride = type === "mat4" ? 16 : 4;
+                align = 4;
+                size = stride * Math.max(count, 1);
+            } else {
+                align = t.comps === 3 ? 4 : t.comps;
+                size = t.comps;
+            }
+            at = Math.ceil(at / align) * align;
+            const member = { name, type, count, set, comps: t.comps, kind: t.kind, offset: at, stride };
+            members.push(member);
+            byName[name] = member;
+            at += size;
+        }
+        const words = Math.ceil(at / 4) * 4;
+        const buffer = new ArrayBuffer(words * 4);
+        const glsl = "layout(std140) uniform " + this.NAME + " {\n"
+            + members.map(m => "\thighp " + m.type + " " + m.name + (m.count ? "[" + m.count + "]" : "") + ";").join("\n") + "\n};\n";
+        this._layout = { members, byName, words, bytes: words * 4, glsl,
+            f32: new Float32Array(buffer), i32: new Int32Array(buffer), u32: new Uint32Array(buffer) };
+        return this._layout;
+    },
+
+    /** The shared sets as they stand (none is made here). */
+    sets() {
+        const sets = this._sets || (this._sets = { light: null, cut: null, water: null });
+        sets.light = Reactor3D._lightUniforms || null;
+        sets.cut = Reactor3D._cutawayUniforms || null;
+        sets.water = Reactor3D._waterVolumeUniforms || null;
+        return sets;
+    },
+
+    /** One vector (or a lone matrix) from an array, a three vector, a Color or a Matrix4. */
+    writeVector(f, at, v, comps) {
+        if (v instanceof Float32Array) { for (let c = 0; c < comps && c < v.length; c++) f[at + c] = v[c]; }
+        else if (typeof v[0] === "number" || ArrayBuffer.isView(v)) { for (let c = 0; c < comps && c < v.length; c++) f[at + c] = v[c]; }
+        else if (v.elements) { for (let c = 0; c < comps; c++) f[at + c] = v.elements[c]; }
+        else if (v.x !== undefined) { f[at] = v.x; if (comps > 1) f[at + 1] = v.y; if (comps > 2) f[at + 2] = v.z; if (comps > 3) f[at + 3] = v.w; }
+        else if (v.r !== undefined) { f[at] = v.r; f[at + 1] = v.g; f[at + 2] = v.b; }
+    },
+
+    /**
+     * Every member's value as the shared sets hold it now, into the layout's
+     * buffer. Read from `.value` each time: a portrait swaps a value for its
+     * own and back (reactor_speaker_face.js), and a preview packs its lights
+     * into the shared set between the map's draws. A value missing from its
+     * set keeps what was packed before, as GL keeps a uniform never sent.
+     */
+    pack() {
+        const L = this.layout(), f = L.f32, i32 = L.i32, u32 = L.u32, sets = this.sets(), members = L.members;
+        for (let k = 0; k < members.length; k++) {
+            // Each member's uniform object, kept while its set is the same: a set gains names, never swaps one.
+            const m = members[k], set = sets[m.set];
+            let u = m.from === set ? m.u : null;
+            if (!u) { u = m.u = set ? set[m.name] || null : null; m.from = set; }
+            if (!u) continue;
+            const v = u.value;
+            // An array laid out as the block lays it (vec4s, matrices) goes across whole: a 32-light table was a
+            // number at a time most of the pack's cost.
+            if (m.count > 0 && m.comps === m.stride && v instanceof Float32Array) {
+                const n = m.count * m.comps;
+                f.set(v.length > n ? v.subarray(0, n) : v, m.offset);
+                continue;
+            }
+            if (m.count === 0 && m.comps === 1) {
+                // As WebGL converts what three hands it: a number for a float, ToInt32 and ToUint32 for the integers.
+                if (m.kind === "f") f[m.offset] = +v;
+                else if (m.kind === "i") i32[m.offset] = v | 0;
+                else u32[m.offset] = v >>> 0;
+                continue;
+            }
+            if (v === null || v === undefined) continue;
+            if (m.count === 0) { this.writeVector(f, m.offset, v, m.comps); continue; }
+            // Flat numbers, element e's components at e * stride: each kind of array through a loop of its own
+            // (one loop reading both read every number through the slow path, as in sendUniformArray).
+            if (v instanceof Float32Array) this.strideFloat32(f, m, v);
+            else if (typeof v[0] === "number" || ArrayBuffer.isView(v)) this.strideOther(f, m, v);
+            else {
+                // One object per element (the water boxes are Vector4s).
+                for (let e = 0; e < m.count && e < v.length; e++) if (v[e]) this.writeVector(f, m.offset + e * m.stride, v[e], m.comps);
+            }
+        }
+        return L;
+    },
+    strideFloat32(f, m, v) {
+        const comps = m.comps, stride = m.stride, length = v.length, count = m.count;
+        for (let e = 0, src = 0; e < count && src < length; e++) {
+            const at = m.offset + e * stride;
+            for (let c = 0; c < comps && src < length; c++, src++) f[at + c] = v[src];
+        }
+    },
+    strideOther(f, m, v) {
+        const comps = m.comps, stride = m.stride, length = v.length, count = m.count;
+        for (let e = 0, src = 0; e < count && src < length; e++) {
+            const at = m.offset + e * stride;
+            for (let c = 0; c < comps && src < length; c++, src++) f[at + c] = v[src];
+        }
+    },
+
+    /** The program key's part: the block for a material that reads the shared values, when on. */
+    programKey(material) {
+        return this.wants(material) ? this.KEY : "";
+    },
+    wants(material) {
+        // The battle room hands its materials lights of their own after they compile (reactor_battle_room.js).
+        return !!(this.enabled && material && !material.__battleRoomLight);
+    },
+
+    /**
+     * A shader with its loose declarations of the block's names taken out and
+     * the block declared in their place, or null when a declaration differs
+     * from the block's (its type or length): that material keeps the loose
+     * uniforms. `found` lists the names taken out.
+     */
+    rewrite(source) {
+        if (typeof source !== "string") return null;
+        const L = this.layout(), found = [];
+        let bad = false;
+        const out = source.replace(this.DECLARATION, (all, type, name, size) => {
+            const m = L.byName[name];
+            if (!m) return all;
+            if (type !== m.type || (size === undefined ? 0 : Number(size)) !== m.count) { bad = true; return all; }
+            found.push(name);
+            return "";
+        });
+        if (bad) return null;
+        const declared = out.indexOf("uniform " + this.NAME + " {") >= 0;
+        return { source: found.length && !declared ? L.glsl + out : out, found };
+    },
+
+    /**
+     * Last in a lit material's onBeforeCompile (litMaterial): both stages read
+     * the block. `shader.uniforms` keeps every shared value as it was: three
+     * keeps a material's uniforms from its first compile of each key, and a
+     * set without them, met again after the switch was turned off and on,
+     * would leave the loose program unlit. The block program's own table
+     * drops them instead (`strip`). Returns whether the block is used.
+     */
+    apply(material, shader, renderer) {
+        if (!this.wants(material) || !shader || !shader.uniforms || !renderer || typeof renderer.getContext !== "function") return false;
+        const vertex = this.rewrite(shader.vertexShader), fragment = this.rewrite(shader.fragmentShader);
+        if (!vertex || !fragment || (!vertex.found.length && !fragment.found.length)) return false;
+        // Only the shared values: a material holding one of its own keeps the loose uniforms.
+        const L = this.layout(), sets = this.sets();
+        for (const name of vertex.found.concat(fragment.found)) {
+            const own = shader.uniforms[name], set = sets[L.byName[name].set];
+            if (own !== undefined && (!set || own !== set[name])) return false;
+        }
+        if (!this.install(renderer)) return false;
+        shader.vertexShader = vertex.source;
+        shader.fragmentShader = fragment.source;
+        return true;
+    },
+
+    /**
+     * A renderer that draws the block: its `render` packs and binds first,
+     * and every program it links from now on is watched (`watchProgram`).
+     * The buffer is made and bound at once, since the program being compiled
+     * now draws within this very render.
+     */
+    install(renderer) {
+        if (renderer.__rrSceneBlock) return renderer.__rrSceneBlock;
+        const gl = renderer.getContext();
+        if (!gl || typeof gl.bindBufferBase !== "function") return null;
+        const st = { buffer: null, last: null, point: -1, programs: null, verified: false, uploads: 0, prepares: 0, bound: 0 };
+        renderer.__rrSceneBlock = st;
+        const block = this, render = renderer.render;
+        renderer.render = function() {
+            const previous = block._current;
+            block._current = this;
+            try { block.prepare(this); } catch (error) { block.fail("the upload failed: " + (error && error.message || error)); }
+            try { return render.apply(this, arguments); } finally { block._current = previous; }
+        };
+        this.hookShadows();
+        this.prepare(renderer);
+        return st;
+    },
+
+    /**
+     * Pack, upload what changed, bind. At the start of each `render`: values
+     * change between draws of the scene (a portrait, a preview, a capture
+     * from a mirror's eye), never within one but for the shadow tables
+     * (`touch`).
+     */
+    prepare(renderer) {
+        const st = renderer && renderer.__rrSceneBlock;
+        if (!st) return;
+        const gl = renderer.getContext();
+        if (!gl || (typeof gl.isContextLost === "function" && gl.isContextLost())) return;
+        const programs = renderer.info && renderer.info.programs;
+        if (programs && st.programs !== programs) {
+            // three rebuilds its programs on a restored context, and the buffer went with the old one.
+            if (st.programs) { st.buffer = null; st.verified = false; }
+            st.programs = programs;
+            this.hookPrograms(renderer, st, programs);
+        }
+        const L = this.pack(), now = L.i32;
+        st.prepares++;
+        if (!st.buffer) {
+            st.point = Math.max(0, (gl.getParameter(gl.MAX_UNIFORM_BUFFER_BINDINGS) | 0) - 1);
+            st.buffer = gl.createBuffer();
+            gl.bindBufferBase(gl.UNIFORM_BUFFER, st.point, st.buffer);
+            gl.bufferData(gl.UNIFORM_BUFFER, L.u32, gl.DYNAMIC_DRAW);
+            st.last = new Int32Array(now);
+            st.uploads++;
+            return;
+        }
+        // The highest binding point: PIXI hands its own blocks points from the bottom (and forgets its
+        // cache of this one in Viewport._resetPixi), three uses none here.
+        gl.bindBufferBase(gl.UNIFORM_BUFFER, st.point, st.buffer);
+        // Compared as bits, so a NaN is the same NaN; only the stretch that changed is sent.
+        const last = st.last, words = now.length;
+        let first = 0;
+        while (first < words && now[first] === last[first]) first++;
+        if (first === words) return;
+        let end = words - 1;
+        while (now[end] === last[end]) end--;
+        gl.bufferSubData(gl.UNIFORM_BUFFER, first * 4, L.u32, first, end - first + 1);
+        for (let k = first; k <= end; k++) last[k] = now[k];
+        st.uploads++;
+    },
+
+    /** Shared values changed from inside a draw: sent before the draws after it read them. */
+    touch() {
+        if (!this._current) return;
+        try { this.prepare(this._current); } catch (error) { this.fail("the upload failed: " + (error && error.message || error)); }
+    },
+
+    /**
+     * The shadow rows are drawn from inside the frame's draw (the sentinel's
+     * onBeforeRender), and the tables they publish are read by the draws after
+     * it in that same render: three sent them at the next bind, the block
+     * sends them as they are published.
+     */
+    hookShadows() {
+        const shadows = Reactor3D.Shadows;
+        if (!shadows || shadows.__rrSceneBlockHooked || typeof shadows._publish !== "function") return;
+        shadows.__rrSceneBlockHooked = true;
+        const publish = shadows._publish, block = this;
+        shadows._publish = function() {
+            const result = publish.apply(this, arguments);
+            block.touch();
+            return result;
+        };
+    },
+
+    /** three's list of a renderer's programs: each one pushed from now on is watched before it draws. */
+    hookPrograms(renderer, st, programs) {
+        if (!programs || programs.__rrSceneBlockHook) return;
+        for (let i = 0; i < programs.length; i++) this.watchProgram(renderer, st, programs[i]);
+        const block = this, push = programs.push;
+        Object.defineProperty(programs, "push", { configurable: true, writable: true, enumerable: false, value: function() {
+            for (let i = 0; i < arguments.length; i++) block.watchProgram(renderer, st, arguments[i]);
+            return push.apply(this, arguments);
+        } });
+        Object.defineProperty(programs, "__rrSceneBlockHook", { configurable: true, value: true, enumerable: false });
+    },
+
+    /**
+     * A program with the block: on its first `getUniforms` (three's, before
+     * its first draw, or ShaderWarmup's between frames) the block is pointed
+     * at the buffer's binding and its members leave the program's table.
+     */
+    watchProgram(renderer, st, program) {
+        if (!program || program.__rrSceneBlockWatched || typeof program.getUniforms !== "function") return;
+        program.__rrSceneBlockWatched = true;
+        if (typeof program.cacheKey !== "string" || program.cacheKey.indexOf(this.KEY) < 0) return;
+        const block = this, read = program.getUniforms;
+        const first = function() {
+            const uniforms = read.apply(this, arguments);
+            // Gone again after its first call (cacheUniformArrays may hand it back once more).
+            if (program.getUniforms === first) program.getUniforms = read;
+            if (!program.__rrSceneBlockBound) {
+                program.__rrSceneBlockBound = true;
+                try { block.bindProgram(renderer, st, program, uniforms); } catch (error) { block.fail("binding a program failed: " + (error && error.message || error)); }
+            }
+            return uniforms;
+        };
+        program.getUniforms = first;
+    },
+
+    bindProgram(renderer, st, program, uniforms) {
+        const gl = renderer.getContext(), p = program.program;
+        if (!gl || !p) return;
+        this.strip(uniforms);
+        const index = gl.getUniformBlockIndex(p, this.NAME);
+        if (index === gl.INVALID_INDEX || index === 0xffffffff || index === -1) {
+            if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+                const logs = [gl.getProgramInfoLog(p), program.vertexShader && gl.getShaderInfoLog(program.vertexShader),
+                    program.fragmentShader && gl.getShaderInfoLog(program.fragmentShader)].filter(Boolean).join("\n");
+                this.fail("a program with the block did not link (" + (program.name || "?") + "):\n" + logs);
+            }
+            return;
+        }
+        gl.uniformBlockBinding(p, index, st.point);
+        st.bound++;
+        if (!st.verified) {
+            st.verified = true;
+            const problem = this.verify(gl, p, index);
+            if (problem) this.fail(problem);
+        }
+    },
+
+    /** The block's members out of a program's own table: they have no location, and a bind would walk them for nothing. */
+    strip(uniforms) {
+        if (!uniforms || !Array.isArray(uniforms.seq)) return;
+        const byName = this.layout().byName, seq = uniforms.seq;
+        let kept = 0;
+        for (let i = 0; i < seq.length; i++) {
+            const u = seq[i];
+            if (byName[u.id] && !u.addr) { if (uniforms.map) delete uniforms.map[u.id]; continue; }
+            seq[kept++] = u;
+        }
+        seq.length = kept;
+    },
+
+    /** The driver's offsets against the packed layout, once a renderer: null when they agree. */
+    verify(gl, p, index) {
+        const L = this.layout();
+        const size = gl.getActiveUniformBlockParameter(p, index, gl.UNIFORM_BLOCK_DATA_SIZE);
+        if (size > L.bytes) return "the block takes " + size + " bytes and " + L.bytes + " are packed";
+        const names = L.members.map(m => m.count ? m.name + "[0]" : m.name);
+        const indices = gl.getUniformIndices(p, names) || [];
+        const valid = [], which = [];
+        for (let k = 0; k < indices.length; k++) if (indices[k] !== gl.INVALID_INDEX && indices[k] !== 0xffffffff) { valid.push(indices[k]); which.push(L.members[k]); }
+        if (!valid.length) return null;
+        const offsets = gl.getActiveUniforms(p, valid, gl.UNIFORM_OFFSET) || [];
+        const strides = gl.getActiveUniforms(p, valid, gl.UNIFORM_ARRAY_STRIDE) || [];
+        const wrong = [];
+        for (let k = 0; k < which.length; k++) {
+            const m = which[k];
+            if (offsets[k] !== m.offset * 4 || (m.count > 0 && strides[k] !== m.stride * 4)) wrong.push(m.name + " at " + offsets[k] + "/" + strides[k] + ", packed at " + m.offset * 4 + "/" + m.stride * 4);
+        }
+        return wrong.length ? "the driver lays the block out otherwise: " + wrong.join("; ") : null;
+    },
+
+    /** Off again, with the reason: the map's lit materials go back to the loose uniforms. */
+    fail(reason) {
+        this.failed = String(reason);
+        this.enabled = false;
+        if (typeof console !== "undefined") console.warn("Reactor3D: the scene uniform block is off: " + this.failed);
+        this.refresh();
+    },
+
+    /** On or off, and the map's lit materials recompiled to match. */
+    set(on) {
+        this.enabled = !!on;
+        if (on) this.failed = null;
+        this.refresh();
+        return this.enabled;
+    },
+    refresh() {
+        const viewport = Reactor3D._viewport, scene = viewport && typeof viewport.scene === "function" ? viewport.scene() : null;
+        if (scene && Reactor3D.Shadows && typeof Reactor3D.Shadows.refreshMaterials === "function") Reactor3D.Shadows.refreshMaterials(scene);
+    },
+
+    /** PIXI caches which buffer it left on each binding point: this one is forgotten, so it binds its own again. */
+    releaseTo(pixi, renderer) {
+        const st = renderer && renderer.__rrSceneBlock, buffers = pixi && pixi.buffer;
+        if (st && st.point >= 0 && buffers && buffers._boundBufferBases) buffers._boundBufferBases[st.point] = null;
+    },
+
+    /** What a renderer's block has done: renders packed, uploads sent, programs bound. */
+    stats(renderer) {
+        const st = renderer && renderer.__rrSceneBlock;
+        return st ? { prepares: st.prepares, uploads: st.uploads, bound: st.bound, point: st.point, bytes: this.layout().bytes, verified: st.verified } : null;
+    }
+};
 
 /** The world-space normal a lit material's fragment reads (`vRRWorldNormal`), declared once whoever asks first. */
 Reactor3D.WORLD_NORMAL_VARYING = "#ifndef RR_WORLD_NORMAL\n#define RR_WORLD_NORMAL\nvarying vec3 vRRWorldNormal;\n#endif\n";
@@ -997,6 +1609,8 @@ Reactor3D.injectLightShader = function(shader, renderer, material) {
     this.LightGrid.ensure(uniforms);
     if (this.LightVolume) this.LightVolume.uniforms();
     for (const key of Object.keys(uniforms)) shader.uniforms[key] = uniforms[key];
+    // The colour pictures' mip bias while the view draws smaller than the screen (Reactor3D.MipBias).
+    if (this.MipBias) shader.uniforms.rrMipBias = this.MipBias.uniform;
     // After projection, where `transformed` is final: skinned, billboarded,
     // or plain. (Anchored on the include, which every three material has;
     // the billboard's own patch keeps the include inside its replacement.)
@@ -1024,10 +1638,13 @@ Reactor3D.injectLightShader = function(shader, renderer, material) {
     const normalUv1 = faces && Reactor3D.normalOnUv1(material);
     const normalMap = faces && !!(material.userData && material.userData.rrNormalMap && material.userData.rrNormalMap.isTexture) && (!!material.map || normalUv1);
     let face = "", faceDecl = "";
+    // A building's pieces take a casting sun on the side turned to it only (SUN_FACING): flat walls and roofs. Not
+    // the terrain, foliage or water: a hillside's triangles straddle the turn and cut it into teeth (2026-11-07).
+    if (material.__reactorPieces && !material.__reactorRock && this.SUN_FACING > 0) faceDecl += "#define RR_SUN_FACING\n";
     if (faces) {
         this.injectWorldNormal(shader);
         this.injectVertexFacing(shader);
-        faceDecl = "#define RR_VERTEX_FACE\n";
+        faceDecl += "#define RR_VERTEX_FACE\n";
         face = this.faceGlsl(normalMap, normalUv1);
         if (normalMap && normalUv1) this.injectUv1(shader);
         // On the weak tier the loop does not weigh each light: the whole light takes the direct light's and the
@@ -1309,6 +1926,20 @@ Reactor3D.pieceCoverAt = function(mapData, wx, wz, near) {
         : { x0: x - r, y0: y - r, x1: x + r + 1, y1: y + r + 1 };
 };
 Reactor3D.CUTAWAY_MARGIN = 0.05;
+/**
+ * A sphere round what a change of the cut changes: the boxes it left and entered, from the lower cut plane up
+ * (CUTAWAY_REGION_HEIGHT tiles of storeys above it). Null when neither is known.
+ */
+Reactor3D.CUTAWAY_REGION_HEIGHT = 12;
+Reactor3D.cutRegion = function(was, now) {
+    const boxes = [was, now].filter(Boolean);
+    if (!boxes.length) return null;
+    let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity, top = Infinity;
+    for (const c of boxes) { x0 = Math.min(x0, c.box[0]); z0 = Math.min(z0, c.box[1]); x1 = Math.max(x1, c.box[2]); z1 = Math.max(z1, c.box[3]); top = Math.min(top, c.top); }
+    if (!(x1 >= x0 && z1 >= z0 && Number.isFinite(top))) return null;
+    const h = this.CUTAWAY_REGION_HEIGHT;
+    return { x: (x0 + x1) / 2, y: top + h / 2, z: (z0 + z1) / 2, r: Math.hypot((x1 - x0) / 2, (z1 - z0) / 2, h / 2) };
+};
 /** How far under the storey's top the cut plane sits: under a doorway's header. */
 Reactor3D.CUTAWAY_DROP = 0.65;
 /** How far, in tiles, the top cut reaches around a player under hand-laid pieces. */
@@ -1370,7 +2001,12 @@ Reactor3D.MapScene.prototype.updateCutaway = function(camera, mapData, character
     if (cutState !== this._cutState) {
         this._cutState = cutState;
         const S = Reactor3D.Shadows;
-        if (S) { if (S.cutChanged) S.cutChanged(); else if (S.invalidate) S.invalidate(); }
+        // The boxes the cut left and entered, from the lower plane up.
+        const now = shared.rrCutTop.value === 1e9 ? null : { top: shared.rrCutTop.value, box: Array.from(shared.rrCutBox.value) };
+        const was = this._cutWas || null;
+        this._cutWas = now;
+        const region = Reactor3D.cutRegion(was, now);
+        if (S) { if (S.cutChanged) S.cutChanged(region); else if (S.invalidate) S.invalidate(); }
         if (this.updateCutCaps) this.updateCutCaps(mapData, shared.rrCutTop.value, cutState === "none" ? null : shared.rrCutBox.value);
     }
     shared.rrCutEye.value[0] = eye.x; shared.rrCutEye.value[1] = eye.y; shared.rrCutEye.value[2] = eye.z;
@@ -1542,6 +2178,7 @@ Reactor3D.cutawayMarkRide = function(object, on) {
             // (2: a ridden vehicle, a body while ridden. 1: a character's body, as it was marked.)
             if (rides > 0) { if (mark.value < 2) { material.userData.rrCutWas = mark.value; mark.value = 2; } }
             else if (mark.value >= 2) mark.value = material.userData.rrCutWas || 0;
+            Reactor3D.touchMaterial(material);
         }
     });
     return true;
@@ -1556,6 +2193,7 @@ Reactor3D.cutawayMarkMaterials = function(object) {
             // (A ridden vehicle's is a body already, and stays one when the battle is over.)
             if (material.userData.rrCutBody) { if (material.userData.rrCutBody.value < 2) material.userData.rrCutBody.value = 1; else material.userData.rrCutWas = 1; }
             else material.userData.rrCutBody = { value: 1 };
+            Reactor3D.touchMaterial(material);
         }
     });
     return true;
@@ -2318,7 +2956,9 @@ Reactor3D.Reflections = {
             // before any mesh can read the cube it is being drawn into.
             this.bind(renderer);
             renderer.setRenderTarget(this._target, face);
-            Reactor3D.withSkyAt(scene, position, () => renderer.render(scene, camera));
+            const warming = Reactor3D.ShaderWarmup ? Reactor3D.ShaderWarmup.passHide(renderer, scene, camera, "cube") : null;
+            try { Reactor3D.withSkyAt(scene, position, () => renderer.render(scene, camera)); }
+            finally { if (warming) Reactor3D.ShaderWarmup.show(warming); }
         } finally {
             this._capturing = false;
             for (const object of hide) object.visible = true;
@@ -2367,6 +3007,8 @@ Reactor3D.Reflections = {
      * (`Reactor3D.prepareReflections`); false draws it in its own update.
      */
     SPARE_REFRESH: true,
+    /** Updates per face drawn once the cube is whole (`prepareReflections`); 1 draws a face every update, as before. */
+    UPDATES_PER_FACE: 2,
     /** The face the last update left to a spare refresh: what it was drawn with, or null. */
     _owed: null,
 
@@ -2476,6 +3118,8 @@ Reactor3D.withSkyAt = function(scene, position, draw) {
 
 /** How many reflections deep two facing mirrors go (each level another, smaller draw of the scene). */
 Reactor3D.MIRROR_DEPTH = 2;
+/** The share of the frame's size water's mirror picture is drawn at (1: the frame's). */
+Reactor3D.MIRROR_WATER_SCALE = 1;
 /** How far off a panel's plane (tiles) a fragment still takes the mirror picture. */
 Reactor3D.MIRROR_TOLERANCE = 0.3;
 /**
@@ -2571,6 +3215,21 @@ Reactor3D.WaterSight = {
         mesh.onAfterRender = function() { sight._after(this); };
     },
 
+    /**
+     * A sheet taken away (its water laid again, its map cleared): it leaves the set, which held every sheet ever
+     * watched with its geometry and material until a mirror next weighed its water, and its last question is deleted.
+     */
+    forget(mesh) {
+        if (this.sheets) this.sheets.delete(mesh);
+        const state = mesh.userData && mesh.userData.rrSight;
+        if (!state) return;
+        // (A query belongs to the context that made it: one from a context since lost went with it.)
+        if (state.query && state.gl && state.generation === Reactor3D.contextGeneration && !state.gl.isContextLost()) state.gl.deleteQuery(state.query);
+        mesh.userData.rrSight = null;
+        delete mesh.onBeforeRender;
+        delete mesh.onAfterRender;
+    },
+
     /** Whether the sheet showed within the last HOLD frames. */
     seen(mesh) {
         const state = mesh && mesh.userData && mesh.userData.rrSight;
@@ -2580,6 +3239,9 @@ Reactor3D.WaterSight = {
     _before(mesh, renderer, camera) {
         const state = mesh.userData.rrSight;
         if (!state || camera !== this._camera || !this.active()) return;
+        // On the weak tier nobody reads the answer (`Mirrors.update` draws no mirror there), so nothing is asked;
+        // the sheet counts as seen, as one just laid does, for when the tier changes.
+        if (Reactor3D.isWeakGpu && Reactor3D.isWeakGpu()) { state.seen = this._frame; return; }
         // The frame's own draw only: a mirror's eye and the capture's see other things.
         if (Reactor3D.Mirrors._rendering || (Reactor3D.Reflections && Reactor3D.Reflections._capturing)) return;
         const gl = renderer.getContext();
@@ -2736,13 +3398,16 @@ Reactor3D.Mirrors = {
 
     /** The camera `camera` reflected in the plane (normal n, point p), with its near plane on the mirror, and the picture's lookup matrix; false when the camera is behind it. */
     reflect(camera, n, p, out, matrix) {
-        const camPos = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
-        const view = new THREE.Vector3().subVectors(p, camPos);
+        // Worked in kept vectors (none outlives this call): eight objects a plane a level a frame otherwise.
+        const S = this._reflectScratch || (this._reflectScratch = { camPos: new THREE.Vector3(), view: new THREE.Vector3(), look: new THREE.Vector3(), target: new THREE.Vector3(),
+            rotation: new THREE.Matrix4(), plane: new THREE.Plane(), clip: new THREE.Vector4(), q: new THREE.Vector4() });
+        const camPos = S.camPos.setFromMatrixPosition(camera.matrixWorld);
+        const view = S.view.subVectors(p, camPos);
         if (view.dot(n) > 0) return false;
         view.reflect(n).negate().add(p);
-        const rotation = new THREE.Matrix4().extractRotation(camera.matrixWorld);
-        const look = new THREE.Vector3(0, 0, -1).applyMatrix4(rotation).add(camPos);
-        const target = new THREE.Vector3().subVectors(p, look).reflect(n).negate().add(p);
+        const rotation = S.rotation.extractRotation(camera.matrixWorld);
+        const look = S.look.set(0, 0, -1).applyMatrix4(rotation).add(camPos);
+        const target = S.target.subVectors(p, look).reflect(n).negate().add(p);
         out.position.copy(view);
         out.up.set(0, 1, 0).applyMatrix4(rotation).reflect(n);
         out.lookAt(target);
@@ -2752,10 +3417,10 @@ Reactor3D.Mirrors = {
         out.projectionMatrixInverse.copy(camera.projectionMatrixInverse);
         matrix.set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1).multiply(out.projectionMatrix).multiply(out.matrixWorldInverse);
         // An oblique near plane on the mirror: what stands behind the glass is not drawn.
-        const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, p).applyMatrix4(out.matrixWorldInverse);
-        const clip = new THREE.Vector4(plane.normal.x, plane.normal.y, plane.normal.z, plane.constant);
+        const plane = S.plane.setFromNormalAndCoplanarPoint(n, p).applyMatrix4(out.matrixWorldInverse);
+        const clip = S.clip.set(plane.normal.x, plane.normal.y, plane.normal.z, plane.constant);
         const e = out.projectionMatrix.elements;
-        const q = new THREE.Vector4((Math.sign(clip.x) + e[8]) / e[0], (Math.sign(clip.y) + e[9]) / e[5], -1, (1 + e[10]) / e[14]);
+        const q = S.q.set((Math.sign(clip.x) + e[8]) / e[0], (Math.sign(clip.y) + e[9]) / e[5], -1, (1 + e[10]) / e[14]);
         clip.multiplyScalar(2 / clip.dot(q));
         e[2] = clip.x; e[6] = clip.y; e[10] = clip.z + 1 - 0.003; e[14] = clip.w;
         return true;
@@ -2947,8 +3612,8 @@ Reactor3D.Mirrors = {
             const slot = base + i, plane = planes[i];
             const out = this._cameras[slot * 8 + level] || (this._cameras[slot * 8 + level] = new THREE.PerspectiveCamera());
             const matrix = new THREE.Matrix4();
-            const camPos = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
-            if (camPos.clone().sub(plane.point).dot(plane.normal) <= 0.01) continue;
+            const camPos = (this._levelEye || (this._levelEye = new THREE.Vector3())).setFromMatrixPosition(camera.matrixWorld);
+            if (camPos.sub(plane.point).dot(plane.normal) <= 0.01) continue;
             if (!this.reflect(camera, plane.normal, plane.point, out, matrix)) continue;
             // The other mirrors as seen in this one, first.
             // (This plane is behind its own reflected camera, so only the others come back.)
@@ -2973,10 +3638,19 @@ Reactor3D.Mirrors = {
             const own = plane.object && plane.object.userData && plane.object.userData.water && plane.object.visible ? [plane.object] : [];
             for (const object of own) object.visible = false;
             for (const object of hidden) object.visible = false;
+            // The distance levels the frame's own draw uses, chosen from this camera at the picture's size
+            // (before `narrow` crops the view). Without them the mirror drew every character at full
+            // detail: 8.7M triangles in North Haven's raid, four times the frame's own draw.
+            const detail = Reactor3D.GeometryDetail;
+            const swaps = detail && !detail._active ? detail.begin(scene, out, height) : null;
+            if (swaps) detail._active = swaps;
             if (area) this.narrow(out, target, area, width, height);
             renderer.setRenderTarget(target);
+            const warming = Reactor3D.ShaderWarmup ? Reactor3D.ShaderWarmup.passHide(renderer, scene, out, "mirror") : null;
             try { Reactor3D.withSkyAt(scene, out.position, () => renderer.render(scene, out)); }
             finally {
+                if (swaps) { detail.end(swaps); detail._active = null; }
+                if (warming) Reactor3D.ShaderWarmup.show(warming);
                 for (const object of hidden) object.visible = true; for (const object of own) object.visible = true;
                 if (area) this.widen(out, target, width, height);
                 renderer.setRenderTarget(previous);
@@ -2991,6 +3665,12 @@ Reactor3D.Mirrors = {
      * models near `camera` (`candidates`, their objects), the panel of each
      * facing the camera, drawn MIRROR_DEPTH deep. With none, every slot off.
      */
+    /** What the last frame with a mirror weighed (the best eight planes), written when read: a look from the console. */
+    get lastChoice() {
+        const w = this._weighed;
+        if (!w) return undefined;
+        return { candidates: w.candidates, scored: w.scored.slice(0, 8).map(p => ({ n: [p.normal.x, p.normal.y, p.normal.z].map(v => Math.round(v * 100) / 100), d: Math.round(p.d * 10) / 10, score: Math.round(p.score), primary: p.primary })) };
+    },
     update(renderer, scene, camera, candidates, hidden, subject, scale) {
         this.clear();
         this._applied = null;
@@ -2999,17 +3679,23 @@ Reactor3D.Mirrors = {
         // Nothing mirrors here (most maps, every frame): nothing to weigh, and no earlier plane held on to.
         if (!candidates || !candidates.length) { this._live = null; return; }
         camera.updateMatrixWorld(true);
-        const camPos = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+        // The weighing's working values, kept: each is done with before the next statement that names it, and none
+        // is held past the weighing (a plane that is scored takes copies of its normal and point). Made new, they
+        // were some dozens of objects a panel every frame a mirror or a lake was near.
+        const S = this._scratch || (this._scratch = { camPos: new THREE.Vector3(), a: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3(), d: new THREE.Vector3(),
+            normal: new THREE.Vector3(), point: new THREE.Vector3(), corner: new THREE.Vector3(), toLocal: new THREE.Matrix4(), viewProjection: new THREE.Matrix4(),
+            frustum: new THREE.Frustum(), box: new THREE.Box3(), normalMatrix: new THREE.Matrix3(), size: new THREE.Vector2() });
+        const camPos = S.camPos.setFromMatrixPosition(camera.matrixWorld);
         // Every panel of every candidate facing the camera, scored: first by how much of the party
         // its mirror shows on screen, then by how much of it is in view (area and facing).
         const scored = [];
-        const toLocal = new THREE.Matrix4();
-        const onScreen = point => { const v = point.clone().project(camera); return v.z < 1 && v.z > -1 && Math.abs(v.x) <= 1 && Math.abs(v.y) <= 1; };
+        const toLocal = S.toLocal;
+        const onScreen = point => { const v = S.a.copy(point).project(camera); return v.z < 1 && v.z > -1 && Math.abs(v.x) <= 1 && Math.abs(v.y) <= 1; };
         // In view is any of it in the camera's frustum (a long wall's middle can be off screen while it fills the view).
-        const frustum = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
+        const frustum = S.frustum.setFromProjectionMatrix(S.viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
         // How much of the screen a box covers, 0..1: its projected corners' rectangle, clipped to the view.
         // (A distance falloff had judged a wall 150 tiles off, plain on screen, as filling nothing.)
-        const corner = new THREE.Vector3();
+        const corner = S.corner;
         const cover = box => {
             let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
             for (let i = 0; i < 8; i++) {
@@ -3028,9 +3714,9 @@ Reactor3D.Mirrors = {
             if (own) {
                 // A sheet with no pixel on screen has nothing to show a picture in.
                 if (Reactor3D.WaterSight && !Reactor3D.WaterSight.seen(object)) continue;
-                if (camPos.clone().sub(own.point).dot(own.normal) > 0.05) {
+                if (S.a.copy(camPos).sub(own.point).dot(own.normal) > 0.05) {
                     // Water competes on what it fills of the view, like any mirror.
-                    const bounds = new THREE.Box3().setFromObject(object);
+                    const bounds = S.box.setFromObject(object);
                     const inView = frustum.intersectsBox(bounds);
                     const share = 1000 * cover(bounds);
                     scored.push({ normal: own.normal.clone(), point: own.point.clone(), d: own.normal.dot(own.point), score: (inView ? 1e3 : 0) + share, share: inView ? share : 0, primary: inView, object });
@@ -3042,35 +3728,36 @@ Reactor3D.Mirrors = {
             // A model is a planar mirror only when it has a real flat face; else its cube reflection
             // stands alone (a faceted hull's facets flicker as the chosen plane jumps between them).
             if (object.userData.pieceChunk === undefined && panels.flatShare < Reactor3D.MIRROR_FLAT_SHARE) continue;
-            const normalMatrix = new THREE.Matrix3().getNormalMatrix(object.matrixWorld);
+            const normalMatrix = S.normalMatrix.getNormalMatrix(object.matrixWorld);
             toLocal.copy(object.matrixWorld).invert();
             for (const panel of panels) {
-                const normal = panel.normal.clone().applyMatrix3(normalMatrix).normalize();
-                const point = panel.normal.clone().multiplyScalar(panel.d).applyMatrix4(object.matrixWorld);
+                const normal = S.normal.copy(panel.normal).applyMatrix3(normalMatrix).normalize();
+                const point = S.point.copy(panel.normal).multiplyScalar(panel.d).applyMatrix4(object.matrixWorld);
                 // Facing and view are judged from the panel's own middle (a plane's point at the
                 // origin can lie tiles away, where the panel looks edge-on).
-                const middle = panel.box.getCenter(new THREE.Vector3()).applyMatrix4(object.matrixWorld);
-                const facing = normal.dot(camPos.clone().sub(middle).normalize());
+                const middle = panel.box.getCenter(S.b).applyMatrix4(object.matrixWorld);
+                const facing = normal.dot(S.c.copy(camPos).sub(middle).normalize());
                 if (facing <= 0.15) continue;
-                const worldBox = panel.box.clone().applyMatrix4(object.matrixWorld);
+                const worldBox = S.box.copy(panel.box).applyMatrix4(object.matrixWorld);
                 const inView = frustum.intersectsBox(worldBox);
                 let shows = 0;
                 for (const s of subject || []) {
-                    const side = s.clone().sub(point).dot(normal);
+                    const side = S.b.copy(s).sub(point).dot(normal);
                     if (side <= 0) continue;
-                    const image = s.clone().addScaledVector(normal, -2 * side);
-                    const ray = image.clone().sub(camPos);
+                    // (b: the subject's image in the glass, then the plane's point from the eye; c: the eye's ray to the image.)
+                    const ray = S.c.copy(S.b.copy(s).addScaledVector(normal, -2 * side)).sub(camPos);
                     const along = normal.dot(ray);
                     if (Math.abs(along) < 1e-6) continue;
-                    const t = normal.dot(point.clone().sub(camPos)) / along;
+                    const t = normal.dot(S.b.copy(point).sub(camPos)) / along;
                     if (t <= 0 || t >= 1) continue;
-                    const cross = camPos.clone().addScaledVector(ray, t);
-                    if (onScreen(cross) && panel.box.containsPoint(cross.clone().applyMatrix4(toLocal))) shows++;
+                    const cross = S.d.copy(camPos).addScaledVector(ray, t);
+                    if (onScreen(cross) && panel.box.containsPoint(S.b.copy(cross).applyMatrix4(toLocal))) shows++;
                 }
                 // Off screen and showing nothing it can still be the second mirror: the one the first reflects.
                 // How much of the view it fills (per mille of the screen), as squarely as it faces.
                 const share = 1000 * cover(worldBox) * facing;
-                scored.push({ normal, point, d: normal.dot(point), score: shows * 1e6 + (inView ? 1e3 : 0) + share, share: inView ? share : 0, primary: shows > 0 || inView, object });
+                // (Its own normal and point: a scored plane is kept, as this frame's mirror and to weigh the next.)
+                scored.push({ normal: normal.clone(), point: point.clone(), d: normal.dot(point), score: shows * 1e6 + (inView ? 1e3 : 0) + share, share: inView ? share : 0, primary: shows > 0 || inView, object });
             }
         }
         // The mirror kept last frame stays unless another clearly wins: no flicker between near equals.
@@ -3078,8 +3765,8 @@ Reactor3D.Mirrors = {
             if ((this._live || []).some(live => live.plane.object === entry.object && live.plane.normal.dot(entry.normal) > 0.999 && Math.abs(live.plane.d - entry.d) < 0.05)) entry.score *= 1.5;
         }
         scored.sort((a, b) => b.score - a.score);
-        // What this frame weighed, for a look from the console (Reactor3D.Mirrors.lastChoice).
-        this.lastChoice = { candidates: (candidates || []).length, scored: scored.slice(0, 8).map(p => ({ n: [p.normal.x, p.normal.y, p.normal.z].map(v => Math.round(v * 100) / 100), d: Math.round(p.d * 10) / 10, score: Math.round(p.score), primary: p.primary })) };
+        // What this frame weighed, for a look from the console (Reactor3D.Mirrors.lastChoice, which writes its report when read).
+        this._weighed = { candidates: (candidates || []).length, scored };
         const planes = [];
         // The first is the best plane in view (something off screen can only be the second: the one it reflects).
         const first = scored.find(p => p.primary);
@@ -3103,10 +3790,14 @@ Reactor3D.Mirrors = {
             }
         }
         if (!planes.length) { this._live = null; return; }
-        const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+        const size = renderer.getDrawingBufferSize(S.size);
         // At the size the frame itself is drawn at (`scale`: the view's render scale): its fragments
         // read the picture at their own place on screen, and more texels than fragments are never read.
-        const height = Math.max(16, Math.round(Math.min(1080, size.y) * (Reactor3D.MIRROR_AT_VIEW_SCALE !== false && scale > 0 && scale < 1 ? scale : 1))), width = Math.round(height * (camera.aspect || size.x / size.y));
+        // Water's picture is drawn smaller (MIRROR_WATER_SCALE): its ripples bend the reflection more than a texel,
+        // and in North Haven's square it was 6 ms and 600 draws a frame of a crowd. A real mirror keeps its size.
+        const water = planes.every(p => p.object && p.object.userData && p.object.userData.rrMirrorPlane);
+        const waterScale = water && Reactor3D.MIRROR_WATER_SCALE > 0 ? Math.min(1, Reactor3D.MIRROR_WATER_SCALE) : 1;
+        const height = Math.max(16, Math.round(Math.min(1080, size.y) * (Reactor3D.MIRROR_AT_VIEW_SCALE !== false && scale > 0 && scale < 1 ? scale : 1) * waterScale)), width = Math.round(height * (camera.aspect || size.x / size.y));
         const shadowSentinel = Reactor3D.Shadows && Reactor3D.Shadows._sentinel;
         const hide = (hidden || []).concat(shadowSentinel ? [shadowSentinel] : []).filter(object => object && object.visible);
         this._eye = camera;
@@ -3466,6 +4157,7 @@ Reactor3D.injectSurfaceOcclusion = function(material, shader) {
 
 Reactor3D.litMaterial = function(material) {
     if (!material || material.__reactorLit) return material;
+    if (Reactor3D.MipBias) Reactor3D.MipBias.install();
     material.__reactorLit = true;
     const earlier = material.onBeforeCompile;
     material.onBeforeCompile = function(shader, renderer) {
@@ -3484,17 +4176,23 @@ Reactor3D.litMaterial = function(material) {
         if (Reactor3D.injectLook) Reactor3D.injectLook(this, shader);
         // What a surface gives off over its light, last: its glow and a hair strand's sheen.
         Reactor3D.injectSurfaceGlow(this, shader);
+        // A character's merged parts: every map above taken from each part's own layer (Reactor3D.LayeredParts).
+        if (Reactor3D.LayeredParts) Reactor3D.LayeredParts.inject(this, shader);
+        // Last, over everything declared above: the scene's values from one uniform block, when on.
+        Reactor3D.SceneUniformBlock.apply(this, shader, renderer);
     };
     const earlierKey = material.customProgramCacheKey;
     material.customProgramCacheKey = function() {
-        return (typeof earlierKey === "function" ? earlierKey.call(this) : "") + "|reactor3d-lit" + (this.__reactorPieces ? "|cutaway" : this.__reactorModel ? "|sightline" : "") + (this.__reactorGhost ? "|ghost" : "")
+        return (typeof earlierKey === "function" ? earlierKey.call(this) : "") + "|reactor3d-lit" + (this.__reactorPieces ? (this.__reactorRock ? "|cutaway|rock" : "|cutaway") : this.__reactorModel ? "|sightline" : "") + (this.__reactorGhost ? "|ghost" : "")
             + (Reactor3D.Shadows.active() ? "|shadows" + Reactor3D.Shadows.quality().taps : "")
             + (Reactor3D.shineOf(this) ? "|shine" : "")
             + Reactor3D.surfaceMapsKey(this)
             + (Reactor3D.facesLight(this) ? (Reactor3D.normalOnUv1(this) ? "|face-nmap1" : this.userData && this.userData.rrNormalMap && this.userData.rrNormalMap.isTexture && this.map ? "|face-nmap" : "|face") + (Reactor3D.facesPerLight() ? "" : "-share") : "")
             + (Reactor3D.glowKey ? Reactor3D.glowKey(this) : "")
             + (Reactor3D.lookOf && Reactor3D.lookOf(this) ? "|look" : "")
-            + (Reactor3D.detailProgramKey ? Reactor3D.detailProgramKey(this) : "");
+            + (Reactor3D.detailProgramKey ? Reactor3D.detailProgramKey(this) : "")
+            + (Reactor3D.LayeredParts ? Reactor3D.LayeredParts.programKey(this) : "")
+            + Reactor3D.SceneUniformBlock.programKey(this);
     };
     return material;
 };
@@ -3573,6 +4271,26 @@ Reactor3D.isWeakGpu = function() {
 };
 
 /**
+ * Whether a weak GPU still shades every pixel quickly: Intel's Xe generation (Iris Xe, Mesa's "Intel(R) Xe
+ * Graphics", Arc). The weak tier's quarter-size light (HalfLight) and its depth-first pass were tuned on a
+ * UHD 630 and an integrated Radeon, where each saved 3 to 8 ms of the GPU. On an Iris Xe laptop (i5-1145G7,
+ * 1080p, 2026-11-08) they saved it nothing (Reactor Room 24.0 / 23.6 ms of GPU with and without the split,
+ * North Haven 25.0 / 24.7 with neither) and cost the main thread 1.6 to 2.5 ms a frame: 37 -> 40 fps in North
+ * Haven with both off, every pixel lit at full size. Such a GPU skips both. `fastShadingOverride` pins it.
+ */
+Reactor3D.fastShadingOverride = null;
+Reactor3D.FAST_SHADING_GPU_PATTERN = /\bIntel\b.*\b(?:Xe|Arc)\b/i;
+Reactor3D.fastShading = function() {
+    if (this.fastShadingOverride !== null) return !!this.fastShadingOverride;
+    const description = typeof Graphics !== "undefined" && Graphics.gpuDescription ? String(Graphics.gpuDescription) : "";
+    if (this._fastShadingFor !== description) {
+        this._fastShadingFor = description;
+        this._fastShading = !!description && this.FAST_SHADING_GPU_PATTERN.test(description);
+    }
+    return this._fastShading;
+};
+
+/**
  * The camera the frame is being drawn from, for anything that culls.
  *
  * A host without a `Reactor3D.Viewport` — the editor's map view, which
@@ -3624,7 +4342,6 @@ Reactor3D.viewFrustum = function() {
     return frustum;
 };
 
-/** Whether a sphere of `radius` at (x, y, z) can reach anything on screen. */
 /** Where the drawing camera stands, in world units, or null with no viewport. */
 Reactor3D.viewEye = function() {
     const viewport = this.viewport();
@@ -3633,6 +4350,7 @@ Reactor3D.viewEye = function() {
     return camera.getWorldPosition(this._viewEye || (this._viewEye = new THREE.Vector3()));
 };
 
+/** Whether a sphere of `radius` at (x, y, z) can reach anything on screen. */
 Reactor3D.sphereInView = function(x, y, z, radius) {
     const frustum = this.viewFrustum();
     if (!frustum) return true;
@@ -3669,14 +4387,830 @@ Reactor3D.SHADOW_SLOTS = 8;
  * makes of one) in a few milliseconds on the frames it moves. The weak
  * budget takes one such character, the full tier a party of them.
  */
+// The full tier redraws every dynamic row a frame (`dynamicPerFrame` = `dynamicSlots`). With two of three, a
+// player walking where three lights cast (North Haven's square: the sun and two lanterns) had one light's
+// shadow of them a frame or two old on every refresh, a different light each time: a shadow flickering
+// behind them as they ran, settled once they stopped (63 of 66 refreshes while walking, 2026-11-04).
+/**
+ * A moving caster's parts as few draws in its shadow rows. In a row a part is drawn with its depth material
+ * (Shadows.casterMaterialFor): every part not cut out shares one per side, and a cut-out (hair cards, an eye,
+ * stitching) its own. A character made in the game is 17 to 39 parts, each a draw in every face and cascade it
+ * stands in, against the Demo actor's one; parts with one depth material and one skeleton draw the same depth as
+ * one mesh, so they are merged into a stand-in (position, skin and, for a cut-out, uv), bound to the same skeleton.
+ * A skin bound "attached" (three's default) lands where its bones and bind matrix put it, whatever node holds the
+ * part, so each part's positions are taken through its bind matrix and the stand-in is bound at the identity.
+ * Lossless by construction:
+ *  - a part that changes shape (expressions, speech: morph targets) joins its stand-in only on frames all its
+ *    shapes rest at zero; otherwise those parts draw themselves as before, and their stand-in waits;
+ *  - a part drawn at a distance level in rows (GeometryDetail) keeps its own draw, and so its level;
+ *  - a stand-in is on the moving-caster layer only, hidden but in these passes, out of the model's own tree
+ *    (code that walks a model's parts never meets it), and hides with its character in a face that cannot see it.
+ * Built once a character casts, again when its parts change (an outfit, a look); `enabled` false: as before.
+ */
+Reactor3D.CasterMerge = {
+    enabled: true,
+    // Fewer parts than this in a group are left alone: nothing to save.
+    MIN_PARTS: 2,
+    // Rigid parts on one anchor merge too (a vehicle's pieces, a worn gauntlet's); false: skinned parts only, as before.
+    rigid: true,
+    // A rigid part seen moving against its anchor in this many passes draws itself from then on (a wheel, a turret).
+    MOVES_VOLATILE: 3,
+    group(scene) {
+        let group = scene.userData.rrCasterStandIns;
+        if (!group || group.parent !== scene) {
+            group = new THREE.Group();
+            group.name = "caster-stand-ins";
+            group.matrixAutoUpdate = false;
+            group.matrixWorldAutoUpdate = false;
+            // Kept by Shadows._hideNonCasters, which gathers before the stand-ins are shown.
+            group.userData.rrCasterGroup = true;
+            scene.add(group);
+            scene.userData.rrCasterStandIns = group;
+        }
+        return group;
+    },
+    /**
+     * What the parts of `root` are now, in one walk: its meshes into `scan.meshes` in the walk's order (the pass's
+     * other loops over the caster read that list, `_swapCasters` and `CasterCrowd.begin`), and whether any mesh, its
+     * material or its geometry is another than at the last scan: a stand-in made for other parts is made again.
+     * Three numbers a mesh compared in place; this was a string built for every caster in every pass.
+     */
+    scan(root, scan) {
+        scan.at = 0;
+        scan.changed = false;
+        this._scanInto(root, scan);
+        if (scan.at !== scan.count) scan.changed = true;
+        scan.count = scan.meshes.length = scan.at;
+        scan.round = this._round;
+        return scan.changed;
+    },
+    _scanInto(node, scan) {
+        // Not their visibility, which a pass may change for a frame (warming, a split): a part hidden now sits its group out.
+        if (node.isMesh) {
+            const i = scan.at++, o = i * 3, material = node.material, geometry = node.geometry;
+            if (scan.ids.length < o + 3) { const grown = new Int32Array(scan.ids.length * 2); grown.set(scan.ids); scan.ids = grown; }
+            const ids = scan.ids;
+            // (-1: none; -2: one with no id of its own, a list of materials.)
+            const m = material ? (typeof material.id === "number" ? material.id : -2) : -1;
+            const g = geometry ? (typeof geometry.id === "number" ? geometry.id : -2) : -1;
+            if (i >= scan.count || ids[o] !== node.id || ids[o + 1] !== m || ids[o + 2] !== g) {
+                scan.changed = true;
+                ids[o] = node.id; ids[o + 1] = m; ids[o + 2] = g;
+            }
+            scan.meshes[i] = node;
+        }
+        const children = node.children;
+        for (let i = 0; i < children.length; i++) this._scanInto(children[i], scan);
+    },
+    /** The meshes under `root` as this pass's scan found them, or null when it was not scanned this pass. */
+    scanned(root) {
+        const record = root.userData.rrCasterStandIns, scan = record && record.scan;
+        return this.enabled && scan && scan.round === this._round ? scan.meshes : null;
+    },
+    _round: 0,
+    /** Whether `part` and every node above it up to `root` is shown: a rigid part hidden by a parent (a stowed weapon) draws nothing. */
+    shown(part, root) {
+        for (let node = part; node; node = node.parent) {
+            if (!node.visible) return false;
+            if (node === root) return true;
+        }
+        return false;
+    },
+    /** What a rigid part rides: the nearest bone above it, else the caster's root. */
+    anchorOf(part, root) {
+        for (let node = part.parent; node; node = node.parent) {
+            if (node.isBone || node === root) return node;
+        }
+        return root;
+    },
+    /** `part`'s place in `anchor`'s frame now, into `out` (16 numbers from `at`). */
+    relative(part, inverse, out, at) {
+        const a = inverse.elements, b = part.matrixWorld.elements;
+        for (let c = 0; c < 4; c++) {
+            const b0 = b[c * 4], b1 = b[c * 4 + 1], b2 = b[c * 4 + 2], b3 = b[c * 4 + 3];
+            out[at + c * 4] = a[0] * b0 + a[4] * b1 + a[8] * b2 + a[12] * b3;
+            out[at + c * 4 + 1] = a[1] * b0 + a[5] * b1 + a[9] * b2 + a[13] * b3;
+            out[at + c * 4 + 2] = a[2] * b0 + a[6] * b1 + a[10] * b2 + a[14] * b3;
+            out[at + c * 4 + 3] = a[3] * b0 + a[7] * b1 + a[11] * b2 + a[15] * b3;
+        }
+    },
+    /**
+     * Rigid parts that draw alike in a row, grouped by depth material and what they ride (`anchorOf`): a vehicle's
+     * dozens of pieces on its root, a worn gauntlet's pieces on the hand's bone. Parts once seen moving against their
+     * anchor (`volatile`: a wheel, a turret) are left out, and draw themselves.
+     */
+    rigidGroups(root, shadows, volatile) {
+        const detail = Reactor3D.GeometryDetail, groups = new Map();
+        root.traverse(child => {
+            if (!child.isMesh || child.isSkinnedMesh || child.isInstancedMesh || child.isBatchedMesh || !child.castShadow || Array.isArray(child.material)) return;
+            if (child.userData && child.userData.rrCasterStandIn) return;
+            if (volatile && volatile.has(child)) return;
+            const g = child.geometry, position = g && g.attributes.position;
+            if (!position || g.groups.length || this.hasShapes(child)) return;
+            const count = g.index ? g.index.count : position.count;
+            if (g.drawRange.start !== 0 || g.drawRange.count < count) return;
+            const state = detail && detail._states && detail._states.get(g);
+            if (state && state.levels && state.levels.length) return;
+            const own = child.customDepthMaterial && child.customDepthMaterial.__rrCaster ? child.customDepthMaterial : null;
+            const caster = own && (own.__rrCutout || !own.__rrPooled) ? own : shadows.casterMaterialFor(child.material, false);
+            if (caster.__rrCutout && !g.attributes.uv) return;
+            const anchor = this.anchorOf(child, root);
+            const key = caster.id + "|" + anchor.uuid;
+            let entry = groups.get(key);
+            if (!entry) groups.set(key, entry = { caster, anchor, parts: [] });
+            entry.parts.push(child);
+        });
+        return [...groups.values()].filter(entry => entry.parts.length >= this.MIN_PARTS);
+    },
+    /** One rigid geometry of the parts, in their anchor's frame as they stand now; `rel` keeps each part's place there. */
+    mergeRigid(parts, anchor, withUv) {
+        let vertices = 0, indices = 0;
+        for (const part of parts) {
+            const g = part.geometry, n = g.attributes.position.count;
+            vertices += n; indices += g.index ? g.index.count : n;
+        }
+        const position = new Float32Array(vertices * 3), uv = withUv ? new Float32Array(vertices * 2) : null;
+        const index = vertices > 65535 ? new Uint32Array(indices) : new Uint16Array(indices);
+        const inverse = new THREE.Matrix4().copy(anchor.matrixWorld).invert();
+        const rel = new Float64Array(parts.length * 16), m = new THREE.Matrix4(), at = new THREE.Vector3();
+        let v = 0, k = 0;
+        parts.forEach((part, j) => {
+            this.relative(part, inverse, rel, j * 16);
+            m.fromArray(rel, j * 16);
+            const g = part.geometry, p = g.attributes.position, t = g.attributes.uv, n = p.count;
+            for (let i = 0; i < n; i++) {
+                const o = v + i;
+                at.set(p.getX(i), p.getY(i), p.getZ(i)).applyMatrix4(m);
+                position[o * 3] = at.x; position[o * 3 + 1] = at.y; position[o * 3 + 2] = at.z;
+                if (uv) { uv[o * 2] = t.getX(i); uv[o * 2 + 1] = t.getY(i); }
+            }
+            if (g.index) { const src = g.index; for (let i = 0; i < src.count; i++) index[k++] = src.getX(i) + v; }
+            else for (let i = 0; i < n; i++) index[k++] = v + i;
+            v += n;
+        });
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(position, 3));
+        if (uv) geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+        geometry.setIndex(new THREE.BufferAttribute(index, 1));
+        geometry.computeBoundingSphere();
+        geometry.userData.rrCasterStandIn = true;
+        return { geometry, rel };
+    },
+    /** Whether every part still stands where its stand-in was made (to a hundred-thousandth); the parts that moved go into `moved`. */
+    held(entry, moved) {
+        const inverse = this._inverse || (this._inverse = new THREE.Matrix4());
+        const now = this._now || (this._now = new Float64Array(16));
+        inverse.copy(entry.anchor.matrixWorld).invert();
+        let ok = true;
+        for (let j = 0; j < entry.parts.length; j++) {
+            this.relative(entry.parts[j], inverse, now, 0);
+            const rel = entry.rel, base = j * 16;
+            for (let i = 0; i < 16; i++) {
+                const d = now[i] - rel[base + i];
+                if (d > 1e-5 || d < -1e-5) { ok = false; moved.push(entry.parts[j]); break; }
+            }
+        }
+        return ok;
+    },
+    hasShapes(mesh) {
+        const morph = mesh.geometry && mesh.geometry.morphAttributes;
+        return !!(morph && morph.position && morph.position.length);
+    },
+    resting(mesh) {
+        const w = mesh.morphTargetInfluences;
+        if (w) for (let i = 0; i < w.length; i++) if (w[i] !== 0) return false;
+        return true;
+    },
+    isIdentity(m) {
+        const e = m.elements;
+        for (let i = 0; i < 16; i++) if (e[i] !== (i % 5 === 0 ? 1 : 0)) return false;
+        return true;
+    },
+    /** The parts of `root` that may be merged, grouped by what they are drawn with in a row. */
+    groups(root, shadows) {
+        const detail = Reactor3D.GeometryDetail, groups = new Map();
+        root.traverse(child => {
+            if (!child.isSkinnedMesh || !child.castShadow || Array.isArray(child.material)) return;
+            const g = child.geometry, position = g && g.attributes.position;
+            if (!position || !g.attributes.skinIndex || !g.attributes.skinWeight || g.groups.length) return;
+            const count = g.index ? g.index.count : position.count;
+            if (g.drawRange.start !== 0 || g.drawRange.count < count) return;
+            // One drawn at a distance level in rows keeps its own draw.
+            const state = detail && detail._states && detail._states.get(g);
+            if (state && state.levels && state.levels.length) return;
+            const own = child.customDepthMaterial && child.customDepthMaterial.__rrCaster ? child.customDepthMaterial : null;
+            const caster = own && (own.__rrCutout || !own.__rrPooled) ? own : shadows.casterMaterialFor(child.material, true);
+            if (caster.__rrCutout && !g.attributes.uv) return;
+            if (child.bindMode !== THREE.AttachedBindMode || !child.skeleton) return;
+            const shapes = this.hasShapes(child);
+            const key = caster.id + "|" + child.skeleton.uuid + "|" + (shapes ? "s" : "r");
+            let entry = groups.get(key);
+            if (!entry) groups.set(key, entry = { caster, skeleton: child.skeleton, parts: [], shapes });
+            entry.parts.push(child);
+        });
+        return [...groups.values()].filter(entry => entry.parts.length >= this.MIN_PARTS);
+    },
+    /** One geometry of the parts: their positions, skins and (a cut-out's) uvs, one after another. */
+    merge(parts, withUv) {
+        let vertices = 0, indices = 0;
+        for (const part of parts) {
+            const g = part.geometry, n = g.attributes.position.count;
+            vertices += n; indices += g.index ? g.index.count : n;
+        }
+        const position = new Float32Array(vertices * 3), skinIndex = new Uint16Array(vertices * 4), skinWeight = new Float32Array(vertices * 4);
+        const uv = withUv ? new Float32Array(vertices * 2) : null, index = new Uint32Array(indices);
+        const at = new THREE.Vector3();
+        let v = 0, k = 0;
+        for (const part of parts) {
+            const g = part.geometry, p = g.attributes.position, si = g.attributes.skinIndex, sw = g.attributes.skinWeight, t = g.attributes.uv, n = p.count;
+            // Through its bind matrix: what its bones are given, so the stand-in is bound at the identity.
+            const bind = part.bindMatrix, identity = this.isIdentity(bind);
+            for (let i = 0; i < n; i++) {
+                const o = v + i;
+                at.set(p.getX(i), p.getY(i), p.getZ(i));
+                if (!identity) at.applyMatrix4(bind);
+                position[o * 3] = at.x; position[o * 3 + 1] = at.y; position[o * 3 + 2] = at.z;
+                skinIndex[o * 4] = si.getX(i); skinIndex[o * 4 + 1] = si.getY(i); skinIndex[o * 4 + 2] = si.getZ(i); skinIndex[o * 4 + 3] = si.getW(i);
+                skinWeight[o * 4] = sw.getX(i); skinWeight[o * 4 + 1] = sw.getY(i); skinWeight[o * 4 + 2] = sw.getZ(i); skinWeight[o * 4 + 3] = sw.getW(i);
+                if (uv) { uv[o * 2] = t.getX(i); uv[o * 2 + 1] = t.getY(i); }
+            }
+            if (g.index) { const src = g.index; for (let i = 0; i < src.count; i++) index[k++] = src.getX(i) + v; }
+            else for (let i = 0; i < n; i++) index[k++] = v + i;
+            v += n;
+        }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(position, 3));
+        geometry.setAttribute("skinIndex", new THREE.BufferAttribute(skinIndex, 4));
+        geometry.setAttribute("skinWeight", new THREE.BufferAttribute(skinWeight, 4));
+        if (uv) geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+        geometry.setIndex(new THREE.BufferAttribute(index, 1));
+        geometry.userData.rrCasterStandIn = true;
+        return geometry;
+    },
+    build(root, shadows, volatile) {
+        const scene = (() => { let o = root; while (o.parent) o = o.parent; return o; })();
+        const list = [];
+        for (const entry of this.groups(root, shadows)) {
+            const mesh = new THREE.SkinnedMesh(this.merge(entry.parts, !!entry.caster.__rrCutout), entry.caster);
+            mesh.name = "caster-stand-in";
+            // Bound at the identity, its positions already in bind space; given the matrix outright, so three never
+            // recalculates the skeleton's inverses from the pose it stands in (bind with none does).
+            mesh.bindMode = THREE.AttachedBindMode;
+            mesh.bind(entry.skeleton, new THREE.Matrix4());
+            mesh.matrixAutoUpdate = false;
+            mesh.matrixWorldAutoUpdate = false;
+            mesh.frustumCulled = false;
+            mesh.castShadow = true;
+            mesh.layers.set(Reactor3D.SHADOW_LAYER_DYNAMIC);
+            mesh.visible = false;
+            mesh.customDepthMaterial = entry.caster;
+            mesh.userData.rrStandInFor = root;
+            this.group(scene).add(mesh);
+            list.push({ mesh, parts: entry.parts, shapes: entry.shapes });
+        }
+        if (this.rigid) list.push(...this.buildRigid(root, shadows, volatile, scene));
+        return list;
+    },
+    /** The rigid stand-ins of `root` (rigidGroups), leaving out `volatile` parts. */
+    buildRigid(root, shadows, volatile, scene) {
+        const list = [];
+        for (const entry of this.rigidGroups(root, shadows, volatile)) {
+            const made = this.mergeRigid(entry.parts, entry.anchor, !!entry.caster.__rrCutout);
+            const mesh = new THREE.Mesh(made.geometry, entry.caster);
+            mesh.name = "caster-stand-in";
+            // Placed at its anchor each pass; culled per face by its bounds like any part.
+            mesh.matrixAutoUpdate = false;
+            mesh.matrixWorldAutoUpdate = false;
+            mesh.castShadow = true;
+            mesh.layers.set(Reactor3D.SHADOW_LAYER_DYNAMIC);
+            mesh.visible = false;
+            mesh.customDepthMaterial = entry.caster;
+            mesh.userData.rrStandInFor = root;
+            this.group(scene).add(mesh);
+            list.push({ mesh, parts: entry.parts, shapes: false, anchor: entry.anchor, rel: made.rel });
+        }
+        return list;
+    },
+    release(record) {
+        if (!record) return;
+        for (const entry of record.list) { if (entry.mesh.parent) entry.mesh.parent.remove(entry.mesh); entry.mesh.geometry.dispose(); }
+    },
+    /**
+     * This pass's stand-ins for `root`, shown and placed where their parts are; returns the parts they draw for
+     * (the pass leaves those alone), or null. The stand-ins shown are added to `live` for `done`.
+     */
+    use(root, shadows, live) {
+        let record = root.userData.rrCasterStandIns;
+        const scan = record && record.scan ? record.scan : { ids: new Int32Array(48), meshes: [], count: 0, at: 0, changed: false, round: -1 };
+        if (this.scan(root, scan) || !record) {
+            this.release(record);
+            // A part seen moving against its anchor (MOVES_VOLATILE passes) stays out of the rigid merge while the parts are these.
+            const volatile = new Set();
+            record = root.userData.rrCasterStandIns = { scan, list: this.build(root, shadows, volatile), parts: new Set(), volatile, moves: new Map(), stale: false };
+        } else if (record.stale) {
+            // Only the rigid stand-ins are made again, where their parts stand now; the skinned ones did not change.
+            const kept = [];
+            for (const entry of record.list) {
+                if (entry.anchor) { if (entry.mesh.parent) entry.mesh.parent.remove(entry.mesh); entry.mesh.geometry.dispose(); }
+                else kept.push(entry);
+            }
+            let scene = root; while (scene.parent) scene = scene.parent;
+            record.list = this.rigid ? kept.concat(this.buildRigid(root, shadows, record.volatile, scene)) : kept;
+            record.stale = false;
+        }
+        if (!record.list.length) return null;
+        const merged = record.parts;
+        merged.clear();
+        const bit = 1 << Reactor3D.SHADOW_LAYER_DYNAMIC;
+        let moved = null;
+        for (const entry of record.list) {
+            // Parts that change shape join only while every shape rests; else they draw themselves. A group with a part
+            // hidden or not casting now (a pass's warming, the caster budget) sits this pass out the same way.
+            if (entry.shapes && !entry.parts.every(part => this.resting(part))) continue;
+            const mesh = entry.mesh;
+            if (entry.anchor) {
+                // Rigid: every part shown (its parents too) and casting, and still where the stand-in was made.
+                if (!entry.parts.every(part => (part.layers.mask & bit) && this.shown(part, root))) continue;
+                if (!this.held(entry, moved || (moved = []))) continue;
+                mesh.matrixWorld.copy(entry.anchor.matrixWorld);
+            } else {
+                if (!entry.parts.every(part => part.visible && part.parent && (part.layers.mask & bit))) continue;
+                // At the identity, world and bind both: an attached skin's own place cancels, so its bones alone place it.
+                mesh.matrixWorld.identity();
+                mesh.bindMatrixInverse.identity();
+            }
+            mesh.visible = true;
+            live.push(mesh);
+            // Its parts are drawn by it this pass, not by themselves.
+            for (const part of entry.parts) { merged.add(part); part.visible = false; (live.parts || (live.parts = [])).push(part); }
+        }
+        // Rigid parts that moved drew themselves this pass; the next makes their groups again where they stand now,
+        // and leaves out any that keeps moving.
+        if (moved && moved.length) {
+            for (const part of moved) {
+                const n = (record.moves.get(part) || 0) + 1;
+                record.moves.set(part, n);
+                if (n >= this.MOVES_VOLATILE) record.volatile.add(part);
+            }
+            record.stale = true;
+        }
+        return merged.size ? merged : null;
+    },
+    done(live) {
+        for (const mesh of live) mesh.visible = false;
+        live.length = 0;
+        if (live.parts) { for (const part of live.parts) part.visible = true; live.parts.length = 0; }
+    },
+    /** Stand-ins of characters gone from the scene go too (now and then: a map's crowd comes and goes). */
+    sweep(scene) {
+        const group = scene && scene.userData && scene.userData.rrCasterStandIns;
+        if (!group || (this._swept = (this._swept || 0) + 1) % 120) return;
+        for (const mesh of group.children.slice()) {
+            const root = mesh.userData.rrStandInFor;
+            // The crowd's pools share the group and belong to no one character (CasterCrowd keeps them): dropping
+            // one here disposed its buffers every 120 passes, and the next pass sent all of it again (68-125 MB,
+            // a 40-150 ms frame every two seconds on the owner's laptop, 2026-11-05).
+            if (!root) continue;
+            let attached = root; while (attached && attached.parent) attached = attached.parent;
+            if (attached === scene) continue;
+            group.remove(mesh);
+            mesh.geometry.dispose();
+            if (root && root.userData) delete root.userData.rrCasterStandIns;
+        }
+    },
+    /** In one face: the stand-ins of characters the face hid go with them. */
+    follow(live) {
+        let hidden = null;
+        for (const mesh of live) {
+            const root = mesh.userData.rrStandInFor;
+            if (mesh.visible && root && !root.visible) { mesh.visible = false; (hidden || (hidden = [])).push(mesh); }
+        }
+        return hidden;
+    },
+    unfollow(hidden) {
+        for (const mesh of hidden) mesh.visible = true;
+    }
+};
+
+/**
+ * Every moving caster in one draw per shadow face. Each part a face draws costs the main thread the same
+ * whatever its size (three's per-object work, then WebGL's checks and, on Windows, ANGLE's translation: about
+ * 19 us a draw on the owner's laptop), and a moving shadow row draws every caster in every face it stands in:
+ * a party of seven with worn gauntlets was 170-350 shadow draws a frame. Here the casters' shapes live in one
+ * vertex pool per depth material, bound to one skeleton made of their own bones (each with its own bind
+ * inverse, so every vertex lands where its own skin put it), and a face draws the characters it can see as
+ * ranges of that pool in one multi-draw call (WEBGL_multi_draw; without it, one plain draw per range under
+ * the one program setup). Taken in:
+ *  - CasterMerge's skinned stand-ins drawn with the plain shared depth material;
+ *  - its rigid stand-ins that ride a bone of a character's skeleton (a worn gauntlet), skinned to that bone;
+ *  - a lone skinned part with no group, at the level a shadow face draws a skin at (the coarsest, as
+ *    GeometryDetail.silhouetteShadows has it) or whole when it has none.
+ * Everything else draws itself as before: cut-outs, parts mid-expression (CasterMerge leaves them out),
+ * parts of a vehicle on its root, anything not yet in the pool (one character's shapes go in per pass, so a
+ * crowd arriving costs no frame). Lossless by construction: the same triangles, skins and depth material.
+ */
+Reactor3D.CasterCrowd = {
+    enabled: true,
+    // The most vertices taken into a pool in one pass; the rest wait (and draw themselves) for later passes.
+    APPEND_VERTICES: 120000,
+    // Passes an entry may go unused before its room is given back (to the next entry that fits in it).
+    UNUSED_PASSES: 240,
+    // A pool's first room, in vertices (and three indices a vertex).
+    START_VERTICES: 262144,
+    // How often (passes) a pool in use looks for entries gone.
+    SWEEP_EVERY: 60,
+    // The most indices one lone skinned shape may bring (a 150k-triangle actor whose shadow has no coarser level stays out).
+    MAX_ENTRY_INDICES: 120000,
+    _pools: new Map(),
+    _active: null,
+    _pending: null,
+
+    /** The context's draw call, taught to draw the pending ranges instead (once per context). */
+    install(gl) {
+        if (!gl || gl.__rrCrowdDraw) return;
+        const crowd = this, ext = gl.getExtension("WEBGL_multi_draw");
+        const draw = gl.drawElements;
+        gl.__rrCrowdDraw = true;
+        gl.drawElements = function(mode, count, type, offset) {
+            const ranges = crowd._pending;
+            if (!ranges) return draw.call(this, mode, count, type, offset);
+            crowd._pending = null;
+            if (ext) ext.multiDrawElementsWEBGL(mode, ranges.counts, 0, type, ranges.offsets, 0, ranges.n);
+            else for (let i = 0; i < ranges.n; i++) draw.call(this, mode, ranges.counts[i], type, ranges.offsets[i]);
+        };
+    },
+
+    /** The pool for one depth material: its mesh, skeleton and the entries in it. */
+    pool(material, scene) {
+        let pool = this._pools.get(material);
+        if (pool && pool.scene !== scene) { this.dispose(pool); pool = null; }
+        if (pool) return pool;
+        pool = { material, scene, entries: new Map(), vertices: 0, indices: 0, holes: 0, capV: 0, capI: 0, free: [],
+            geometry: null, mesh: null, bones: [], inverses: [], slots: new Map(), uses: new Map(), freeSlots: [], skeleton: null, dirtyBones: false,
+            ranges: { offsets: new Int32Array(64), counts: new Int32Array(64), n: 0 } };
+        this._pools.set(material, pool);
+        return pool;
+    },
+    dispose(pool) {
+        if (pool.mesh && pool.mesh.parent) pool.mesh.parent.remove(pool.mesh);
+        if (pool.geometry) pool.geometry.dispose();
+        if (pool.skeleton) pool.skeleton.dispose();
+        this._pools.delete(pool.material);
+    },
+    /** The pool's slot for bone `k` of `skeleton` (the same bone in two skeletons keeps each one's inverse). */
+    slot(pool, skeleton, k) {
+        let map = pool.slots.get(skeleton);
+        if (!map) pool.slots.set(skeleton, map = new Map());
+        let s = map.get(k);
+        if (s === undefined) {
+            // A slot given back by a skeleton whose last entry went (`sweep`) before a new one at the end.
+            s = pool.freeSlots.length ? pool.freeSlots.pop() : pool.bones.length;
+            pool.bones[s] = skeleton.bones[k];
+            pool.inverses[s] = skeleton.boneInverses[k].clone();
+            map.set(k, s);
+            pool.dirtyBones = true;
+        }
+        return s;
+    },
+    /** Room for `v` vertices and `i` indices more: a pool outgrown is made again at twice the size (all of it sent once). */
+    reserve(pool, v, i) {
+        if (pool.vertices + v <= pool.capV && pool.indices + i <= pool.capI) return;
+        // Room enough at first that a party goes in without the pool being made again (each time is one upload of all of it).
+        const capV = Math.max(this.START_VERTICES, pool.capV, (pool.vertices + v) * 2), capI = Math.max(this.START_VERTICES * 3, pool.capI, (pool.indices + i) * 2);
+        const old = pool.geometry, g = new THREE.BufferGeometry();
+        const position = new Float32Array(capV * 3), skinIndex = new Uint16Array(capV * 4), skinWeight = new Float32Array(capV * 4), index = new Uint32Array(capI);
+        if (old) {
+            position.set(old.attributes.position.array.subarray(0, pool.vertices * 3));
+            skinIndex.set(old.attributes.skinIndex.array.subarray(0, pool.vertices * 4));
+            skinWeight.set(old.attributes.skinWeight.array.subarray(0, pool.vertices * 4));
+            index.set(old.index.array.subarray(0, pool.indices));
+        }
+        g.setAttribute("position", new THREE.BufferAttribute(position, 3));
+        g.setAttribute("skinIndex", new THREE.BufferAttribute(skinIndex, 4));
+        g.setAttribute("skinWeight", new THREE.BufferAttribute(skinWeight, 4));
+        g.setIndex(new THREE.BufferAttribute(index, 1));
+        g.userData.rrCasterStandIn = true;
+        // A new buffer goes to the GPU whole on its first draw; ranges are only asked for once it has (`sent`).
+        pool.geometry = g; pool.capV = capV; pool.capI = capI; pool.sent = false;
+        if (pool.mesh) pool.mesh.geometry = g;
+        if (old) old.dispose();
+    },
+    /**
+     * One entry's shape into the pool. `source` is a geometry in its skin's bind space at the identity (a stand-in, or
+     * a part taken through its bind matrix), `skeleton` its skin, or, for a rigid piece, `bone` names the one bone of
+     * `skeleton` all its vertices follow and `toBind` takes its positions there.
+     */
+    append(pool, key, root, source, skeleton, bone, toBind) {
+        const p = source.attributes.position, idx = source.index, m = idx ? idx.count : p.count;
+        // A distance level is an index list over its model's whole buffer: only the vertices it uses are taken.
+        let used = null, n = p.count;
+        if (idx) {
+            const map = new Int32Array(p.count).fill(-1);
+            n = 0;
+            for (let j = 0; j < m; j++) { const k = idx.getX(j); if (map[k] < 0) map[k] = n++; }
+            used = map;
+        }
+        let v0, i0, room = null;
+        for (let r = 0; r < pool.free.length; r++) {
+            const block = pool.free[r];
+            if (block.vCount < n || block.iCount < m) continue;
+            room = block; pool.free.splice(r, 1);
+            v0 = block.vStart; i0 = block.iStart;
+            // What is left of the room stays free.
+            if (block.vCount > n || block.iCount > m) pool.free.push({ vStart: v0 + n, vCount: block.vCount - n, iStart: i0 + m, iCount: block.iCount - m });
+            pool.holes -= n;
+            break;
+        }
+        if (!room) { this.reserve(pool, n, m); v0 = pool.vertices; i0 = pool.indices; }
+        const g = pool.geometry;
+        const position = g.attributes.position.array, skinIndex = g.attributes.skinIndex.array, skinWeight = g.attributes.skinWeight.array, index = g.index.array;
+        const si = source.attributes.skinIndex, sw = source.attributes.skinWeight;
+        const at = this._at || (this._at = new THREE.Vector3());
+        const local = new Int32Array(Math.max(1, skeleton.bones.length)).fill(-1);
+        const slotOf = k => local[k] >= 0 ? local[k] : (local[k] = this.slot(pool, skeleton, k));
+        const rigidSlot = bone >= 0 ? slotOf(bone) : -1;
+        for (let src = 0; src < p.count; src++) {
+            const j = used ? used[src] : src;
+            if (j < 0) continue;
+            const o = v0 + j;
+            at.set(p.getX(src), p.getY(src), p.getZ(src));
+            if (toBind) at.applyMatrix4(toBind);
+            position[o * 3] = at.x; position[o * 3 + 1] = at.y; position[o * 3 + 2] = at.z;
+            if (rigidSlot >= 0) {
+                skinIndex[o * 4] = rigidSlot; skinIndex[o * 4 + 1] = 0; skinIndex[o * 4 + 2] = 0; skinIndex[o * 4 + 3] = 0;
+                skinWeight[o * 4] = 1; skinWeight[o * 4 + 1] = 0; skinWeight[o * 4 + 2] = 0; skinWeight[o * 4 + 3] = 0;
+            } else {
+                for (let c = 0; c < 4; c++) {
+                    const w = sw.getComponent(src, c);
+                    skinWeight[o * 4 + c] = w;
+                    skinIndex[o * 4 + c] = w > 0 ? slotOf(si.getComponent(src, c)) : 0;
+                }
+            }
+        }
+        if (idx) for (let j = 0; j < m; j++) index[i0 + j] = used[idx.getX(j)] + v0;
+        else for (let j = 0; j < m; j++) index[i0 + j] = v0 + j;
+        if (pool.sent) {
+            for (const name of ["position", "skinIndex", "skinWeight"]) {
+                const a = g.attributes[name];
+                a.addUpdateRange(v0 * a.itemSize, n * a.itemSize);
+                a.needsUpdate = true;
+            }
+            g.index.addUpdateRange(i0, m);
+            g.index.needsUpdate = true;
+        }
+        if (!room) { pool.vertices += n; pool.indices += m; }
+        const entry = { key, root, skeleton, vStart: v0, vCount: n, iStart: i0, iCount: m, seen: this._pass };
+        pool.entries.set(key, entry);
+        // How many entries read this skeleton's slots: the last one gone gives them back (`sweep`).
+        pool.uses.set(skeleton, (pool.uses.get(skeleton) || 0) + 1);
+        return entry;
+    },
+    /** The pool's mesh and skeleton, made again when bones joined. */
+    ready(pool) {
+        if (!pool.mesh) {
+            const mesh = new THREE.SkinnedMesh(pool.geometry, pool.material);
+            mesh.name = "caster-crowd";
+            mesh.matrixAutoUpdate = false;
+            mesh.matrixWorldAutoUpdate = false;
+            mesh.frustumCulled = false;
+            mesh.castShadow = true;
+            mesh.layers.set(Reactor3D.SHADOW_LAYER_DYNAMIC);
+            mesh.visible = false;
+            mesh.customDepthMaterial = pool.material;
+            const crowd = this;
+            mesh.onBeforeRender = function() { crowd._pending = mesh.userData.rrRanges && mesh.userData.rrRanges.n ? mesh.userData.rrRanges : null; };
+            mesh.onAfterRender = function() { crowd._pending = null; pool.sent = true; };
+            pool.mesh = mesh;
+        }
+        if (pool.mesh.parent !== Reactor3D.CasterMerge.group(pool.scene)) Reactor3D.CasterMerge.group(pool.scene).add(pool.mesh);
+        if (pool.dirtyBones || !pool.skeleton) {
+            const old = pool.skeleton;
+            pool.skeleton = new THREE.Skeleton(pool.bones.slice(), pool.inverses.map(m => m.clone()));
+            if (Reactor3D.SkeletonUpdates && Reactor3D.SkeletonUpdates.install) Reactor3D.SkeletonUpdates.install(pool.skeleton);
+            pool.mesh.bindMode = THREE.AttachedBindMode;
+            pool.mesh.bind(pool.skeleton, new THREE.Matrix4());
+            pool.dirtyBones = false;
+            if (old) old.dispose();
+        }
+        pool.mesh.matrixWorld.identity();
+        pool.mesh.bindMatrixInverse.identity();
+        return pool.mesh;
+    },
+    /** Rooms of entries gone this long go back; a pool mostly holes is packed again from what is left. */
+    sweep(pool) {
+        for (const [key, entry] of pool.entries) {
+            if (this._pass - entry.seen <= this.UNUSED_PASSES) continue;
+            pool.entries.delete(key);
+            pool.holes += entry.vCount;
+            // Its room is drawn by no range from now on; the next entry that fits takes it.
+            pool.free.push({ vStart: entry.vStart, vCount: entry.vCount, iStart: entry.iStart, iCount: entry.iCount });
+            // Its skeleton's bones go back with the skeleton's last entry: only vertices in freed rooms name those
+            // slots, and no range draws them. Kept, every character that ever cast was multiplied each frame the
+            // pool drew, and its model was held for as long as the pool lived.
+            const left = (pool.uses.get(entry.skeleton) || 0) - 1;
+            if (left > 0) { pool.uses.set(entry.skeleton, left); continue; }
+            pool.uses.delete(entry.skeleton);
+            const slots = pool.slots.get(entry.skeleton);
+            if (!slots) continue;
+            for (const s of slots.values()) { pool.bones[s] = this.restBone(); pool.freeSlots.push(s); }
+            pool.slots.delete(entry.skeleton);
+            pool.dirtyBones = true;
+        }
+        if (!pool.entries.size) { this.dispose(pool); return false; }
+        return true;
+    },
+    /** What stands in a slot nobody reads: one bone that never moves. */
+    restBone() {
+        return this._restBone || (this._restBone = new THREE.Bone());
+    },
+
+    /**
+     * Before a pass's moving rows: takes in what it can of `live` (CasterMerge's stand-ins shown this pass) and of
+     * the roots' lone skinned parts, hides what the pools draw, and shows the pools. Returns what `end` puts back.
+     */
+    begin(scene, live, roots, shadows, renderer) {
+        if (!this.enabled || !scene || typeof THREE === "undefined") return null;
+        const gl = renderer && renderer.getContext ? renderer.getContext() : null;
+        if (!gl || typeof gl.drawElements !== "function") return null;
+        this.install(gl);
+        this._pass = (this._pass || 0) + 1;
+        const state = { hidden: [], used: new Map(), budget: this.APPEND_VERTICES, pools: [] };
+        const use = (pool, entry, hide) => {
+            entry.seen = this._pass;
+            let list = state.used.get(pool);
+            if (!list) state.used.set(pool, list = []);
+            list.push(entry);
+            hide.visible = false;
+            state.hidden.push(hide);
+        };
+        const take = (material, key, root, hide, make, under) => {
+            const pool = this.pool(material, scene);
+            let entry = pool.entries.get(key);
+            if (!entry) {
+                if (state.budget <= 0) return;
+                entry = make(pool);
+                if (!entry) return;
+                state.budget -= entry.vCount;
+            }
+            entry.under = under || hide;
+            use(pool, entry, hide);
+        };
+        const bit = 1 << Reactor3D.SHADOW_LAYER_DYNAMIC;
+        for (const mesh of live || []) {
+            if (!mesh.visible) continue;
+            const root = mesh.userData.rrStandInFor, caster = mesh.material;
+            if (!root || !caster || !caster.__rrPooled) continue;
+            if (mesh.isSkinnedMesh) {
+                take(caster, mesh, root, mesh, pool => this.append(pool, mesh, root, mesh.geometry, mesh.skeleton, -1, null), root);
+            } else {
+                // A rigid stand-in: its positions are in its anchor's frame, so the anchor is its one bone, at the identity.
+                const record = root.userData.rrCasterStandIns, entry = record && record.list.find(e => e.mesh === mesh);
+                const anchor = entry && entry.anchor;
+                if (!anchor) continue;
+                take(this.skinnedTwin(caster, shadows), mesh, root, mesh, pool => this.append(pool, mesh, root, mesh.geometry, this.selfSkin(anchor), 0, null), anchor);
+            }
+        }
+        // Lone skinned parts (a Database character drawn as one skin) at the level their shadow takes.
+        const merged = Reactor3D.CasterMerge, detail = Reactor3D.GeometryDetail;
+        for (const root of roots || []) {
+            if (!root || !root.parent || !root.visible || root.userData.rrShadowCasts === false) continue;
+            const record = root.userData.rrCasterStandIns, joined = record && record.parts;
+            const each = part => {
+                if (!part.isMesh || part.isInstancedMesh || part.isBatchedMesh || !part.visible || !part.castShadow || (joined && joined.has(part)) || !(part.layers.mask & bit)) return;
+                if (part.userData.rrCasterStandIn || !merged.shown(part, root)) return;
+                const caster = part.customDepthMaterial;
+                if (!caster || !caster.__rrPooled || Array.isArray(part.material)) return;
+                if (!part.isSkinnedMesh) {
+                    // A rigid part (a piece that moves on its own, a lone prop part): its own bone, its positions its own.
+                    const g = part.geometry, position = g && g.attributes.position;
+                    if (!position || g.groups.length || merged.hasShapes(part)) return;
+                    const count = g.index ? g.index.count : position.count;
+                    if (g.drawRange.start !== 0 || g.drawRange.count < count) return;
+                    const state1 = detail && detail._states && detail._states.get(g);
+                    if (state1 && state1.levels && state1.levels.length) return;   // its level is picked per face
+                    take(this.skinnedTwin(caster, shadows), part, root, part, pool => this.append(pool, part, root, g, this.selfSkin(part), 0, null));
+                    return;
+                }
+                // Expression shapes join while they rest, as CasterMerge's groups do: the shape then is the base one.
+                if (merged.hasShapes(part) && !merged.resting(part)) return;
+                if (part.bindMode !== THREE.AttachedBindMode || !part.skeleton) return;
+                let g = part.geometry;
+                const state0 = detail && detail._states && detail._states.get(g);
+                if (state0 && state0.levels && state0.levels.length) {
+                    // Drawn at a level in the faces: only the coarsest (a skin's silhouette), and only once it is made.
+                    if (!detail.silhouetteShadows || !detail.skinned || part.userData.rrNoDetail || !detail.fresh(state0)) return;
+                    g = state0.levels[state0.levels.length - 1].geometry;
+                }
+                const position = g.attributes.position;
+                if (!position || !g.attributes.skinIndex || !g.attributes.skinWeight || g.groups.length) return;
+                // A very large shape draws itself: copying it into the pool costs more than the draw it saves.
+                if ((g.index ? g.index.count : position.count) > this.MAX_ENTRY_INDICES) return;
+                const count = g.index ? g.index.count : position.count;
+                if (g.drawRange.start !== 0 || g.drawRange.count < count) return;
+                const keys = part.userData.rrCrowdKeys || (part.userData.rrCrowdKeys = new Map());
+                let key = keys.get(g);
+                if (!key) keys.set(g, key = { part, geometry: g });
+                const identity = merged.isIdentity(part.bindMatrix);
+                // A part with shapes casts with its layout's material; the pool's copy has none, so it takes the plain one.
+                take(merged.hasShapes(part) ? shadows.casterMaterialFor(part.material, true) : caster, key, root, part,
+                    pool => this.append(pool, key, root, g, part.skeleton, -1, identity ? null : part.bindMatrix));
+            };
+            // Its meshes as this pass's scan walked them (the same ones in the same order), else walked here.
+            const meshes = merged.scanned(root);
+            if (meshes) for (let i = 0; i < meshes.length; i++) each(meshes[i]);
+            else root.traverse(each);
+        }
+        for (const [pool, entries] of state.used) {
+            if (!entries.length) continue;
+            const mesh = this.ready(pool);
+            mesh.visible = true;
+            pool.used = entries.length > 1 ? entries.sort((a, b) => a.iStart - b.iStart) : entries;
+            this.ranges(pool, pool.used, null);
+            state.pools.push(pool);
+        }
+        // Pools not drawn this pass stay hidden; every SWEEP_EVERY passes each pool of the scene gives back the rooms of
+        // entries long unused (after this pass marked what it used).
+        const sweeping = this._pass % this.SWEEP_EVERY === 0;
+        for (const pool of [...this._pools.values()]) {
+            const used = state.used.has(pool) && pool.scene === scene;
+            if (!used && pool.mesh) pool.mesh.visible = false;
+            if (pool.scene === scene && (sweeping || !used)) this.sweep(pool);
+        }
+        this._active = state;
+        return state;
+    },
+    /** The pools' ranges for one face: the entries whose characters the face did not cull (all, with `hidden` null). */
+    face() {
+        const state = this._active;
+        if (!state) return null;
+        let off = null;
+        for (const pool of state.pools) {
+            const n = this.ranges(pool, pool.used, true);
+            if (!n && pool.mesh.visible) { pool.mesh.visible = false; (off || (off = [])).push(pool.mesh); }
+        }
+        return off;
+    },
+    unface(off) {
+        if (off) for (const mesh of off) mesh.visible = true;
+    },
+    ranges(pool, sorted, culled) {
+        let r = pool.ranges;
+        if (r.offsets.length < sorted.length) r = pool.ranges = { offsets: new Int32Array(sorted.length * 2), counts: new Int32Array(sorted.length * 2), n: 0 };
+        let n = 0, end = -1;
+        const carrier = culled ? Reactor3D.Shadows._carrierHidden : null;
+        for (const e of sorted) {
+            if (culled && !e.root.visible) continue;
+            if (carrier && this.under(e.under, carrier)) continue;
+            // Next to the last range: one longer range.
+            if (n && e.iStart === end) { r.counts[n - 1] += e.iCount; end += e.iCount; continue; }
+            r.offsets[n] = e.iStart * 4; r.counts[n] = e.iCount; n++;
+            end = e.iStart + e.iCount;
+        }
+        r.n = n;
+        pool.mesh.userData.rrRanges = r;
+        return n;
+    },
+    /** After the pass: what the pools drew is shown again, and the pools hide. */
+    end(state) {
+        if (!state) return;
+        for (const object of state.hidden) object.visible = true;
+        for (const pool of state.pools) if (pool.mesh) pool.mesh.visible = false;
+        this._active = null;
+        this._pending = null;
+    },
+    /** A rigid object as a skin of one bone, itself, at the identity: three's skinning reads only a bone's world matrix. */
+    selfSkin(object) {
+        return object.userData.rrCrowdSkin || (object.userData.rrCrowdSkin = { bones: [object], boneInverses: [new THREE.Matrix4()] });
+    },
+    /** The skinned depth material of the same side as a rigid one (the pools draw everything as skin). */
+    skinnedTwin(caster, shadows) {
+        const side = caster.side === THREE.BackSide ? THREE.FrontSide : caster.side === THREE.FrontSide ? THREE.BackSide : caster.side;
+        return shadows.casterMaterialFor({ side }, true);
+    },
+    /** Whether `object` is `ancestor` or under it. */
+    under(object, ancestor) {
+        for (let node = object; node; node = node.parent) if (node === ancestor) return true;
+        return false;
+    }
+};
+
 Reactor3D.SHADOW_QUALITY = {
-    full: { slots: 8, dynamicSlots: 3, size: 512, taps: 5, dynamicTriangles: 600000, staticPerFrame: 2, dynamicPerFrame: 2, dynamicInterval: 1, sunSize: 1024, sunSpans: [24, 96], dynamicRowsWithSun: true },
-    weak: { slots: 4, dynamicSlots: 2, size: 256, taps: 1, dynamicTriangles: 200000, staticPerFrame: 1, dynamicPerFrame: 1, dynamicInterval: 2, sunSize: 768, sunSpans: [16, 64], dynamicRowsWithSun: false }
+    // One moving-caster row on the full tier (owner, 2026-11-05: "shadows just have to be roughly plausible, performance is
+    // more important"): characters cast moving shadows from the light that matters most to the player; every light keeps
+    // its static row. Three rows were ~10 faces and ~1.9 ms a frame while walking North Haven's square on the laptop (one:
+    // 14.1 -> 11.6 ms a frame); a single row drawn every frame cannot show the stale-row flicker that two of three did.
+    full: { slots: 8, dynamicSlots: 1, size: 512, taps: 5, dynamicTriangles: 600000, staticPerFrame: 2, dynamicPerFrame: 1, dynamicInterval: 1, sunSize: 1024, sunSpans: [24, 96], dynamicRowsWithSun: true },
+    weak: { slots: 4, dynamicSlots: 1, size: 256, taps: 1, dynamicTriangles: 200000, staticPerFrame: 1, dynamicPerFrame: 1, dynamicInterval: 2, sunSize: 768, sunSpans: [16, 64], dynamicRowsWithSun: false }
 };
 // A CPU-limited Auto profile retains character shadows. Keep the atlas and
 // shader layout, but spend less on casters and redraw moving rows less often.
 Reactor3D.SHADOW_QUALITY.fullCpu = Object.assign({}, Reactor3D.SHADOW_QUALITY.full, {
     dynamicTriangles: 300000, staticPerFrame: 1, dynamicPerFrame: 1, dynamicInterval: 2
+});
+// The Quality levels' "lite" shadows on the weak tier: the same atlas and shader, moving casters redrawn every
+// third frame and fewer of them (Reactor3D.Quality.shadowMode).
+Reactor3D.SHADOW_QUALITY.weakLite = Object.assign({}, Reactor3D.SHADOW_QUALITY.weak, {
+    dynamicTriangles: 120000, dynamicInterval: 3
 });
 /**
  * A sun casts along one direction through an orthographic map that follows
@@ -3705,6 +5239,8 @@ Reactor3D.SUN_SHADOW_RECENTER = 0.125;
 Reactor3D.SUN_SHADOW_TURN = 0.0175;
 /** How far the cascade's box reaches toward the sun and away from it from the focus, in tiles. */
 Reactor3D.SUN_SHADOW_REACH = 64;
+/** How far ahead of the eye each cascade is laid, as a share of its span (turns of up to about 35 degrees lay none again). */
+Reactor3D.SUN_SHADOW_AHEAD = 0.2;
 /**
  * The compare offset toward the sun: this many texels of the cascade, and
  * never less than `SUN_SHADOW_BIAS_MIN` tiles. The receiver also steps off
@@ -3713,6 +5249,22 @@ Reactor3D.SUN_SHADOW_REACH = 64;
  * (SHADOW_SLOPE_BIAS), so the depth offset itself stays small and shadows
  * stay under what casts them.
  */
+/**
+ * How far a face must turn toward a casting sun, as the cosine of its angle to
+ * it, before the sun reaches it in full; turned away, it takes none. Without
+ * this the side of a building away from the sun was lit except where the
+ * shadow map happened to cover it: a band under a gable's roof edge, lit
+ * plaster above it (2026-11-07).
+ */
+Reactor3D.SUN_FACING = 0.1; // building pieces only (RR_SUN_FACING); 0 turns it off
+/**
+ * The side the sun draws building pieces from, for its cascades only: both, so
+ * what is stored is the face nearest the sun and an overhang's shade starts at
+ * the wall it overhangs. Faces turned away from the sun take none of it
+ * (SUN_FACING), so they need no back-face trick against shading themselves.
+ * null keeps the lamps' rule (back faces).
+ */
+Reactor3D.SUN_CASTER_SIDE = 2; // THREE.DoubleSide
 Reactor3D.SUN_SHADOW_BIAS_TEXELS = 0.75;
 Reactor3D.SUN_SHADOW_BIAS_MIN = 0.02;
 Reactor3D.SUN_SHADOW_NORMAL_OFFSET = 1.5;
@@ -3885,8 +5437,6 @@ Reactor3D.Shadows = {
     _generation: 0,
     _seenGeneration: NaN,
     _seenLodSwaps: NaN,
-    _staticHash: NaN,
-    _dynamicHash: NaN,
     _casting: null,
     _castChanges: [],
     _frame: 0,
@@ -3898,9 +5448,9 @@ Reactor3D.Shadows = {
 
     quality() {
         if (this._quality) return this._quality;
-        if (Reactor3D.isWeakGpu()) return Reactor3D.SHADOW_QUALITY.weak;
-        const Q = Reactor3D.Quality;
-        return Reactor3D.SHADOW_QUALITY[Q && Q.enabled !== false && Q.setting() === "auto" && Q.c >= 2 ? "fullCpu" : "full"];
+        const Q = Reactor3D.Quality, lite = !!(Q && Q.shadowMode && Q.shadowMode() === "lite");
+        if (Reactor3D.isWeakGpu()) return Reactor3D.SHADOW_QUALITY[lite ? "weakLite" : "weak"];
+        return Reactor3D.SHADOW_QUALITY[lite ? "fullCpu" : "full"];
     },
 
     active() {
@@ -3917,9 +5467,43 @@ Reactor3D.Shadows = {
         return this._active && (renderer == null || renderer === this._renderer);
     },
 
-    /** Something in the static rows changed in a way the transform hash cannot see. */
-    invalidate() {
-        this._generation++;
+    /**
+     * Something static changed and its shadow must be drawn again. Named (an object, a point `{ x, y, z, r }`, or a
+     * list of them), only the rows and the sun's cascades that reach it are; unnamed, every one. While the party
+     * rode, the plants and batches laid as it went asked for every one, every frame: the near cascade was drawn
+     * again each time and the far one waited, so trees ahead had no shadow until they were near (2026-11-07).
+     */
+    invalidate(what) {
+        if (!what) { this._generation++; return; }
+        const list = this._invalidPoints || (this._invalidPoints = []);
+        const add = item => { const point = this.pointOf(item); if (point) list.push(point); else this._generation++; };
+        if (Array.isArray(what)) for (const item of what) add(item); else add(what);
+    },
+
+    /** Where an object or a point stands, as the change lists keep places: `{ x, y, z, r }`; null when it cannot be told. */
+    pointOf(item) {
+        if (!item) return null;
+        if (item.isObject3D) {
+            if (item.updateMatrixWorld) item.updateMatrixWorld(false);
+            const geometry = item.geometry, e = item.matrixWorld.elements;
+            // The whole of it: an instanced chunk's own box (set to its plants' reach) or an instanced mesh's
+            // sphere, never the one template plant's.
+            let sphere = null;
+            if (item.isInstancedMesh) { if (!item.boundingSphere && item.computeBoundingSphere) item.computeBoundingSphere(); sphere = item.boundingSphere || null; }
+            else if (geometry && geometry.boundingBox && !geometry.boundingBox.isEmpty()) sphere = geometry.boundingBox.getBoundingSphere(this._pointSphere || (this._pointSphere = new THREE.Sphere()));
+            else if (geometry && !geometry.isInstancedBufferGeometry) {
+                if (!geometry.boundingSphere && geometry.computeBoundingSphere) geometry.computeBoundingSphere();
+                sphere = geometry.boundingSphere;
+            }
+            if (sphere && Number.isFinite(sphere.radius)) {
+                const c = sphere.center, x = c.x, y = c.y, z = c.z;
+                const scale = Math.max(Math.hypot(e[0], e[1], e[2]), Math.hypot(e[4], e[5], e[6]), Math.hypot(e[8], e[9], e[10]));
+                return { x: e[0] * x + e[4] * y + e[8] * z + e[12], y: e[1] * x + e[5] * y + e[9] * z + e[13], z: e[2] * x + e[6] * y + e[10] * z + e[14], r: sphere.radius * scale };
+            }
+            return null;
+        }
+        if (Number.isFinite(item.x) && Number.isFinite(item.z)) return { x: item.x, y: Number(item.y) || 0, z: item.z, r: Number(item.r) || 0 };
+        return null;
     },
 
     /**
@@ -3928,9 +5512,61 @@ Reactor3D.Shadows = {
      * them, so a roof cut away casts no shadow for even a frame and one put back casts at once. A
      * frame with the cut unchanged draws nothing more.
      */
-    cutChanged() {
+    cutChanged(region) {
+        // A change with a region is drawn at the rows' own pace when `CUT_RUSH` is false (a roof's shadow may outlast it a few
+        // frames: walking about North Haven's square passed under cover about once a second, each a frame of up to 48 faces).
+        if (!region || !this.localCut || this.CUT_RUSH) this._rush = true;
+        // Where the cut changed (the boxes it left and entered, from its plane up): only the rows and cascades that reach
+        // it are drawn again, at once, and only the lights that reach it change what they hold. Walking about North
+        // Haven's square the player passed under cover about once a second, and every static row (up to 48 faces) was
+        // drawn again in one frame and the baked light volume thrown away (2026-11-05). Without one, all of them, as before.
+        if (region && this.localCut) {
+            (this._cutPoints || (this._cutPoints = [])).push(region);
+            const cut = this._cutSerials || (this._cutSerials = new Map());
+            const touched = new Set();
+            const touch = (id, x, y, z, radius) => {
+                const reach = (radius || 0) + region.r, dx = x - region.x, dy = y - region.y, dz = z - region.z;
+                if (!touched.has(id) && dx * dx + dy * dy + dz * dz <= reach * reach) { touched.add(id); cut.set(id, (cut.get(id) || 0) + 1); }
+            };
+            for (const c of this._candidates || []) touch(c.id, c.x, c.y, c.z, c.radius);
+            // And every light the volume caches, packed this frame or not.
+            const records = Reactor3D.LightVolume && Reactor3D.LightVolume._records;
+            if (records) for (const [id, r] of records) if (r.packed) touch(id, r.packed.pos[0], r.packed.pos[1], r.packed.pos[2], r.packed.pos[3]);
+            return;
+        }
         this._generation++;
-        this._rush = true;
+        this._cutEpoch = (this._cutEpoch || 0) + 1;
+    },
+    // The kill switch: false draws every static row again on any change of the cut, as before.
+    localCut: true,
+    // True draws the rows a local cut reaches in the frame it changes (no shadow of a cut roof for even a frame).
+    CUT_RUSH: false,
+    /** How often the cut changed within a light's reach (and anywhere, for a change with no region). */
+    cutSerial(id) {
+        return (this._cutEpoch || 0) + "." + ((this._cutSerials && this._cutSerials.get(id)) || 0);
+    },
+
+    /**
+     * What a light's static shadow holds, for whatever caches its light (LightVolume): its origin and reach (the
+     * row's key), how often it was drawn again there, and the storey cut. Not which row holds it nor when that
+     * row was drawn: in North Haven's square 21 lamps share 8 rows, a lamp moves between rows as the player walks
+     * (33 times in 6 s, 2026-11-05), and each move threw the baked light volume away.
+     */
+    noteStaticDrawn(id, key, redrawn) {
+        const drawn = this._staticDrawn || (this._staticDrawn = new Map());
+        const last = drawn.get(id);
+        const serial = last ? (last.key === key ? last.serial + (redrawn ? 1 : 0) : last.serial + 1) : 0;
+        drawn.set(id, { key, serial });
+    },
+    staticContentKey(id, tile) {
+        const d = this._staticDrawn && this._staticDrawn.get(id);
+        const serial = d && d.key === tile.key ? d.serial : 0, epoch = this._cutEpoch || 0, cut = (this._cutSerials && this._cutSerials.get(id)) || 0;
+        // The text is kept on the row while what it is made of stands (asked for every held light every frame).
+        const kept = tile.contentKey;
+        if (kept && kept.id === id && kept.key === tile.key && kept.serial === serial && kept.epoch === epoch && kept.cut === cut) return kept.text;
+        const text = "lit:" + tile.key + ":" + serial + ":" + this.cutSerial(id);
+        tile.contentKey = { id, key: tile.key, serial, epoch, cut, text };
+        return text;
     },
 
     /**
@@ -3964,7 +5600,7 @@ Reactor3D.Shadows = {
             child.castShadow = true;
             child.layers.enable(layer);
             child.layers.disable(other);
-            child.customDepthMaterial = this.casterMaterialFor(child.material, !!child.isSkinnedMesh);
+            child.customDepthMaterial = this.casterMaterialFor(child.material, !!child.isSkinnedMesh, child.geometry);
         });
         root.userData.reactorShadowCaster = dynamic ? "dynamic" : "static";
         (dynamic ? this._dynamic : this._static).add(root);
@@ -3983,7 +5619,7 @@ Reactor3D.Shadows = {
      * the back, as three's shadow pass draws them, so a surface does not
      * shade itself into acne.
      */
-    casterMaterialFor(material, skinned) {
+    casterMaterialFor(material, skinned, geometry) {
         const first = Array.isArray(material) ? material[0] : material;
         const side = first && first.side !== undefined ? first.side : THREE.FrontSide;
         const flipped = side === THREE.FrontSide ? THREE.BackSide : side === THREE.BackSide ? THREE.FrontSide : THREE.DoubleSide;
@@ -4016,7 +5652,9 @@ Reactor3D.Shadows = {
             }
             return pool[key];
         }
-        if (first && first.alphaTest > 0) {
+        // A merged character's cut-out parts (Reactor3D.LayeredParts) cast whole: their pictures are layers the depth
+        // material cannot read, and they are seams, stitching and frayed edges lying on the garment they cast onto.
+        if (first && first.alphaTest > 0 && !(first.userData && first.userData.rrLayers)) {
             if (!first.__reactorCasterMaterial) {
                 const cutout = make();
                 cutout.__rrCutout = true;
@@ -4026,9 +5664,15 @@ Reactor3D.Shadows = {
             }
             return first.__reactorCasterMaterial;
         }
+        // Keyed by the geometry's morph layout too: three works a material's program out again whenever the draw before
+        // it had another morph count (a face with expression shapes, then a part without), and a shared depth material
+        // alternated that way on most draws of a row. A merged stand-in (no shapes) takes the plain one.
+        const morph = geometry && geometry.morphAttributes, shapes = morph && (morph.position || morph.normal || morph.color);
+        const layout = shapes && shapes.length ? "|m" + shapes.length + (morph.position ? "p" : "") + (morph.normal ? "n" : "") + (morph.color ? "c" : "") : "";
         const pool = this._casterMaterials || (this._casterMaterials = {});
-        const key = (skinned ? "skinned" : "rigid") + flipped;
-        return pool[key] || (pool[key] = make());
+        const key = (skinned ? "skinned" : "rigid") + flipped + layout;
+        if (!pool[key]) { pool[key] = make(); pool[key].__rrPooled = true; }
+        return pool[key];
     },
 
     /** This frame's lights that may cast, from `syncVolumeLights`. */
@@ -4231,9 +5875,7 @@ Reactor3D.Shadows = {
         this._sentinel = null;
         this._pending = null;
         this._renderer = null;
-        this._staticHash = NaN;
         // The rows are gone, so nothing may be judged unchanged against them.
-        this._dynamicHash = NaN;
         this._seenGeneration = NaN;
         this._seenLodSwaps = NaN;
         for (const root of this._static) delete root.userData.rrShadowHash;
@@ -4251,7 +5893,6 @@ Reactor3D.Shadows = {
         this._dynamic.clear();
         this._casting = null;
         this._castChanges = [];
-        this._dynamicHash = NaN;
         this._candidates = [];
         this._active = false;
         this.backlog = 0;
@@ -4270,13 +5911,6 @@ Reactor3D.Shadows = {
             const mats = object.material ? (Array.isArray(object.material) ? object.material : [object.material]) : [];
             for (const mat of mats) if (mat && mat.__reactorLit) (mat.__rrTwinOf || mat).needsUpdate = true;
         });
-    },
-
-    /** A number that changes when a static root moves, hides, or appears. */
-    _staticHashOf(root) {
-        if (!root.visible) return 0.11;
-        const e = root.matrixWorld.elements;
-        return e[12] * 1.7 + e[13] * 2.3 + e[14] * 3.1 + e[0] * 0.7 + e[5] * 1.1 + e[10] * 1.3 + e[1] * 0.3 + e[8] * 0.5 + 1;
     },
 
     /**
@@ -4340,8 +5974,8 @@ Reactor3D.Shadows = {
             if (dynamic) {
                 if (!this._dynamicMoved(root)) continue;
             } else {
-                // `_staticHashOf`, worked out here: asked of every static caster each frame, a number
-                // handed back from a call is a new heap object.
+                // A number that changes when a static root moves, hides or appears, worked out here: asked
+                // of every static caster each frame, a number handed back from a call is a new heap object.
                 // Kept in a one-number array: a number read from a userData (each of its own shape) is a
                 // new heap object per read, and every static caster is read each frame.
                 const m = root.matrixWorld.elements;
@@ -4362,6 +5996,8 @@ Reactor3D.Shadows = {
 
     _changedStatics() {
         const points = this._changedRoots(this._static, false);
+        if (this._cutPoints && this._cutPoints.length) { for (const p of this._cutPoints) points.push(p); this._cutPoints.length = 0; }
+        if (this._invalidPoints && this._invalidPoints.length) { for (const p of this._invalidPoints) points.push(p); this._invalidPoints.length = 0; }
         // A distance-level swap in the view is not a change here: static rows
         // are always drawn at each model's coarsest level (`withOriginal`),
         // whatever level the view shows. Counting swaps re-rendered every
@@ -4446,7 +6082,9 @@ Reactor3D.Shadows = {
         const store = this._smooth || (this._smooth = new Map());
         const entry = store.get(candidate.id);
         const value = entry === undefined ? now : entry.value + (now - entry.value) * rate;
-        store.set(candidate.id, { value, frame: this._frame });
+        // (Its record is written in place: one was made for every light on offer every frame.)
+        if (entry === undefined) store.set(candidate.id, { value, frame: this._frame });
+        else { entry.value = value; entry.frame = this._frame; }
         if (store.size > this._candidates.length * 2 + 8) {
             for (const [id, kept] of store) if (kept.frame !== this._frame) store.delete(id);
         }
@@ -4469,11 +6107,6 @@ Reactor3D.Shadows = {
     _staticChanged() {
         const change = this._changedStatics();
         return change.all || change.points.length > 0;
-    },
-
-    /** A casting character moved or animated since the last look. */
-    _dynamicChanged() {
-        return this._changedDynamics().points.length > 0;
     },
 
     /**
@@ -4517,18 +6150,6 @@ Reactor3D.Shadows = {
         return first ? { x: first.x, y: first.y, z: first.z } : null;
     },
 
-    /**
-     * A root's triangles, cached against the distance-level counter so a
-     * model that swapped its level is counted again.
-     */
-    /**
-     * What a caster costs a row: the triangles it draws into a face. Shadow
-     * faces draw each caster at the simplified level their resolution
-     * allows (`GeometryDetail.shadowLevel`), so that level is counted, seen
-     * from the nearest light that may cast (`distance`, whole tiles), not
-     * the full model: counted whole, a 149k-triangle party filled the weak
-     * tier's budget with its leader, and the followers cast no shadow.
-     */
     /** Whether a caster is a skinned character (whose shadow is its outline). */
     _isCharacter(root) {
         const data = root.userData || (root.userData = {});
@@ -4540,10 +6161,24 @@ Reactor3D.Shadows = {
         return data.rrShadowCharacter;
     },
 
+    /**
+     * What a caster costs a row: the triangles it draws into a face. Shadow
+     * faces draw each caster at the simplified level their resolution
+     * allows (`GeometryDetail.shadowLevel`), so that level is counted, seen
+     * from the nearest light that may cast (`distance`, whole tiles), not
+     * the full model: counted whole, a 149k-triangle party filled the weak
+     * tier's budget with its leader, and the followers cast no shadow. Kept
+     * on the root against its own distance level, so a model that swapped
+     * its level is counted again.
+     */
     _casterTriangles(root, distance = Reactor3D.SHADOW_BUDGET_DISTANCE) {
         const data = root.userData || (root.userData = {});
-        const detail = Reactor3D.GeometryDetail, stamp = Reactor3D._lodSwaps + "/" + (detail ? detail.levelsReady : 0) + "/" + distance;
-        if (data.rrShadowTris !== undefined && data.rrShadowTrisAt === stamp) return data.rrShadowTris;
+        // Kept by this root's own level (pickLod's `lodLevel`), not by the count of every model's swaps: with that, one
+        // body changing its level anywhere had every caster's tree walked again, in a crowd every frame (120 bodies:
+        // 2.3 ms of each frame, 2026-11-10).
+        // (Three numbers compared in place; as one text they were a string made for every caster ranked, every frame.)
+        const detail = Reactor3D.GeometryDetail, lod = data.lodLevel || 0, ready = detail ? detail.levelsReady : 0;
+        if (data.rrShadowTris !== undefined && data.rrShadowTrisLod === lod && data.rrShadowTrisReady === ready && data.rrShadowTrisAt === distance) return data.rrShadowTris;
         let total = 0;
         if (detail && detail.shadowTriangles) total = detail.shadowTriangles(root, this.quality().size, distance, Reactor3D.SHADOW_NEAR);
         else root.traverse(child => {
@@ -4554,7 +6189,7 @@ Reactor3D.Shadows = {
             total += (index ? index.count : (position ? position.count : 0)) / 3;
         });
         data.rrShadowTris = total;
-        data.rrShadowTrisAt = stamp;
+        data.rrShadowTrisLod = lod; data.rrShadowTrisReady = ready; data.rrShadowTrisAt = distance;
         return total;
     },
 
@@ -4646,6 +6281,10 @@ Reactor3D.Shadows = {
     _setCasts(root, on) {
         const layer = Reactor3D.SHADOW_LAYER_DYNAMIC;
         const was = root.userData.rrShadowCasts;
+        // Already as asked, and no caster marked since (markCaster turns the layer on as it registers one, and counts
+        // in `_generation`): its meshes' layers stand. Every root the budget refused was walked again each frame.
+        if (was === on && root.userData.rrShadowCastsAt === this._generation) return;
+        root.userData.rrShadowCastsAt = this._generation;
         root.traverse(child => {
             if (!child.isMesh) return;
             if (on) child.layers.enable(layer);
@@ -5049,9 +6688,9 @@ Reactor3D.Shadows = {
             state.up = [dy * rz - dz * ry, dz * rx - dx * rz, dx * ry - dy * rx];
         }
         const D = state.dir, R = state.right, U = state.up, band = this._atlas.band;
-        const fa = focus.x * R[0] + focus.y * R[1] + focus.z * R[2];
-        const fb = focus.x * U[0] + focus.y * U[1] + focus.z * U[2];
-        const fc = focus.x * D[0] + focus.y * D[1] + focus.z * D[2];
+        // Each cascade is laid a share of its span ahead of the eye along the ground (SUN_SHADOW_AHEAD), not round
+        // the party: the half behind the camera was shadows nobody looked at, and trees ahead lacked them.
+        const ahead = this._sunAhead();
         const recenter = Reactor3D.SUN_SHADOW_RECENTER, reach = Reactor3D.SUN_SHADOW_REACH;
         // Kept on the state: read by this frame's flush, filled again by the next frame's plan.
         const jobs = state.jobs || (state.jobs = { statics: [], dynamics: [] });
@@ -5059,6 +6698,11 @@ Reactor3D.Shadows = {
         jobs.dynamics.length = 0;
         for (let k = 0; k < state.cascades.length; k++) {
             const cascade = state.cascades[k], texel = cascade.span / band, pose = cascade.pose;
+            const shift = ahead ? Reactor3D.SUN_SHADOW_AHEAD * cascade.span : 0;
+            const px = focus.x + (ahead ? ahead[0] * shift : 0), pz = focus.z + (ahead ? ahead[1] * shift : 0);
+            const fa = px * R[0] + focus.y * R[1] + pz * R[2];
+            const fb = px * U[0] + focus.y * U[1] + pz * U[2];
+            const fc = px * D[0] + focus.y * D[1] + pz * D[2];
             const strayed = !cascade.valid || !pose || pose.dir !== D || Math.abs(fa - pose.a) > cascade.span * recenter
                 || Math.abs(fb - pose.b) > cascade.span * recenter || Math.abs(fc - pose.c) > reach * 0.25;
             if (strayed) {
@@ -5079,7 +6723,9 @@ Reactor3D.Shadows = {
             // (A cut just changed: every cascade it left stale, this frame.)
             if (rush && cascade.dirty) { jobs.statics.push(cascade); jobs.dynamics.push(cascade); continue; }
             if (!cascade.dirty || (cascade.valid && this._frame - cascade.stamp < interval && !cascade.want)) continue;
-            if (!chosen || (chosen.valid && !cascade.valid)) chosen = cascade;
+            // An undrawn one first, then the one drawn longest ago: the nearest first every time starved the far
+            // cascade while the near one strayed and changes came in as the party rode.
+            if (!chosen || (chosen.valid && !cascade.valid) || (chosen.valid === cascade.valid && cascade.stamp < chosen.stamp)) chosen = cascade;
         }
         if (chosen && !rush) {
             jobs.statics.push(chosen);
@@ -5092,6 +6738,15 @@ Reactor3D.Shadows = {
             jobs.dynamics.push(cascade);
         }
         return jobs;
+    },
+
+    /** Where the eye looks along the ground, as a unit [x, z]; null for a view straight down or none. */
+    _sunAhead() {
+        if (!Reactor3D.SUN_SHADOW_AHEAD) return null;
+        const view = Reactor3D._viewport, camera = view && typeof view.camera === "function" ? view.camera() : null;
+        if (!camera || !camera.matrixWorld) return null;
+        const e = camera.matrixWorld.elements, x = -e[8], z = -e[10], length = Math.hypot(x, z);
+        return length > 0.3 ? [x / length, z / length] : null;
     },
 
     /** Whether any reported place lies over a cascade's square, as posed at `pose`. */
@@ -5152,12 +6807,25 @@ Reactor3D.Shadows = {
                 });
             }
         }
+        // A building's pieces cast from the face nearest the sun (Reactor3D.SUN_CASTER_SIDE): drawn from the back, a
+        // roof's overhang stored its underside, and the wall right under it read lit within the compare offset.
+        const pieces = this.sunPieceCasters(), sides = pieces.map(m => m.side);
+        for (const m of pieces) m.side = Reactor3D.SUN_CASTER_SIDE;
         try {
             this.renderFace(renderer, scene, camera);
         } finally {
+            pieces.forEach((m, i) => { m.side = sides[i]; });
             if (swapped.length) detail.end(swapped);
         }
         return camera;
+    },
+
+    /** The building pieces' caster materials (Shadows.casterMaterialFor), which the sun draws from another side. */
+    sunPieceCasters() {
+        const pool = this._casterMaterials, list = this._sunPieceList || (this._sunPieceList = []);
+        list.length = 0;
+        if (pool && Reactor3D.SUN_CASTER_SIDE !== null) for (const key in pool) if (key.startsWith("pieces")) list.push(pool[key]);
+        return list;
     },
 
     /** Whether a casting character stands over a cascade's square at `pose`. */
@@ -5212,39 +6880,98 @@ Reactor3D.Shadows = {
      * caster follows the source's map, which a sprite sheet swaps as it
      * animates.
      */
-    _swapCasters(roots) {
+    _swapCasters(roots, dynamic, renderer, scene) {
         const swapped = [];
+        const live = this._liveStandIns || (this._liveStandIns = []);
+        live.length = 0;
+        const merge = Reactor3D.CasterMerge;
+        // A new round of scans: a list of meshes read by this pass is one this pass made (`CasterMerge.scanned`).
+        if (dynamic) merge._round = (merge._round || 0) + 1;
         for (const root of roots) {
             if (!root.parent || !root.visible) continue;
-            root.traverse(child => {
-                if (!child.isMesh) return;
-                let caster = child.customDepthMaterial;
-                if (!caster || !caster.__rrCaster) {
-                    const layers = (1 << Reactor3D.SHADOW_LAYER_STATIC) | (1 << Reactor3D.SHADOW_LAYER_DYNAMIC);
-                    if (!(child.layers.mask & layers)) return;
-                    // A held model can join after its character was registered.
-                    // Clones keep the casting layer but not customDepthMaterial;
-                    // drawing their lit shader here reads the atlas being written.
-                    caster = child.customDepthMaterial = this.casterMaterialFor(child.material, !!child.isSkinnedMesh);
-                }
-                const source = child.material;
-                if (caster.__rrCutout && source && !Array.isArray(source)) {
-                    const map = source.map || null;
-                    if (caster.map !== map) {
-                        caster.map = map;
-                        caster.needsUpdate = true;
-                    }
-                    caster.alphaTest = source.alphaTest;
-                }
-                child.material = caster;
-                swapped.push(child, source);
-            });
+            // A moving caster's parts that draw alike in depth draw as one (CasterMerge): the same pixels, fewer draws.
+            const merged = dynamic && merge.enabled ? merge.use(root, this, live) : null;
+            // Its meshes as `use` just walked them, in the walk's order; a still caster is walked here.
+            const meshes = dynamic ? merge.scanned(root) : null;
+            if (meshes) for (let i = 0; i < meshes.length; i++) this._swapCaster(meshes[i], merged, swapped, dynamic, renderer, scene);
+            else root.traverse(child => { if (child.isMesh) this._swapCaster(child, merged, swapped, dynamic, renderer, scene); });
         }
         return swapped;
+    },
+    /** One mesh of a caster for `_swapCasters`. */
+    _swapCaster(child, merged, swapped, dynamic, renderer, scene) {
+        if (merged && merged.has(child)) return;
+        let caster = child.customDepthMaterial;
+        if (!caster || !caster.__rrCaster) {
+            const layers = (1 << Reactor3D.SHADOW_LAYER_STATIC) | (1 << Reactor3D.SHADOW_LAYER_DYNAMIC);
+            if (!(child.layers.mask & layers)) return;
+            // A held model can join after its character was registered.
+            // Clones keep the casting layer but not customDepthMaterial;
+            // drawing their lit shader here reads the atlas being written.
+            caster = child.customDepthMaterial = this.casterMaterialFor(child.material, !!child.isSkinnedMesh, child.geometry);
+        }
+        const source = child.material;
+        if (caster.__rrCutout && source && !Array.isArray(source)) {
+            const map = source.map || null;
+            if (caster.map !== map) {
+                caster.map = map;
+                caster.needsUpdate = true;
+            }
+            caster.alphaTest = source.alphaTest;
+        }
+        // A moving caster whose depth program is not built yet sits out of this frame's rows (`casterReady`).
+        if (dynamic && renderer && child.visible && !this.casterReady(renderer, scene, caster, child)) {
+            child.visible = false;
+            (swapped.waiting || (swapped.waiting = [])).push(child);
+            return;
+        }
+        child.material = caster;
+        swapped.push(child, source);
+    },
+
+    /**
+     * Whether a moving caster's depth program is built for the kind of mesh that wears it; begun on the driver's
+     * threads when not, and the mesh casts nothing until it is (its rows are drawn every frame: it joins the next
+     * one). Drawn at once, the shadow pass built the program on the spot and waited for it: 0.44 s for the first
+     * skinned caster of a first visit to North Haven (2026-11-10). A record per kind of mesh (skinned, its shapes):
+     * three builds a program for each. The warm-up's own timeout; `waitForDepth = false` draws at once, as before.
+     * The still casters' rows are kept once drawn, so those are drawn as before.
+     */
+    waitForDepth: true,
+    depthWaits: 0,
+    casterReady(renderer, scene, caster, child) {
+        const W = Reactor3D.ShaderWarmup;
+        if (!this.waitForDepth || !W || !W.enabled || !W.supported(renderer) || !W.compileGuarded) return true;
+        const morph = child.geometry && child.geometry.morphAttributes, shapes = morph && (morph.position || morph.normal || morph.color);
+        const kind = (child.isSkinnedMesh ? 1 : 0) + (child.isInstancedMesh ? 2 : 0) + (child.isBatchedMesh ? 4 : 0) + (shapes ? shapes.length * 8 : 0);
+        const records = caster.__rrDepthReady || (caster.__rrDepthReady = new Map());
+        const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+        let record = records.get(kind);
+        if (!record || record.version !== caster.version) { records.set(kind, record = { version: caster.version, ready: false, begun: false, started: now }); this.depthWaits++; }
+        if (record.ready) return true;
+        if (now - record.started > W.TIMEOUT_MS) { record.ready = true; return true; }
+        if (record.begun || (W.readsOwed && W.readsOwed())) return false;
+        record.begun = true;
+        // Compiled for this mesh alone (not what hangs under it), with a picture bound as the rows are.
+        const stand = Object.create(child);
+        stand.children = [];
+        stand.material = caster;
+        const camera = this._depthCamera || (this._depthCamera = new THREE.Camera()), before = renderer.getRenderTarget();
+        const done = () => { record.ready = true; };
+        try {
+            renderer.setRenderTarget(Reactor3D.LightVolume.compileTarget());
+            W.compileGuarded(renderer, stand, camera, scene).then(done, done);
+            // One another kind of mesh already draws with: nothing to wait for.
+            if (W.linked(renderer, caster) && W.wasRead(renderer, caster)) record.ready = true;
+        } catch (error) { record.ready = true; }
+        finally { renderer.setRenderTarget(before); }
+        return record.ready;
     },
 
     _unswap(swapped) {
         for (let i = 0; i < swapped.length; i += 2) swapped[i].material = swapped[i + 1];
+        if (swapped.waiting) for (const child of swapped.waiting) child.visible = true;
+        if (this._liveStandIns && this._liveStandIns.length) Reactor3D.CasterMerge.done(this._liveStandIns);
     },
 
     /**
@@ -5273,7 +7000,8 @@ Reactor3D.Shadows = {
                 // Hidden already (a half of the split, a mesh still compiling): left as it is.
                 if (object.visible === false) { flags[i] = GONE; i = ends[i]; continue; }
                 const layers = object.layers;
-                flags[i] = layers && (layers.mask & bit) !== 0 && (object.isMesh || object.isLine || object.isPoints || object.isSprite) ? CASTS : 0;
+                // The casters' stand-ins (CasterMerge) are shown after this list was gathered: their group stays.
+                flags[i] = (layers && (layers.mask & bit) !== 0 && (object.isMesh || object.isLine || object.isPoints || object.isSprite)) || (object.userData && object.userData.rrCasterGroup) ? CASTS : 0;
                 i++;
             }
             for (let i = count - 1; i > 0; i--) if (!(flags[i] & GONE)) flags[parents[i]] |= flags[i];
@@ -5316,12 +7044,15 @@ Reactor3D.Shadows = {
         const mask = this._faceMask(origin, far, roots, exclude);
         const hide = exclude && exclude.parent && exclude.visible ? exclude : null;
         if (hide) hide.visible = false;
+        // The crowd's pools draw the carrier's parts too: they leave them out of these faces (CasterCrowd.ranges).
+        this._carrierHidden = hide;
         const detail = Reactor3D.GeometryDetail, swapped = detail && detail.forShadow ? detail.forShadow(roots, origin, size, camera.near) : null;
         try {
             this._renderFaces(renderer, scene, target, size, row, origin, camera, mask);
         } finally {
             if (swapped) detail.end(swapped);
             if (hide) hide.visible = true;
+            this._carrierHidden = null;
         }
     },
 
@@ -5352,11 +7083,14 @@ Reactor3D.Shadows = {
     /** One face of a row: characters the face cannot see are not skinned into it (InstanceCull). */
     renderFace(renderer, scene, camera) {
         const cull = Reactor3D.InstanceCull, hidden = cull ? cull.hide(scene, camera) : null;
+        const standIns = hidden && this._liveStandIns && this._liveStandIns.length ? Reactor3D.CasterMerge.follow(this._liveStandIns) : null;
+        // The crowd's ranges for this face: the characters it did not cull.
+        const crowdOff = Reactor3D.CasterCrowd._active ? Reactor3D.CasterCrowd.face() : null;
         // A face holds depth only, the same whatever order it is drawn in: three's sort of the face's
         // list (and the garbage it makes) is skipped. `sortFaces = true` sorts them as before.
         const sorted = renderer.sortObjects;
         if (!this.sortFaces) renderer.sortObjects = false;
-        try { renderer.render(scene, camera); } finally { renderer.sortObjects = sorted; if (hidden) cull.show(hidden); }
+        try { renderer.render(scene, camera); } finally { renderer.sortObjects = sorted; if (hidden) cull.show(hidden); if (standIns) Reactor3D.CasterMerge.unfollow(standIns); if (crowdOff) Reactor3D.CasterCrowd.unface(crowdOff); }
     },
     sortFaces: false,
 
@@ -5391,6 +7125,12 @@ Reactor3D.Shadows = {
     },
 
     _flushOriginal() {
+        if (!this._pending) return;
+        const bones = Reactor3D.SkeletonUpdates;
+        return bones && bones.still ? bones.still(() => this._flushRows()) : this._flushRows();
+    },
+
+    _flushRows() {
         const pending = this._pending;
         if (!pending) return;
         this._pending = null;
@@ -5431,6 +7171,9 @@ Reactor3D.Shadows = {
                         this._unswap(swapped);
                     }
                     for (const tile of statics) {
+                        // Drawn again where it was already valid at the same key: what it shadows changed (a static
+                        // change, a storey cut). A light taking a row afresh draws what it drew before.
+                        const redrawn = tile.valid && !tile.want;
                         if (tile.want) {
                             tile.origin = tile.want.origin;
                             tile.far = tile.want.far;
@@ -5440,14 +7183,18 @@ Reactor3D.Shadows = {
                         tile.valid = true;
                         tile.dirty = false;
                         tile.stamp = this._frame;
+                        this.noteStaticDrawn(tile.id, tile.key, redrawn);
                     }
                 }
                 if (dynamics.length || sunDynamics.length) {
                     const roots = this._casting || this._dynamic;
-                    const swapped = this._swapCasters(roots);
-                    let others = null;
+                    if (Reactor3D.CasterMerge.enabled) Reactor3D.CasterMerge.sweep(scene);
+                    const swapped = this._swapCasters(roots, true, renderer, scene);
+                    let others = null, crowd = null;
                     try {
                         others = this._hideNonCasters(scene, Reactor3D.SHADOW_LAYER_DYNAMIC);
+                        // Every caster the pools hold in one draw per face (CasterCrowd), shown after the walk above.
+                        crowd = Reactor3D.CasterCrowd.begin(scene, this._liveStandIns, roots, this, renderer);
                         for (const row of dynamics) {
                             const tile = this._tiles[row.tile];
                             if (!tile || tile.id !== row.id) continue;
@@ -5464,6 +7211,7 @@ Reactor3D.Shadows = {
                             cascade.dynDone = true;
                         }
                     } finally {
+                        Reactor3D.CasterCrowd.end(crowd);
                         this._showAgain(others);
                         this._unswap(swapped);
                     }
@@ -5847,6 +7595,15 @@ Reactor3D.lightSegmentBlocked = function(x0, y0, h0, x1, y1, h1) {
  * the world height the beam leaves from, `length` its reach.
  */
 Reactor3D.BEAM_MARCH_STEP = 1 / 6;
+/** How many frames a model standing where it stood keeps the bounds a beam last measured it at. */
+Reactor3D.BEAM_BOX_FRAMES = 30;
+Reactor3D.frameStamp = function() {
+    return typeof Graphics !== "undefined" && Number.isFinite(Graphics.frameCount) ? Graphics.frameCount : 0;
+};
+Reactor3D.sameMatrix = function(a, b) {
+    for (let i = 0; i < 16; i++) if (a[i] !== b[i]) return false;
+    return true;
+};
 Reactor3D.beamHit = function(x, y, h, ax, ay, az, length, scene, bounds) {
     let best = null;
     const step = this.BEAM_MARCH_STEP;
@@ -5865,10 +7622,24 @@ Reactor3D.beamHit = function(x, y, h, ax, ay, az, length, scene, bounds) {
             const object = holder && holder.object;
             if (!object || !object.visible) continue;
             let worldBox = bounds && bounds.get(object);
+            // A body held still (Reactor3D.holdModelMatrices) has the bounds it had: measured again, it was a walk of every bone of a crowd each frame.
+            if (!worldBox && holder.matricesHeld && holder.heldBox && holder.heldBoxOf === object) worldBox = holder.heldBox;
+            // In a light update (`bounds`), any other model keeps the box it was last measured at while it stands
+            // where it stood (its own matrix, brought up to date as the measuring would, unchanged; the same
+            // geometry), for BEAM_BOX_FRAMES at most (a body moving its limbs in place): measuring every model
+            // each frame was 0.95 ms of the laptop's frame in the Reactor Room's sweeping searchlights.
+            const kept = !worldBox && bounds && holder.beamBox;
+            if (kept && kept.of === object && kept.geometry === object.geometry && this.frameStamp() - kept.at < this.BEAM_BOX_FRAMES) {
+                object.updateWorldMatrix(false, false);
+                if (this.sameMatrix(kept.matrix, object.matrixWorld.elements)) { worldBox = kept.box; bounds.set(object, worldBox); }
+            }
             if (!worldBox) {
                 worldBox = bounds ? new THREE.Box3() : box;
                 worldBox.setFromObject(object);
                 if (bounds) bounds.set(object, worldBox);
+                if (holder.matricesHeld) { holder.heldBox = (holder.heldBox || new THREE.Box3()).copy(worldBox); holder.heldBoxOf = object; }
+                const record = holder.beamBox || (holder.beamBox = { box: new THREE.Box3(), matrix: new Float64Array(16), at: 0, of: null, geometry: null });
+                record.box.copy(worldBox); record.matrix.set(object.matrixWorld.elements); record.at = this.frameStamp(); record.of = object; record.geometry = object.geometry;
             }
             if (worldBox.isEmpty() || worldBox.containsPoint(ray.origin)) continue;
             if (!ray.intersectBox(worldBox, hit)) continue;
@@ -6436,7 +8207,7 @@ Reactor3D.collectLights = function() {
     // The map's own lights first: native, no plugin involved.
     try {
         const native = this.nativeLights();
-        if (native.length) found.push(...native);
+        for (let i = 0; i < native.length; i++) found.push(native[i]);
     } catch (error) {
         if (!this._nativeWarned) {
             this._nativeWarned = true;
@@ -6446,17 +8217,19 @@ Reactor3D.collectLights = function() {
     // Then the lights placed models carry as effects, at their anchors.
     try {
         const carried = this.modelEffectLights();
-        if (carried.length) found.push(...carried);
+        for (let i = 0; i < carried.length; i++) found.push(carried[i]);
     } catch (error) {
         if (!this._effectLightWarned) {
             this._effectLightWarned = true;
             console.warn("Reactor3D: a model's light effects failed to resolve.", error);
         }
     }
-    for (const name of Object.keys(this.LightShims)) {
+    // (Read in place, with no list of the names made each frame.)
+    for (const name in this.LightShims) {
+        if (!Object.prototype.hasOwnProperty.call(this.LightShims, name)) continue;
         try {
             const lights = this.LightShims[name]();
-            if (lights && lights.length) found.push(...lights);
+            if (lights && lights.length) for (let i = 0; i < lights.length; i++) found.push(lights[i]);
         } catch (error) {
             if (!this._shimWarned) this._shimWarned = {};
             if (!this._shimWarned[name]) {
@@ -6531,6 +8304,8 @@ Reactor3D.readMapLights = function(mapData) {
             daylight: entry.daylight === "fixed" ? "fixed" : "auto",
             on: entry.on !== false,
             tag: entry.tag ? String(entry.tag) : "",
+            // The tag as the commands' stores key it, made once (read for every light every frame).
+            tagKey: entry.tag ? "#" + String(entry.tag) : "",
             attach: entry.attach && typeof entry.attach === "object"
                 ? (entry.attach.player ? { player: true }
                     : Number(entry.attach.event) > 0
@@ -6587,12 +8362,24 @@ Reactor3D.authoredLighting = function(mapData) {
 /**
  * Runtime on/off overrides, carried on Game_Map so a save keeps them.
  * Stored sparsely — only lights a command has touched appear here. Keys are
- * a light's id, or "#tag" to speak to every light sharing a tag.
+ * a light's id, or "#tag" to speak to every light sharing a tag, held in one
+ * record per map id: every map numbers its lights light1, light2, …, so a
+ * state must not reach the light of the same name on another map.
+ *
+ * A save from before the states were kept per map holds them flat (key to
+ * true or false) with nothing to say which map each was made on. Those are
+ * not read, and are taken out when the next state is written.
  */
 Reactor3D.setLightOn = function(key, on) {
     if (typeof $gameMap === "undefined" || !$gameMap || !key) return;
     if (!$gameMap._reactorLightStates) $gameMap._reactorLightStates = {};
-    $gameMap._reactorLightStates[String(key)] = !!on;
+    const all = $gameMap._reactorLightStates;
+    for (const name of Object.keys(all)) {
+        if (!all[name] || typeof all[name] !== "object") delete all[name];
+    }
+    const mapId = this.currentLightMapId();
+    if (!all[mapId]) all[mapId] = {};
+    all[mapId][String(key)] = !!on;
 };
 
 /**
@@ -6639,7 +8426,7 @@ Reactor3D.lightOverrideFor = function(light) {
     if (!overrides) return null;
     const mapId = this.currentLightMapId();
     const own = overrides[light.id];
-    const tagged = light.tag ? overrides["#" + light.tag] : null;
+    const tagged = light.tag ? overrides[light.tagKey || "#" + light.tag] : null;
     const ownOk = own && own.mapId === mapId ? own : null;
     const tagOk = tagged && tagged.mapId === mapId ? tagged : null;
     if (!ownOk && !tagOk) return null;
@@ -6650,9 +8437,11 @@ Reactor3D.lightOverrideFor = function(light) {
  * A light's overridden fields at this frame, eased; fields no command has
  * touched are absent. Colour eases per channel.
  */
+Reactor3D.NO_LIVE_VALUES = Object.freeze({});
 Reactor3D.liveLightValues = function(light, frame) {
     const blocks = this.lightOverrideFor(light);
-    if (!blocks) return {};
+    // (One kept empty record for a light no command has touched: most lights, every frame.)
+    if (!blocks) return this.NO_LIVE_VALUES;
     const out = {};
     // The tag's values first, then the light's own on top: id wins per field.
     for (const block of [blocks.tag, blocks.own]) {
@@ -6778,24 +8567,18 @@ Reactor3D.setMapAmbient = function(values, duration) {
 };
 
 Reactor3D.lightIsOn = function(light) {
-    const states = typeof $gameMap !== "undefined" && $gameMap
+    const all = typeof $gameMap !== "undefined" && $gameMap
         && $gameMap._reactorLightStates;
-    if (states) {
+    // This map's record only; a flat state from an older save is not an object and is passed over.
+    const states = all ? all[this.currentLightMapId()] : null;
+    if (states && typeof states === "object") {
         if (states[light.id] !== undefined) return states[light.id];
-        if (light.tag && states["#" + light.tag] !== undefined) return states["#" + light.tag];
+        const tagKey = light.tag ? light.tagKey || "#" + light.tag : "";
+        if (tagKey && states[tagKey] !== undefined) return states[tagKey];
     }
     return light.on;
 };
 
-/**
- * This frame's native lights, resolved into the compositor's shape.
- *
- * Animation is arithmetic on the frame counter — deterministic, allocation-
- * light, identical in both renderers. A light attached to an event or the
- * player rides its carrier, its x/y read as offsets in tiles. Yaw flips sign
- * on the way out because the scene aims anticlockwise from south while the
- * schema (and the screen) run clockwise — the same flip the shims make.
- */
 /**
  * A light's pulse and flicker for one frame: arithmetic on the frame
  * counter, deterministic, so a save replays identically and both the map's
@@ -6825,6 +8608,15 @@ Reactor3D.animateLight = function(spec, frame, seedIndex, radius, intensity) {
     return scratch;
 };
 
+/**
+ * This frame's native lights, resolved into the compositor's shape.
+ *
+ * Animation is arithmetic on the frame counter — deterministic, allocation-
+ * light, identical in both renderers. A light attached to an event or the
+ * player rides its carrier, its x/y read as offsets in tiles. Yaw flips sign
+ * on the way out because the scene aims anticlockwise from south while the
+ * schema (and the screen) run clockwise — the same flip the shims make.
+ */
 Reactor3D.nativeLights = function(mapData) {
     const map = mapData || (typeof $dataMap !== "undefined" ? $dataMap : null);
     const authored = this.readMapLights(map);
@@ -7177,8 +8969,24 @@ Reactor3D.LightVolume = {
      * still does not keep it drawing.
      */
     _settleUntil: 0,
+    /**
+     * Whether the volume is used: where the graphics card is what the frame waits for. It trades the light loop's
+     * work per pixel (17 ms for nine lights on an integrated GPU's start map) for bakes on the main thread, and on a
+     * discrete card that trade runs the other way: in North Haven's square on the laptop's RTX 3060, off took the
+     * main thread from 11.3 to 7.9 ms a frame and the GPU from 3.0 to 2.5 ms, the picture the same to a few dozen
+     * pixels (the loop is exact; the volume samples it on a grid). On: a weak GPU, or once Auto has stepped the
+     * graphics down for the GPU (Quality level 2 and up: below the whole picture and the plain one), or `ALWAYS`.
+     */
+    ALWAYS: false,
+    on() {
+        if (!this.enabled) return false;
+        if (this.ALWAYS) return true;
+        if (Reactor3D.isWeakGpu && Reactor3D.isWeakGpu()) return true;
+        const Q = Reactor3D.Quality;
+        return !!(Q && Q.g >= 2);
+    },
     baking() {
-        return this.enabled && (!!this._back || this._frame < this._settleUntil);
+        return this.on() && (!!this._back || this._frame < this._settleUntil);
     },
 
     /** A light's shadow state: its static row and when it was last drawn; null for a moving-caster row. */
@@ -7189,35 +8997,109 @@ Reactor3D.LightVolume = {
         for (const row of dyn) if (row && row.id === id && row.valid) return null;
         for (let k = 0; k < tiles.length; k++) {
             const tile = tiles[k];
-            if (tile && tile.id === id && tile.valid) return "row" + k + ":" + tile.stamp + ":" + tile.key;
+            if (tile && tile.id === id && tile.valid) return S.staticContentKey ? S.staticContentKey(id, tile) : "row" + k + ":" + tile.stamp + ":" + tile.key;
         }
         return "none";
     },
 
+    /**
+     * A held light's shadow as baked, against what it is now: the same, or baked with its static shadow and its row
+     * since given to another light. The shadow it baked is still the right one (the static world it shadows did
+     * not change, or its key would have), so the volume keeps serving it rather than sitting out and baking again.
+     */
+    shadowServes(baked, now, id) {
+        if (baked === now) return true;
+        if (!this.KEEP_LIT_BAKE || typeof baked !== "string" || typeof now !== "string") return false;
+        // Baked with no row and given one since: served as it was, without the new shadow, until the bake under way
+        // (which has it) is ready: a fraction of a second. Without this every lamp the player walked toward started
+        // the bake again and it never finished (41 starts and 3 finished in 6 s in North Haven's square).
+        if (baked === "none" && now.startsWith("lit:")) return true;
+        if (now !== "none" || !baked.startsWith("lit:")) return false;
+        const S = Reactor3D.Shadows;
+        return !S || !S.cutSerial || baked.endsWith(":" + S.cutSerial(id));
+    },
+    // The kill switch: false throws a bake away when a light it holds lit loses its row, as before.
+    KEEP_LIT_BAKE: true,
+
+    /** Whether a light the front serves without its shadow has one now: the one change a front that serves is baked again for. */
+    gainedShadow(front, want) {
+        const held = new Map();
+        for (const name of ["statics", "flickers", "pulses"]) for (const r of front.want[name] || []) held.set(r.id, r.shadow);
+        for (const name of ["statics", "flickers", "pulses"]) for (const r of want[name] || []) {
+            const was = held.get(r.id);
+            if (was === "none" && typeof r.shadow === "string" && r.shadow.startsWith("lit:")) return true;
+        }
+        return false;
+    },
+
+    /** Whether the front volume still holds what `want` asks for, but for lights it baked lit that have lost their rows. */
+    stillServes(front, want, regionKey, water) {
+        if (!this.KEEP_LIT_BAKE || !front || front.regionKey !== regionKey || !!front.water !== !!water) return false;
+        if (water && front.water && front.water.signature !== water.signature) return false;
+        const lists = ["statics", "flickers", "pulses"], held = new Map();
+        for (const name of lists) for (const r of front.want[name] || []) held.set(r.id, { r, name });
+        let found = 0;
+        for (const name of lists) for (const r of want[name] || []) {
+            const h = held.get(r.id);
+            if (!h || h.name !== name || h.r.key !== r.key || !this.shadowServes(h.r.shadow, r.shadow, r.id)) return false;
+            found++;
+        }
+        // A light the front holds that `want` left out (it lost its row and is settling): served while it is still that light.
+        for (const [id, h] of held) {
+            if ((want[h.name] || []).some(r => r.id === id)) continue;
+            const now = this._records.get(id);
+            if (!now || now.key !== h.r.key || !this.shadowServes(h.r.shadow, now.shadow, id)) return false;
+        }
+        return true;
+    },
+
     /** The cached set this frame asks for, with its signature. */
     desired() {
-        const frame = this._frame, statics = [], flickers = [], pulses = [];
+        const frame = this._frame;
+        // First where each light goes (0 left out, 1 still, 2 flickering, 3 pulsing), against where it went the last
+        // time: on most frames nothing changed, and the lists, their snapshots and the signature made then are this
+        // frame's too. They were all made again every frame the volume was on.
+        let nFlickers = 0, nPulses = 0, count = 0, changed = false;
         for (const record of this._records.values()) {
+            count++;
             // The shadow row is watched from the start, alongside the light.
             const shadow = this.shadowKey(record.id);
             if (record.shadow !== shadow) { record.shadow = shadow; record.shadowSince = frame; }
-            if (shadow === null || !record.packed || record.packedKey !== record.key) continue;
-            if (frame - record.since < this.STABLE_FRAMES || frame - record.shadowSince < this.STABLE_FRAMES) continue;
+            let place = 0;
+            if (!(shadow === null || !record.packed || record.packedKey !== record.key)) {
+                // A light whose static row came or went is not unsettled by it: the volume serves it either way (shadowServes),
+                // and leaving it out a while made it new to the next bake, which started again for it (38 of 46 starts).
+                const shadowSettling = !(this.KEEP_LIT_BAKE && typeof shadow === "string") && frame - record.shadowSince < this.STABLE_FRAMES;
+                if (!(frame - record.since < this.STABLE_FRAMES || shadowSettling)) {
+                    if (record.pulses) {
+                        // A point with no shadow row: its distance is all the volume keeps.
+                        if (record.packed.col[3] === 0 && shadow === "none" && nPulses < this.PULSE_SLOTS) { place = 3; nPulses++; }
+                    } else if (record.flickers) { if (nFlickers < this.FLICKER_SLOTS) { place = 2; nFlickers++; } }
+                    else place = 1;
+                }
+            }
+            if (record.wantPlace !== place || (place && (record.wantKey !== record.key || record.wantShadow !== shadow || record.wantPacked !== record.packed))) changed = true;
+            record.wantPlace = place; record.wantKey = record.key; record.wantShadow = shadow; record.wantPacked = record.packed;
+        }
+        const last = this._desired;
+        if (last && !changed && last.count === count) return last.want;
+        const statics = [], flickers = [], pulses = [];
+        for (const record of this._records.values()) {
+            if (!record.wantPlace) continue;
             // A snapshot: what is baked is checked against what the light is later.
-            const snap = { id: record.id, key: record.key, shadow, packed: record.packed };
-            if (record.pulses) {
-                // A point with no shadow row: its distance is all the volume keeps.
-                if (record.packed.col[3] === 0 && shadow === "none" && pulses.length < this.PULSE_SLOTS) pulses.push(snap);
-            } else if (record.flickers) { if (flickers.length < this.FLICKER_SLOTS) flickers.push(snap); }
-            else statics.push(snap);
+            const snap = { id: record.id, key: record.key, shadow: record.shadow, packed: record.packed };
+            (record.wantPlace === 3 ? pulses : record.wantPlace === 2 ? flickers : statics).push(snap);
         }
         statics.sort((a, b) => (a.id < b.id ? -1 : 1));
         flickers.sort((a, b) => (a.id < b.id ? -1 : 1));
         pulses.sort((a, b) => (a.id < b.id ? -1 : 1));
         const list = records => records.map(r => r.id + "=" + r.key + "@" + r.shadow).join(";");
         const signature = list(statics) + "#" + list(flickers) + "#" + list(pulses);
-        return { statics, flickers, pulses, signature };
+        const want = { statics, flickers, pulses, signature };
+        this._desired = { want, count };
+        return want;
     },
+    _desired: null,
 
     region(mapData, focus) {
         const v = this.VOXEL, side = this.MAX_SIDE * v;
@@ -7285,6 +9167,7 @@ Reactor3D.LightVolume = {
         this._dynSig = null; this._dynAtlasBaked = null;
         this._front = this._back = null;
         this._records.clear();
+        this._desired = null;
         const u = this.uniforms();
         u.rrVolumeOn.value = 0;
         u.rrVolumeStatic.value = u.rrVolumeFlicker.value = u.rrVolumePulse.value = null;
@@ -7392,10 +9275,12 @@ Reactor3D.LightVolume = {
             for (let k = 0; k < tiles.length; k++) if (tiles[k] && tiles[k].id === id && tiles[k].valid) return k;
             return -1;
         };
+        bake.lostShadow = false;
         for (let i = 0; i < all.length; i++) {
             const p = all[i].packed;
             u.rrBakePos.value.set(p.pos, i * 4); u.rrBakeColor.value.set(p.col, i * 4); u.rrBakeAim.value.set(p.aim, i * 4);
             u.rrBakeShadow.value[i] = shadowOf(all[i].id);
+            if (u.rrBakeShadow.value[i] < 0 && typeof all[i].shadow === "string" && all[i].shadow.startsWith("lit:")) bake.lostShadow = true;
         }
         u.rrBakeCount.value = volume.want.statics.length;
         u.rrBakeFlick.value.fill(-1);
@@ -7418,13 +9303,16 @@ Reactor3D.LightVolume = {
             if (!bake.compiling) {
                 const previous = renderer.getRenderTarget();
                 renderer.setRenderTarget(volume.static, 0);
-                try { bake.compiling = renderer.compileAsync(bake.scene, bake.camera).then(() => { bake.compiled = true; }, () => { bake.compiled = true; }); }
+                try { bake.compiling = renderer.compileAsync(bake.scene, bake.camera).then(() => { bake.compiled = true; }, () => { bake.compiled = true; }); if (Reactor3D.ShaderWarmup.track) Reactor3D.ShaderWarmup.track(bake.compiling); }
                 catch (error) { bake.compiled = true; }
                 finally { renderer.setRenderTarget(previous); }
             }
             if (!bake.compiled) return false;
         }
         this.loadBake(bake, volume);
+        // A light baked with its shadow whose row went elsewhere part-way: the layers left would have it unshadowed.
+        // Laid again from the first layer, with what the lights are now (`frameStatic` makes it again).
+        if (bake.lostShadow) { volume.lost = true; return false; }
         const previous = renderer.getRenderTarget(), nz = volume.region.dims[2];
         const autoClear = renderer.autoClear;
         renderer.autoClear = false;
@@ -7459,7 +9347,9 @@ Reactor3D.LightVolume = {
         // atlases: three must forget what it thinks is bound first, or a
         // shadow sampler meets PIXI's texture and the driver drops the draw
         // (INVALID_OPERATION), leaving the volume unlit.
-        if (this.enabled && renderer && typeof renderer.resetState === "function") renderer.resetState();
+        // (Only when the volume is in use: the reset is some forty GL calls and empties three's state cache, paid
+        // every update on machines that never bake.)
+        if (this.on() && renderer && typeof renderer.resetState === "function") renderer.resetState();
         this.frameStatic(renderer, mapScene, mapData, focus);
         Reactor3D.WaterLight.loadFar(this.uniforms(), mapData, this);
         this.frameDynamic(renderer, mapData, focus);
@@ -7485,11 +9375,19 @@ Reactor3D.LightVolume = {
      * rate above the game's, most frames reuse the last.
      */
     dynamicEnabled: true,
+    /**
+     * On a weak GPU, while only the moving lights have moved (the same region of the view, the same lights, the
+     * same atlas), their bake is kept for this many frames: the Reactor Room's seven searchlights turn under a
+     * degree a frame and their light is a tile-sized grid, and the bake was a millisecond of the laptop's GPU
+     * every frame (Iris Xe, 2026-11-08). A view that moves to another region, a light that comes or goes and any
+     * other GPU bake as soon as asked. 1 bakes every frame.
+     */
+    DYNAMIC_EVERY: 2,
     frameDynamic(renderer, mapData, focus) {
         const u = this.uniforms();
         u.rrDynOn.value = 0;
         u.rrLightDynamic.value = 0;
-        if (!this.enabled || !this.dynamicEnabled || !this._scene || !this.supported(renderer)) return;
+        if (!this.on() || !this.dynamicEnabled || !this._scene || !this.supported(renderer)) return;
         const count = u.rrLightCount.value, cached = u.rrLightCached.value >>> 0;
         const pos = u.rrLightPos.value, col = u.rrLightColor.value, aim = u.rrLightAim.value, shadowOf = u.rrLightShadow.value, info = u.rrShadowInfo.value;
         const S = Reactor3D.Shadows, shadows = !!(S && S.appliesTo && S.appliesTo(renderer) && S.active && S.active());
@@ -7541,6 +9439,28 @@ Reactor3D.LightVolume = {
         const last = this._dynSig;
         let same = !!last && last.length === sig.length && this._dynAtlasBaked === atlas;
         for (let k = 0; same && k < sig.length; k++) if (last[k] !== sig[k]) same = false;
+        // Only the lights moved (the same region, lights and atlas): a weak GPU keeps the last bake for a frame.
+        const refresh = typeof Graphics !== "undefined" && Number.isFinite(Graphics.refreshCount) ? Graphics.refreshCount : 0;
+        const held = this._dynHeld, Q = Reactor3D.Quality;
+        const every = Math.max(Reactor3D.tier() === "weak" ? this.DYNAMIC_EVERY : 1, Q && Q.volumeEvery ? Q.volumeEvery() : 1);
+        if (!same && held && every > 1 && refresh > 0 && refresh - held.refresh < every && held.atlas === atlas && held.mask === (mask >>> 0)
+            && last && last.length === sig.length) {
+            let sameRegion = true;
+            for (let k = 0; sameRegion && k < 10; k++) if (last[k] !== sig[k]) sameRegion = false;
+            if (sameRegion) {
+                u.rrDynAtlas.value = atlas.texture;
+                u.rrDynAtlasSize.value[0] = atlas.width; u.rrDynAtlasSize.value[1] = atlas.height;
+                u.rrDynOrigin.value.set(held.origin);
+                u.rrDynCells.value[0] = nx; u.rrDynCells.value[1] = ny; u.rrDynCells.value[2] = nz;
+                u.rrDynTiles.value[0] = tx; u.rrDynTiles.value[1] = ty;
+                u.rrDynVoxel.value = v;
+                u.rrLightAll.value = (count >= 32 ? 0xffffffff : (1 << count) - 1) >>> 0;
+                u.rrLightDynamic.value = held.mask;
+                u.rrDynOn.value = 1;
+                this.dynamicHeld = (this.dynamicHeld || 0) + 1;
+                return;
+            }
+        }
         if (!same) {
             this._dynSigNext = last || [];
             this._dynSig = sig;
@@ -7556,6 +9476,9 @@ Reactor3D.LightVolume = {
             } finally { renderer.autoClear = autoClear; renderer.setRenderTarget(previous); }
             this._dynAtlasBaked = atlas;
             this.dynamicBakes = (this.dynamicBakes || 0) + 1;
+            const kept = this._dynHeld || (this._dynHeld = { refresh: 0, atlas: null, mask: 0, origin: [0, 0, 0] });
+            kept.refresh = refresh; kept.atlas = atlas; kept.mask = mask >>> 0;
+            kept.origin[0] = region.origin[0]; kept.origin[1] = region.origin[1]; kept.origin[2] = region.origin[2];
         }
         u.rrDynAtlas.value = atlas.texture;
         u.rrDynAtlasSize.value[0] = atlas.width; u.rrDynAtlasSize.value[1] = atlas.height;
@@ -7674,17 +9597,27 @@ Reactor3D.LightVolume = {
         if (bake.compiled) return true;
         if (!(renderer.compileAsync && renderer.extensions && renderer.extensions.has("KHR_parallel_shader_compile"))) { bake.compiled = true; return true; }
         if (!bake.compiling) {
-            try { bake.compiling = renderer.compileAsync(bake.scene, bake.camera).then(() => { bake.compiled = true; }, () => { bake.compiled = true; }); }
+            // With a picture of its own bound, as its draws have: the program three builds depends on what it
+            // draws into. Compiled with whatever was bound (the screen, after the shadow rows), it was the screen's,
+            // and the bake's first draw built its own on the spot (2.4 s of a first visit to North Haven, 2026-11-10).
+            const previous = renderer.getRenderTarget();
+            renderer.setRenderTarget(this._dynAtlas || this.compileTarget());
+            try { bake.compiling = renderer.compileAsync(bake.scene, bake.camera).then(() => { bake.compiled = true; }, () => { bake.compiled = true; }); if (Reactor3D.ShaderWarmup.track) Reactor3D.ShaderWarmup.track(bake.compiling); }
             catch (error) { bake.compiled = true; }
+            finally { renderer.setRenderTarget(previous); }
         }
         return !!bake.compiled;
+    },
+    /** A one-pixel picture to compile the bake against before its own exist. */
+    compileTarget() {
+        return this._compileTarget || (this._compileTarget = new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false, stencilBuffer: false }));
     },
 
     frameStatic(renderer, mapScene, mapData, focus) {
         const u = this.uniforms();
         u.rrVolumeOn.value = 0;
         u.rrLightCached.value = 0;
-        if (!this.enabled || !renderer || !mapScene || !this.supported(renderer)) return;
+        if (!this.on() || !renderer || !mapScene || !this.supported(renderer)) return;
         if (this._scene !== mapScene || this._generation !== Reactor3D.contextGeneration) {
             this.reset();
             this._scene = mapScene;
@@ -7700,14 +9633,27 @@ Reactor3D.LightVolume = {
         // The volume shown (or being laid) stays where it is while the focus is near where it was laid.
         const laid = this._back ? this._back.region : this._front ? this._front.region : null;
         if (laid && this.REGION_STEP > 0 && this.near(laid, region, this.REGION_STEP)) region = laid;
-        const regionKey = region.origin.join(",") + "/" + region.dims.join(",");
+        // (Kept on the region: one laid stays the same object, and nothing moves a region once its key is read.)
+        const regionKey = region.key || (region.key = region.origin.join(",") + "/" + region.dims.join(","));
         const base = want.signature + "/" + regionKey;
         let signature = base + (water ? "/" + water.signature : "");
         // A bake under way for an earlier look of the water is let finish (a slider being dragged changes the
         // look every frame, and a bake started again every frame would never show): the next one takes the newest.
         if (this._back && this._back.base === base && this._back.water && water && this._back.signature !== signature) signature = this._back.signature;
         const hasLights = want.statics.length + want.flickers.length + (want.pulses || []).length > 0 || !!water;
-        if (!(this._front && this._front.signature === signature) && hasLights) {
+        const serves = this._front && (this._front.signature === signature || this.stillServes(this._front, want, regionKey, water));
+        // Lights it serves as they are: a bake started for a row's coming and going is not needed.
+        if (this._back && (this._back.lost || (serves && this._back.layer === 0 && this._back.signature !== signature))) { this.retire(this._back); this._back = null; }
+        // The front serving but not what is wanted (a lamp gained its shadow): a bake of what is wanted is started.
+        if (serves && !this._back && hasLights && this._front.signature !== signature && this.KEEP_LIT_BAKE && this.gainedShadow(this._front, want)) {
+            this._back = this.makeVolume(region, want);
+            Object.assign(this._back, { signature, base, water, waterMap: water ? mapData : null, regionKey });
+        }
+        // A bake under way while the front still serves is let finish; the next takes the newest look.
+        const finishing = serves && this._back && this.KEEP_LIT_BAKE;
+        if (finishing) {
+            if (this.bakeSome(renderer, this._back)) { this.retire(this._front); this._front = this._back; this._back = null; }
+        } else if (!serves && hasLights) {
             if (!this._back || this._back.signature !== signature) {
                 this.retire(this._back);
                 this._back = this.makeVolume(region, want);
@@ -7715,6 +9661,7 @@ Reactor3D.LightVolume = {
                 this._back.base = base;
                 this._back.water = water;
                 this._back.waterMap = water ? mapData : null;
+                this._back.regionKey = regionKey;
             }
             if (this.bakeSome(renderer, this._back)) {
                 this.retire(this._front);
@@ -7728,12 +9675,16 @@ Reactor3D.LightVolume = {
         if (front.water && !water) return;
         // Every light the front holds must still be what was baked; else the
         // volume sits out (all lights live) until the new one is ready.
-        const count = u.rrLightCount.value, held = front.want.statics.concat(front.want.flickers, front.want.pulses || []);
+        const count = u.rrLightCount.value;
         let cached = 0;
-        for (const record of held) {
-            const now = this._records.get(record.id);
-            if (!now || now.key !== record.key || now.shadow !== record.shadow) return;
-            if (now.present === this._frame && now.index >= 0 && now.index < count) cached |= 1 << now.index;
+        for (let n = 0; n < 3; n++) {
+            const held = n === 0 ? front.want.statics : n === 1 ? front.want.flickers : front.want.pulses;
+            if (!held) continue;
+            for (let k = 0; k < held.length; k++) {
+                const record = held[k], now = this._records.get(record.id);
+                if (!now || now.key !== record.key || !this.shadowServes(record.shadow, now.shadow, record.id)) return;
+                if (now.present === this._frame && now.index >= 0 && now.index < count) cached |= 1 << now.index;
+            }
         }
         const colours = u.rrVolumeFlickerColor.value;
         colours.fill(0);
@@ -8233,7 +10184,6 @@ Reactor3D.Halo = {
         });
         // A surface with no depth of its own under it (no `rrDepth`) gives everywhere.
         material.defaultAttributeValues = { rrDepth: [1] };
-        material.userData.rrHaloFeeder = true;
         return material;
     },
 
@@ -8243,7 +10193,9 @@ Reactor3D.Halo = {
      * Asked once a pass; after IDLE_FRAMES passes with nothing, the targets go.
      */
     sources(bodies) {
-        const group = this.enabled && bodies ? bodies.userData.rrHalo : null;
+        // A Quality level may set the halo aside (Reactor3D.Quality.halo).
+        const Q = Reactor3D.Quality, wanted = this.enabled && !(Q && Q.halo && !Q.halo());
+        const group = wanted && bodies ? bodies.userData.rrHalo : null;
         if (group) {
             const list = group.children;
             for (let i = 0; i < list.length; i++) if (list[i].visible) { this._idle = 0; return group; }
@@ -8446,6 +10398,8 @@ Reactor3D.HalfLight = {
      * median 13.8 to 6.9 ms, the GPU 3 to about 4 ms. False splits on every tier.
      */
     WEAK_ONLY: true,
+    // Not on a weak GPU that shades fast (Intel Xe): no GPU saved there, 1.6-2 ms of CPU spent (Reactor3D.fastShading).
+    SKIP_ON_FAST_SHADING: true,
     // A quarter each way: measured beside the full-size light, only the rim
     // of a model against a much brighter or darker ground tells them apart.
     SCALE: 0.25,
@@ -8522,6 +10476,11 @@ Reactor3D.HalfLight = {
      */
     begin(renderer, scene, target) {
         if (!this.enabled || (this.WEAK_ONLY && Reactor3D.tier() !== "weak") || !target || !target.depthTexture || target.samples > 0 || !scene || !scene.isScene) return null;
+        // A scene lit from uniforms of its own (a battle room's) has no part in the split: the light worked out
+        // afterwards is the map's (`Reactor3D.lightUniforms`, the volume), not that scene's.
+        if (scene.userData && scene.userData.rrOwnLights) return null;
+        // A GPU that lights every pixel as fast as the split does (Reactor3D.fastShading) is spared the split's CPU.
+        if (this.SKIP_ON_FAST_SHADING && Reactor3D.fastShading && Reactor3D.fastShading()) return null;
         if (!Reactor3D.LightVolume || !Reactor3D.LightVolume.supported(renderer)) return null;
         const walk = Reactor3D.SceneWalk, held = walk.hold(scene);
         try {

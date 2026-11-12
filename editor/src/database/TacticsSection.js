@@ -153,7 +153,7 @@
     // How height adds to a shot's reach when nothing else says (the game's F.HEIGHT_REACH_LEVELS and F.HEIGHT_REACH_MAX):
     // one more tile for every two levels the shooter stands above its target, up to three.
     const HEIGHT_REACH = { levels: 2, most: 3 };
-    const HEIGHT_LIMITS = { levels: [1, 10], most: [0, 10] };
+    const HEIGHT_LIMITS = { levels: [1, 10], most: [0, 50] };
 
     /** A height rule `{ levels, most }` as the game reads one (held to its limits), or null when the value is not one. */
     function heightRule(value) {
@@ -241,12 +241,6 @@
         if (tags && tags[key] !== undefined) return 'tag';
         const ptbs = COMBAT_KEYS.includes(key) ? null : parsePtbs(entry.note);
         return ptbs && ptbs[key] !== undefined ? 'ptbs' : '';
-    }
-
-    /** Whether the record names a reach, an area or a line-of-sight rule. */
-    function hasAction(record) {
-        const found = recordTactics(typeof record === 'string' ? { note: record } : record);
-        return !!(found && (found.range || found.area || found.los !== undefined));
     }
 
     /**
@@ -1783,7 +1777,7 @@
 
     const api = {
         SHAPES, SIZED, AI, DEFAULT_MOVE, DEFAULT_JUMP, SHAPE_LABELS, KINDS, FILES, DATA_KEYS, LIMITS, HEIGHT_REACH, HEIGHT_LIMITS, heightRule,
-        parse, parseTags, parsePtbs, parseCombat, hasAction, strip, without,
+        parse, parseTags, parsePtbs, parseCombat, strip, without,
         own, recordTactics, recordCombat, recordCharacter, sourceOf,
         effective, sighted, weaponSkill, weaponTypeReach, scopeDefaults, unitStats,
         PROJECTILES, combatProfile, cooldownOf, comboShares, describeCombat,

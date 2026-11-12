@@ -360,7 +360,8 @@
         if (k <= 0) return a;
         if (k >= 1) return b;
         const mix = (x, y) => x.map((v, i) => v + (y[i] - v) * k);
-        const out = { spread: a.spread + (b.spread - a.spread) * k, thumb: mix(a.thumb, b.thumb) };
+        // (What the hand holds too: without it a blended frame closed as if on nothing.)
+        const out = { spread: a.spread + (b.spread - a.spread) * k, thumb: mix(a.thumb, b.thumb), gap: (a.gap || 0) + ((b.gap || 0) - (a.gap || 0)) * k };
         for (const f of FINGERS) out[f] = mix(a[f], b[f]);
         return out;
     }
@@ -372,6 +373,8 @@
         for (let i = 1; i < spec.length; i++) {
             if (t > spec[i][0]) continue;
             const [t0, a] = spec[i - 1], [t1, b] = spec[i], u = (t - t0) / ((t1 - t0) || 1);
+            // A hold between two keys of one shape is that shape itself: fitted to the hand once, not per frame.
+            if (a === b) return HAND_SHAPES[a];
             return blendShape(HAND_SHAPES[a], HAND_SHAPES[b], u * u * (3 - 2 * u));
         }
         return HAND_SHAPES[spec[spec.length - 1][1]];
@@ -1552,7 +1555,10 @@
         for (const S of ['Left', 'Right']) {
             const turns = new Map([[index.get(S + 'Hand'), [0, 0, 0, 1]]]);
             for (const joint of frames[S]?.joints || []) {
-                const b = bones[joint.bone], along = dir(b), flat = square(along, frames[S].palm);
+                const b = bones[joint.bone], along = dir(b);
+                // A thumb bends on one hinge and doesn't lie along the palm: it keeps the flat hand's own pose.
+                if (/thumb/i.test(b.name)) continue;
+                const flat = square(along, frames[S].palm);
                 const turn = fromTo(along, flat), local = mul(conj(turns.get(b.parent) || [0, 0, 0, 1]), turn);
                 turns.set(joint.bone, turn);
                 const track = fingers.find(t => t.bone === joint.bone);
@@ -1694,7 +1700,7 @@
                     // Both segments must share the same hinge plane. Giving
                     // each its own world-facing frame twists a spread knee
                     // sideways and folds the thigh through the calf.
-                    const normal = straddle ? unit(cross(upper, lower)) : null;
+                    const normal = straddle || crawling ? unit(cross(upper, lower)) : null;
                     world[names.indexOf(S + 'UpLeg')][f] = mul(frameQuat(upper, normal ? cross(upper, normal) : [0, 0, 1]), conj(rest[S + 'UpLeg']));
                     world[names.indexOf(S + 'Leg')][f] = mul(frameQuat(lower, normal ? cross(lower, normal) : [0, -1, 0]), conj(rest[S + 'Leg']));
                     // Follow the shin within the ankle's existing pitch range.
@@ -1721,6 +1727,9 @@
                 else reachLimb(ctx, f, S, 'arm', hand, palm, [sign, stretch || straddle ? 0.25 : -0.10, 0]);
             }
         }
+        // Legs laid out on these poses' own frames can sit a little past a joint's reach, the knee's twist above all.
+        // Not the kneeling stretches: their knees and feet are the approved hold, which this would move up to 17 cm.
+        if (!stretch) limitLegs(index, names, world, steps, turnAt, bones, false, false);
         const tracks = names.map((name, k) => {
             const bone = index.get(name), values = new Float32Array(steps * 4);
             let previous;
@@ -1738,7 +1747,10 @@
             // palm floats above the floor, despite a level wrist target.
             const turns = new Map([[index.get(S + 'Hand'), [0, 0, 0, 1]]]);
             for (const joint of F[S]?.joints || []) {
-                const b = bones[joint.bone], along = dir(b), flat = square(along, F[S].palm);
+                const b = bones[joint.bone], along = dir(b);
+                // A thumb bends on one hinge and doesn't lie along the palm: it keeps the flat hand's own pose.
+                if (/thumb/i.test(b.name)) continue;
+                const flat = square(along, F[S].palm);
                 const turn = fromTo(along, flat), local = mul(conj(turns.get(b.parent) || [0, 0, 0, 1]), turn);
                 turns.set(joint.bone, turn);
                 const track = fingers.find(t => t.bone === joint.bone);
@@ -1802,6 +1814,7 @@
                 relaxedArms(ctx, f, S, .18 + .72 * depth);
             }
         }
+        limitLegs(index, names, world, steps, turnAt, bones, false, false);
         const tracks = names.map((name, k) => {
             const bone = index.get(name), values = new Float32Array(steps * 4);
             let previous;
@@ -2034,6 +2047,7 @@
                 }
             }
         }
+        limitLegs(index, names, world, steps, turnAt, bones, false, false);
         const tracks = names.map((name, k) => {
             const bone = index.get(name), values = new Float32Array(steps * 4); let previous;
             for (let f = 0; f < steps; f++) {

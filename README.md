@@ -6,33 +6,33 @@ RPG Reactor is an open-source, cross-platform RPG game editor and runtime for RP
 
 Use RPG Reactor to create, edit, playtest, and package 2D RPGs with familiar RPG Maker-style maps, events, database records, plugins, and deployment workflows, without depending on the original RPG Maker runtime or editor.
 
-The latest tagged source release is [0.99.4](https://github.com/Psychronic-Games/RPGReactor/releases/tag/v0.99.4). Read the [release notes](docs/posts/release-notes-0.99.4.md) for the changes and known issues. Pre-built downloads are published separately at <https://psychronic.itch.io/rpg-reactor>.
+The latest tagged source release is [0.99.5](https://github.com/Psychronic-Games/RPGReactor/releases/tag/v0.99.5). Read the [release notes](docs/posts/release-notes-0.99.5.md) for the changes and known issues. Pre-built downloads are published separately at <https://psychronic.itch.io/rpg-reactor>.
 
 <table>
 <tr>
-<td width="50%" align="center"><img src="docs/media/releases/0.99.4/01-online-town.jpg" alt="Players meeting in North Haven"><br><sub>Player characters, names and chat share the same online world.</sub></td>
-<td width="50%" align="center"><img src="docs/media/releases/0.99.4/02-character-creator.jpg" alt="Character creation inside a game"><br><sub>Players choose their appearance with the Forge-powered character creator.</sub></td>
+<td width="50%" align="center"><img src="docs/media/releases/0.99.5/01-battle-room.jpg" alt="A Classic battle in a Battle Room"><br><sub>Classic battles in a Battle Room are drawn the way maps are, at the machine's real frame rate.</sub></td>
+<td width="50%" align="center"><img src="docs/media/releases/0.99.5/02-interface-motion.jpg" alt="Pictures and motion in User Interfaces"><br><sub>Fill interface elements with pictures and give them motion in Database → User Interfaces.</sub></td>
 </tr>
 <tr>
-<td width="50%" align="center"><img src="docs/media/releases/0.99.4/05-holographic-table.jpg" alt="An editable holographic table"><br><sub>Screen design, animated readouts and holographic displays remain editable in the Prop Builder.</sub></td>
-<td width="50%" align="center"><img src="docs/media/releases/0.99.4/06-passenger-minivan.jpg" alt="A minivan with an accessible cabin"><br><sub>Sliding doors reveal the seven-seat cabin in the Prop Builder.</sub></td>
+<td width="50%" align="center"><img src="docs/media/releases/0.99.5/03-character-groups.jpg" alt="A generated group of characters"><br><sub>Character Groups makes a town, an army or a whole people from one description.</sub></td>
+<td width="50%" align="center"><img src="docs/media/releases/0.99.5/04-north-haven.jpg" alt="North Haven with the frame-rate box"><br><sub>Games run without vsync; F2 shows the real frame rate and the graphics device.</sub></td>
 </tr>
 <tr>
-<td width="50%" align="center"><img src="docs/media/releases/0.99.4/03-online-deploy.jpg" alt="Deploying an online game"><br><sub>Online Server writes the game and its PHP server to a web folder.</sub></td>
-<td width="50%" align="center"><img src="docs/media/releases/0.99.4/04-voice-settings.jpg" alt="Avatar voice settings"><br><sub>Set the speaking key, hearing range and who may use voice in Database → Online.</sub></td>
+<td width="50%" align="center"><img src="docs/media/releases/0.99.5/05-open-road.jpg" alt="An Open Road map with cliffs at its edge"><br><sub>High ground rises at the edge of an Open Road map.</sub></td>
+<td width="50%" align="center"><img src="docs/media/releases/0.99.5/06-database-columns.jpg" alt="Database columns of even height"><br><sub>Database pages deal their cards into columns of near the same height.</sub></td>
 </tr>
 </table>
 
-## What's new in 0.99.4
+## What's new in 0.99.5
 
-- **Online worlds:** deploy a game and PHP server together, with player characters, accounts, chat, shared world state and an owner page.
-- **In-game character creation:** let players choose an actor or edit their appearance with the Forge-powered creator, in single-player and online games.
-- **Avatar voice:** optional nearby voice and animated mouths, with project-specific controls. Hosts that support the Node engine can use pushed updates and movement checks.
-- **Characters in motion:** exercise and resting poses, independent bust/butt/fat bounce, smoother live sliders, editable skin finishes and revised body/face controls.
-- **Props and clothing:** improved fabric, seams, wearable symbols and fitted construction; medical and Wasteland props; a minivan with an accessible seven-seat cabin.
-- **Correct sprite presentation:** complete multi-frame walks, correctly cropped event previews and stationary events that stay attached to map tiles while the camera moves.
+- **Battles and parties online:** join another player's Tactical, Classic, Action or First Person battle on any side, watch one, duel, and form parties with their own chat, `/follow` and shared switches.
+- **A game-styled start:** sign-in and character creation are real game windows in the project's own window skin, for keyboard, gamepad, mouse and touch.
+- **Character Groups:** describe a town, an army or a people and the Forge makes every member, with designs, walking sheets, battlers and portraits.
+- **Pictures and motion in User Interfaces:** picture fills with nine-slice and state pictures, animation frames, and float, pulse, spin, sway, fade and appear motion that carries whatever is inside an element.
+- **Faster on every machine:** no vsync and real frame rates on F2, automatic quality that lowers only what a computer is short of, full-resolution 3D where there is room, and far lighter crowds, maps and Battle Rooms.
+- **Two audits:** several hundred faults fixed across event commands, the Database, the editors, battles, imports and builds; enemies can wear equipment (contributed by Xehanort88).
 
-Known CI failures remain; online features have been tested on one server, and real microphones, separate networks and production load still need review. See the [0.99.4 notes](docs/posts/release-notes-0.99.4.md), [online guide](docs/DESIGN-ONLINE.md) and [open items](docs/OPEN-ITEMS.md).
+Eight tests fail in the whole run and most audit fixes are checked by tests only; the newest speed changes still need a check on the weak laptop, and online features have been tested on one server. See the [0.99.5 notes](docs/posts/release-notes-0.99.5.md), [online guide](docs/DESIGN-ONLINE.md) and [open items](docs/OPEN-ITEMS.md).
 
 ## Repository Layout
 
@@ -51,8 +51,8 @@ RPGReactor/
 ## Documentation
 
 - [Editor README](editor/README.md): detailed feature list, source launch steps, project structure, shortcuts, and technical notes.
-- [Latest release notes](docs/posts/release-notes-0.99.4.md): features, screenshots and known issues for 0.99.4.
-- [Previous release notes](docs/posts/release-notes-0.99.3.md): features and fixes in 0.99.3.
+- [Latest release notes](docs/posts/release-notes-0.99.5.md): features, screenshots and known issues for 0.99.5.
+- [Previous release notes](docs/posts/release-notes-0.99.4.md): features and fixes in 0.99.4.
 - [Changelog](CHANGELOG.md): upcoming development and previous releases.
 - [Current status](docs/STATUS.md): the verified state of the tree, runtime defaults, test results, and open work.
 - [Online worlds](docs/DESIGN-ONLINE.md): using Online Server today, measured capacity and the plan.
@@ -82,7 +82,7 @@ RPGReactor/
 - **Authorable HD-2D maps and a 3D world builder**: maps can opt into a perspective 3D presentation while retaining RPG Maker's grid, passability, events, and data format. Map Properties carries the 3D switch, a room (parallax floor, walls, ceiling, sky) and the camera. A **Build** bar over the 3D view lays walls, floors, doors, windows, stairs, roofs, shapes and saved buildings with a snapping ghost, terrain brushes shape rolling ground, water is poured into hollows, and the party walks inside: roofs cut away, walls between the camera and the party go see-through, and stairs lead to a second floor. Buildings are plans in `3d/Structures`, readable JSON that an editor page, a validator and a shell command all understand.
 - **Battles on the map**: beside the Classic battle screen, a game, map or troop can fight in Tactical (turn-based on the grid, with range, flanking, cover, height, line of sight, overwatch and a forecast), Action (real time, in third person or from above) or First Person, on 2D and 3D maps. Events become units through Battle Setup, map events keep running during the fight, Action Sequences play on the map, a cinematic camera films Tactical battles, and each mode has its own HUD as an ordinary User Interfaces record. See the [battle modes guide](docs/BATTLE-MODES.md).
 - **Vehicles**: Database vehicles with a sprite or 3D model, starting positions, engine sound, an optional class for stats, skills and equipment, and a rider's seat marked on the model. The party rides its own vehicles behind the leader, vehicles travel between maps and are saved where they are parked, and in Tactical and Classic battles a mounted unit fights with the vehicle's range, weapon and skills while the vehicle takes its own damage.
-- **Online worlds (early)**: choose Online in Database › Online, then tick Online Server when deploying, and the game and a small PHP server go into a web folder, with no database or router setup. Players build their own 3D character in the game, which everyone else on the map then sees walking around, on the web or a desktop build. Accounts, chat, voice, sleeping and waking, and a shared world are included. See [New in development](#new-in-development-online-worlds).
+- **Online worlds (early)**: choose Online in Database › Online, then tick Online Server when deploying, and the game and a small PHP server go into a web folder, with no database or router setup. Players build their own 3D character in the game, which everyone else on the map then sees walking around, on the web or a desktop build. Accounts, chat, voice, sleeping and waking, and a shared world are included. See the [online guide](docs/DESIGN-ONLINE.md#using-it-today).
 - **Seamless neighboring maps**: each side of a map can name the map that lies past it. Neighbors stand on the horizon two maps out and are entered with no fade or loading, on foot or riding, on 3D and 2D maps; only the maps around the party are in memory.
 - **Model optimization**: GLB import can cap textures at 2K, pack skin weights, reduce geometry, and reorder triangles for the GPU vertex cache. The 3D database also offers Optimize for existing models and reports geometry, materials, textures, and rig costs. Both presets can change geometry; aggressive reduction targets fewer triangles. Separate distance-level file generation is disabled in both presets, while the runtime still supports existing authored LOD files. The 3D world is drawn at three quarters of game resolution and enlarged with a sharpening filter, without MSAA; lighting and light haze are worked out at a quarter size and filtered up by surface, and dense models are drawn at simplified distance levels in shadows, and in the view on weak GPUs. Adaptive resolution is opt-in.
 - **Quests and BGM sequences**: author quests in the database, import VisuStella/Yanfly/GS definitions, and manage objectives through events. Quest progress saves with the game, rewards can give gold, items, EXP or a common event, and the tracked quest shows on the map. Music sequences, kept in a database library or on a map and playable in battle, repeat ordered track, silence, and palette entries; palette layers choose tracks from random pools with timing and fade controls. Native track loop points are ignored inside a sequence.
@@ -174,13 +174,14 @@ cd editor
 cd editor
 npm run test:changed   # what your edits reach; skips everything already proven on exactly this code
 npm run test:whole     # the same, plus tests whose inputs a fingerprint can't see (folders, project data)
-npm run test:all       # every test, about 7 minutes on ten workers
+npm run test:fast      # every test except the slow sweeps listed in tests/test-tiers.json
+npm run test:all       # every test, about 10 minutes on eight workers
 npm test               # every test, as CI runs it
 ```
 
-Every run keeps each pass as it happens, so an interrupted `test:changed` or `test:whole` resumes where it stopped. The same tests run on a working machine and on CI. Tests use small default pictures (`tests/helpers/small-pictures.cjs`); a test that judges pixels asks for its size explicitly. Sweeps use `tests/helpers/coverage.cjs`: every value, paired rather than multiplied; `RR_TEST_EXHAUSTIVE=1` walks every combination.
+Every run keeps each pass as it happens, so an interrupted `test:changed` or `test:whole` resumes where it stopped. The same tests run on a working machine and on CI. Tests use small default pictures (`tests/helpers/small-pictures.cjs`, which the npm scripts load and a bare `node --test` run does not); a test that judges pixels asks for its size explicitly. Sweeps use `tests/helpers/coverage.cjs`: every value, paired rather than multiplied; `RR_TEST_EXHAUSTIVE=1` walks every combination.
 
-GitHub Actions runs syntax checks, the full Node suite, dependency audit, patch hygiene, and clean-checkout checks. The suite covers editor data round trips, runtime compatibility, rendering contracts, save safety, localization, generators, deployment, and release infrastructure. On 2026-10-29, before the 0.99.3 cut, local validation completed with **8905 passing tests**, 33 skipped and no failures. A separate CI GUI job runs the Web persistence smoke and five NW.js smokes (save, interaction order, keyboard, menus, event double-click); the other smokes in `editor/tests/smoke` are local gates. See [current status](docs/STATUS.md) for verification limits and [the release checklist](docs/RELEASE-CHECKLIST.md) for the release steps.
+GitHub Actions runs syntax checks, the full Node suite, dependency audit, patch hygiene, and clean-checkout checks. The suite covers editor data round trips, runtime compatibility, rendering contracts, save safety, localization, generators, deployment, and release infrastructure. On 2026-11-12, before the 0.99.5 cut, local validation completed with **9718 passing tests**, 11 skipped and 8 failures (seven long-standing, one timing test that passes alone). A separate CI GUI job runs the Web persistence smoke and five NW.js smokes (save, interaction order, keyboard, menus, event double-click); the other smokes in `editor/tests/smoke` are local gates. See [current status](docs/STATUS.md) for verification limits and [the release checklist](docs/RELEASE-CHECKLIST.md) for the release steps.
 
 ## Trusted Projects
 
@@ -188,7 +189,7 @@ Treat an RPG project like source code. Project plugins and project-local Charact
 
 ## Bundled Demo Limitations
 
-Reactor One is a starter and compatibility showcase, not a content-complete game. It is a 3D project: its party and the enemies it fights are 3D models, so it ships no 2D battler sheets. Some unused leftover records (actors 6–8, enemies 3–5) have no art. Every sound the Demo names exists on disk. The maintained inventory is in [`docs/demo-missing-se.md`](docs/demo-missing-se.md).
+Reactor One is a starter and compatibility showcase, not a content-complete game. It is a 3D project: its party and the enemies it fights are 3D models, so it ships no 2D battler sheets. Some unused leftover records (enemies 3–5) have no art. Every sound the Demo names exists on disk. The maintained inventory is in [`docs/demo-missing-se.md`](docs/demo-missing-se.md).
 
 ## Runtime
 
@@ -204,17 +205,18 @@ for third-party files or user/project content.
 ## Cutting a Source Release
 
 `cut-release.cjs` is the canonical source-release path. Run it from a clean
-`main` worktree after all 0.99.4 changes have been committed:
+`main` worktree after all 0.99.5 changes have been committed:
 
 ```bash
-node editor/build-scripts/cut-release.cjs 0.99.4 --dry-run
-node editor/build-scripts/cut-release.cjs 0.99.4
+node editor/build-scripts/cut-release.cjs 0.99.5 --dry-run
+node editor/build-scripts/cut-release.cjs 0.99.5
 ```
 
 The command runs the complete editor test suite, finalizes both changelog
 headings with the release date, updates `editor/package.json`, the root README
-release link and its recognized validation-count sentence, creates a release
-commit when those surfaces changed, creates an annotated `v0.99.4` tag, and pushes the branch and tag. The tag push starts
+release link and its recognized validation-count sentence, moves the cycle's
+dated handoff entries to `docs/archive/handoff/<version>.md`, creates a release
+commit when those surfaces changed, creates an annotated `v0.99.5` tag, and pushes the branch and tag. The tag push starts
 `publish-release.yml`, which creates or updates the GitHub source release using
 that version's root changelog section. `--no-push` stops after creating the tag.
 Other version prose, validation dates, the editor README, and the status summary

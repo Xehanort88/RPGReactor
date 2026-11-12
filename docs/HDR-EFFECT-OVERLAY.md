@@ -24,8 +24,9 @@ their runtime revision changes. Game and editor distribution preflights require
 the module, and the bundled Demo carries the same runtime.
 
 The file defines two globals. `ReactorHdrRenderer` is the light pipeline itself
-(float targets, bloom, one grade, the composite), one instance per WebGL1
-context and free of game state. `ReactorHdrOverlay` is the game's adapter:
+(float targets, bloom, one grade, the composite), one instance per WebGL
+context (the overlay's WebGL1, or PIXI's WebGL2 for the in-scene path) and free
+of game state. `ReactorHdrOverlay` is the game's adapter:
 sidecar requests, animation selection, the fallback twin and the overlay
 canvas. The editor loads the same file for its previews and keeps only the
 renderer (see Editor previews).
@@ -216,14 +217,15 @@ complete `ReactorHdrOverlay.overrides[effectName]` entry, including fallback.
   invalidates them, restoration creates them on the next HDR animation. The
   native module ends active HDR effects at context loss; it does not preserve
   their clock. New animations wait until the context is restored.
-- This supports the PixiJS 8 WebGL1 effect overlay. Older inline Pixi render
-  paths do not use it. An effect anchored on a 3D model is drawn by the 3D scene,
-  which has no HDR path: it plays the sidecar's normally graded twin, and a
-  `-hdr` effect without a valid sidecar is refused there as everywhere else.
-  Refraction/distortion nodes must be excluded from HDR assets. A sidecar can now
-  start one synchronized ordinary companion beside its HDR effect. It draws before
-  the light, with optional depth occlusion. This does not interleave the two
-  effects per node; Effekseer cannot filter individual nodes during a draw.
+- This supports the WebGL1 effect overlay and the in-scene path on PIXI 8's
+  WebGL2 context. Effects the 3D scene draws on its own context
+  (`Reactor3D.GpuEffects`) do not use it: an effect anchored on a 3D model plays
+  the sidecar's normally graded twin, and a `-hdr` effect without a valid
+  sidecar is refused there as everywhere else. Refraction/distortion nodes must
+  be excluded from HDR assets. A sidecar can start one synchronized ordinary
+  companion beside its HDR effect. It draws before the light, with optional
+  depth occlusion. This does not interleave the two effects per node; Effekseer
+  cannot filter individual nodes during a draw.
 
 ## Editor previews
 

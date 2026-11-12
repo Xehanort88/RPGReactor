@@ -4,7 +4,6 @@
  */
 class PluginCommandEditor {
     constructor(databaseManager, projectController) {
-        console.log('PluginCommandEditor constructor called');
         this.databaseManager = databaseManager;
         this.projectController = projectController;
         this.modal = null;
@@ -40,7 +39,6 @@ class PluginCommandEditor {
      * @param {function} callback - Callback when done editing
      */
     show(command, callback, context = null) {
-        console.log('PluginCommandEditor.show() called with command:', command);
         this.callback = callback;
         this.selectedPlugin = null;
         this.selectedCommand = null;
@@ -84,19 +82,15 @@ class PluginCommandEditor {
         }
 
         if (!this.modal) {
-            console.log('Creating modal for first time');
             this.createModal();
         }
 
-        console.log('Showing modal with loading state');
         // Show modal immediately with loading state
         this.modal.style.display = 'flex';
         this.showLoadingState();
 
         // Load available plugins asynchronously
-        console.log('Starting to load plugins...');
         this.loadAvailablePlugins().then(() => {
-            console.log('Plugins loaded, rendering content');
             this.renderContent();
         }).catch(err => {
             console.error('Error loading plugins:', err);
@@ -197,33 +191,34 @@ class PluginCommandEditor {
      * Load available plugins from reactor_plugins.js
      */
     async loadAvailablePlugins() {
-        // If already loaded, skip
-        if (this.availablePlugins.length > 0) {
-            console.log('Plugins already loaded, using cached data');
-            return;
-        }
 
         const tt = text => window.I18n ? window.I18n.tText(text) : text;
         try {
             const currentProject = this.projectController.getCurrentProject();
-            console.log('Current project:', currentProject);
 
             if (!currentProject || !currentProject.path) {
                 throw new Error(tt('No project loaded'));
             }
 
             const projectPath = currentProject.path;
-            console.log('Project path:', projectPath);
 
             // Determine plugins file based on corescript type
             const usesReactorCorescript = this.fs.existsSync(this.path.join(projectPath, 'js', 'reactor_main.js'));
             const pluginsFile = usesReactorCorescript ? 'reactor_plugins.js' : 'plugins.js';
             const pluginsPath = this.path.join(projectPath, 'js', pluginsFile);
-            console.log('Loading plugins from:', pluginsPath);
 
             if (!this.fs.existsSync(pluginsPath)) {
                 throw new Error(`${tt('Plugins file not found:')} ${pluginsFile}`);
             }
+
+            // Read again when the project or its plugin list changed since (plugins turned on, another project):
+            // the list was kept for the whole session.
+            let stamp = '';
+            try { stamp = String(this.fs.statSync(pluginsPath).mtimeMs); } catch (_) { /* read it anyway */ }
+            const key = pluginsPath + '|' + stamp;
+            if (this.availablePlugins.length > 0 && this._pluginsKey === key) return;
+            this._pluginsKey = key;
+            this.availablePlugins = [];
 
             const text = this.fs.readFileSync(pluginsPath, 'utf8');
 
@@ -234,18 +229,14 @@ class PluginCommandEditor {
             }
 
             const pluginsArray = JSON.parse(pluginsMatch[1]);
-            console.log('Found plugins:', pluginsArray.length);
 
             // Filter to enabled plugins only
             this.availablePlugins = pluginsArray.filter(p => p.status === true);
-            console.log('Enabled plugins:', this.availablePlugins.length);
 
             // Load command definitions for each plugin
             for (const plugin of this.availablePlugins) {
                 await this.loadPluginCommands(plugin.name, projectPath);
             }
-
-            console.log('Plugins loaded successfully');
         } catch (err) {
             console.error('Error loading plugins:', err);
             throw err;
@@ -283,8 +274,14 @@ class PluginCommandEditor {
         const commands = [];
         const structDefinitions = RRPluginAnnotations.parseStructDefinitions(pluginSource);
 
-        // Split into comment blocks
-        const commentBlocks = pluginSource.match(/\/\*:[\s\S]*?\*\//g) || [];
+        // Split into comment blocks. A plugin with help in several languages repeats its commands in
+        // each (`/*:` and `/*:ja`): read one language only, the plain `/*:` blocks when it has them,
+        // else the blocks of the first language it gives. Every language would list each command
+        // twice, and the last one would rewrite a reopened command's label and rows.
+        const allBlocks = pluginSource.match(/\/\*:[\s\S]*?\*\//g) || [];
+        const languageOf = block => (/^\/\*:([A-Za-z][\w-]*)/.exec(block) || [])[1] || '';
+        const language = allBlocks.some(block => !languageOf(block)) ? '' : (allBlocks.length ? languageOf(allBlocks[0]) : '');
+        const commentBlocks = allBlocks.filter(block => languageOf(block) === language);
 
         for (const block of commentBlocks) {
             const lines = block.split('\n');
@@ -331,7 +328,8 @@ class PluginCommandEditor {
         }
 
         for (const command of commands) command.structDefinitions = structDefinitions;
-        return commands;
+        // A command defined twice keeps its first definition.
+        return commands.filter((command, index) => commands.findIndex(other => other.name === command.name) === index);
     }
 
     /**
@@ -683,7 +681,8 @@ class PluginCommandEditor {
         const currentValue = ['boolean', 'number'].includes(argType)
             ? this.convertArgValue(rawValue, argType)
             : rawValue;
-        if (['boolean', 'number'].includes(argType)) this.args[arg.name] = currentValue;
+        // What is shown is what is saved: an argument the stored command lacked is written with the default on screen.
+        if (['boolean', 'number'].includes(argType) || this.args[arg.name] === undefined) this.args[arg.name] = currentValue;
 
         const choiceWidget = typeof RRPluginParamWidgets !== 'undefined'
             ? RRPluginParamWidgets.create({

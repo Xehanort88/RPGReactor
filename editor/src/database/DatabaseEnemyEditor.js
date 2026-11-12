@@ -145,7 +145,7 @@ class DatabaseEnemyEditor {
                     <tbody>
                         ${paramRows.map(row => `
                             <tr>
-                                <td style="white-space: nowrap;">${row.label}</td>
+                                <td style="white-space: nowrap;">${rrEscapeHtml(row.label)}</td>
                                 <td>
                                     <input type="number"
                                            class="database-field-value database-field-value-small enemy-param-input"
@@ -649,6 +649,12 @@ class DatabaseEnemyEditor {
                     if (dataIdWrapper) dataIdWrapper.style.display = 'none';
                     if (denomWrapper) denomWrapper.style.display = 'none';
                     if (qtyWrapper) qtyWrapper.style.display = 'none';
+                    // None stores 1 / 1: the hidden box and its readout follow, so they
+                    // do not show the old chance when the slot is used again.
+                    const box = document.querySelector(`input[data-drop-index="${dropIndex}"][data-drop-field="denominator"][data-enemy-id="${enemy.id}"]`);
+                    if (box) box.value = '1';
+                    const readout = document.getElementById(`enemy-drop-rate-${enemy.id}-${dropIndex}`);
+                    if (readout) readout.textContent = this.formatDropRate(1);
                 } else {
                     // 'flex', not '': clearing the inline display drops the
                     // row to block and re-flows the controls it holds.
@@ -1136,8 +1142,6 @@ class DatabaseEnemyEditor {
                 contentCells.forEach(cell => {
                     cell.style.setProperty('background-color', 'var(--color-bg-selected)', 'important');
                 });
-                table.closest('.database-section')?.focus();
-                this.updateActionButtonStates(table.closest('.database-section'), table);
             });
 
             row.addEventListener('mouseleave', () => {
@@ -1167,6 +1171,10 @@ class DatabaseEnemyEditor {
                 contentCells.forEach(cell => {
                     cell.style.setProperty('background-color', 'var(--color-bg-selected)', 'important');
                 });
+                // On the click, not on the pointer passing over a row: that took the keyboard from a field being typed
+                // in (Delete then removed the selected pattern), and a clicked row never brought Edit and Delete to life.
+                table.closest('.database-section')?.focus();
+                this.updateActionButtonStates(table.closest('.database-section'), table);
             });
 
             row.addEventListener('dblclick', () => {
@@ -1852,7 +1860,7 @@ class DatabaseEnemyEditor {
         if (fieldName === 'params' && paramIndex !== null) {
             if (!enemy.params) enemy.params = [0, 0, 0, 0, 0, 0, 0, 0];
             enemy.params[parseInt(paramIndex)] = parseInt(value) || 0;
-            console.log(`Updated enemy ${enemyId} param[${paramIndex}] to:`, value);
+            console.debug(`Updated enemy${enemyId} param[${paramIndex}] to:`, value);
         }
         // Handle drop items
         else if (fieldName === 'dropItems' && dropIndex !== null && dropField !== null) {
@@ -1885,7 +1893,7 @@ class DatabaseEnemyEditor {
                 DatabaseEnemyEditor.setDropQuantity(enemy.dropItems[idx], current.min, current.max);
             }
             if (dropField === 'kind' && enemy.dropItems[idx].kind === 0) DatabaseEnemyEditor.setDropQuantity(enemy.dropItems[idx], 1, 1);
-            console.log(`Updated enemy ${enemyId} dropItems[${idx}].${dropField} to:`, value);
+            console.debug(`Updated enemy${enemyId} dropItems[${idx}].${dropField} to:`, value);
         }
         // Handle numeric fields
         else if (fieldName === 'maxTp') {
@@ -1905,12 +1913,12 @@ class DatabaseEnemyEditor {
         }
         else if (fieldName === 'battlerHue' || fieldName === 'exp' || fieldName === 'gold') {
             enemy[fieldName] = parseInt(value) || 0;
-            console.log(`Updated enemy ${enemyId} field ${fieldName} to:`, value);
+            console.debug(`Updated enemy${enemyId} field ${fieldName} to:`, value);
         }
         // Handle string fields (name, note)
         else {
             enemy[fieldName] = value;
-            console.log(`Updated enemy ${enemyId} field ${fieldName} to:`, value);
+            console.debug(`Updated enemy${enemyId} field ${fieldName} to:`, value);
         }
 
         this.databaseManager.updateEnemy(enemyId, enemy);
@@ -2044,9 +2052,13 @@ class DatabaseEnemyEditor {
 
         const path = require('path');
         const fs = require('fs');
-        const searchDirs = ['enemies', 'sv_enemies', 'characters'];
+        // Only the folder a battle loads the enemy from, as MZ offers it: side view reads img/sv_enemies/, front view
+        // img/enemies/ (Sprite_Enemy.loadBitmap). A picture from another folder stopped the battle on a load error.
+        // A character sheet is set under Battle Presentation instead.
+        const sideView = !!this.databaseManager?.data?.system?.optSideView;
+        const searchDirs = [sideView ? 'sv_enemies' : 'enemies'];
 
-        // Collect files from all battler directories
+        // Collect files from the battler directory
         const fileMap = new Map(); // reference -> directory (first directory wins for preview)
         for (const dir of searchDirs) {
             const dirPath = path.join(project.path, 'img', dir);

@@ -20,9 +20,6 @@ if ($action === 'sync') {
     // Kept first and short: this runs several times a second for every player.
     $slot = player($secret);
     $dir = dataDir($config);
-    $state = aliveAt($dir, $slot);
-    if ($state === REMOVED) fail(403, 'You have been removed from this world.');
-    if ($state === REPLACED) fail(403, 'You signed in somewhere else.');
     $map = intParam('m', 1, 9999);
     $now = time();
     $file = fopen($dir . '/p2m' . $map . '.bin', 'c+b');
@@ -56,10 +53,16 @@ if ($action === 'join') {
     $times = strlen($alive) >= 4 ? unpack('V*', substr($alive, 0, strlen($alive) - strlen($alive) % 4)) : [];
     $slot = -1;
     $limit = max(1, min(SLOTS, (int)($config['maxPlayers'] ?? SLOTS)));
+    // A slot gone quiet is taken first. One marked "removed" or "signed in elsewhere" is taken only when no other is
+    // free: its old holder may not have been told yet, and a newcomer's time written over the mark hid it (that game
+    // then joined again, a removed player back in the world, a replaced device throwing the newer one out).
+    $marked = -1;
     for ($i = 0; $i < $limit; $i++) {
         $seen = $times[$i + 1] ?? 0;
-        if ($seen === REMOVED || $seen === REPLACED || $seen < $now - ALIVE_SECONDS) { $slot = $i; break; }
+        if ($seen === REMOVED || $seen === REPLACED) { if ($marked < 0) $marked = $i; continue; }
+        if ($seen < $now - ALIVE_SECONDS) { $slot = $i; break; }
     }
+    if ($slot < 0) $slot = $marked;
     if ($slot < 0) { flock($lock, LOCK_UN); fail(503, 'This world is full.'); }
     // One person, one body: a second sign-in ends the first, so two games can't overwrite one life.
     if ($account) {
@@ -68,13 +71,13 @@ if ($action === 'join') {
         }
     }
     touchAlive($dir, $slot, $now);
-    $name = cleanName();
-    // A guest cannot take a registered player's name.
-    if (!$account && readAccount($dir, accountKey($name))) $name = textStart($name, 16) . ' (guest)';
+    // The visit's nonce is kept with the slot before its token is handed out: tokens of earlier visits to it stop working.
+    $nonce = bin2hex(random_bytes(8));
+    setSlotNonce($dir, $slot, $nonce);
+    $name = fairName($dir, $slot, cleanName(), $account ? (string)$account['username'] : '');
     setPlayer($dir, $slot, $name, intParam('c', 0, 9999), knownModel($dir, (string)($_GET['h'] ?? '')), $account ? (string)$account['username'] : '', $ip);
     flock($lock, LOCK_UN);
-    $nonce = bin2hex(random_bytes(8));
-    $answer = ['slot' => $slot, 'nonce' => $nonce, 'token' => tokenFor($slot, $nonce, $secret), 'protocol' => PROTOCOL, 'chat' => chatCount($dir), 'world' => worldCount($dir)];
+    $answer = ['slot' => $slot, 'name' => (string)(readNames($dir)[$slot]['name'] ?? ''), 'nonce' => $nonce, 'token' => tokenFor($slot, $nonce, $secret), 'protocol' => PROTOCOL, 'chat' => chatCount($dir), 'world' => worldCount($dir)];
     if (ensureEngine($config, $dir, $settings)) $answer['engine'] = engineAddress();
     respond($answer);
 }
@@ -84,7 +87,22 @@ if ($action === 'look') {
     $dir = dataDir($config);
     $lock = lockPlayers($dir);
     $known = readNames($dir)[$slot] ?? [];
-    setPlayer($dir, $slot, cleanName(), intParam('c', 0, 9999), knownModel($dir, (string)($_GET['h'] ?? '')), (string)($known['account'] ?? ''), (string)($known['ip'] ?? ''));
+    // A new look may carry a new name: held to the same rules as at join (no one else's registered name, none in use).
+    $name = fairName($dir, $slot, cleanName(), (string)($known['account'] ?? ''));
+    setPlayer($dir, $slot, $name, intParam('c', 0, 9999), knownModel($dir, (string)($_GET['h'] ?? '')), (string)($known['account'] ?? ''), (string)($known['ip'] ?? ''));
+    flock($lock, LOCK_UN);
+    respond(['ok' => true, 'name' => $name]);
+}
+
+if ($action === 'state') {
+    // What this player is riding and whether they are fighting. Sent only when it changes.
+    $slot = player($secret);
+    $dir = dataDir($config);
+    $body = jsonBody();
+    $lock = lockPlayers($dir);
+    $place = is_array($body['place'] ?? null) ? $body['place'] : [];
+    setPlayerState($dir, $slot, cleanRide($body['ride'] ?? null), cleanFight((string)($body['fight'] ?? '')),
+        ['map' => max(0, min(9999, (int)($place['map'] ?? 0))), 'x' => max(0, min(9999, (int)($place['x'] ?? 0))), 'y' => max(0, min(9999, (int)($place['y'] ?? 0)))]);
     flock($lock, LOCK_UN);
     respond(['ok' => true]);
 }
@@ -95,10 +113,210 @@ if ($action === 'who') {
     foreach (explode(',', (string)($_GET['ids'] ?? '')) as $id) {
         if (ctype_digit($id) && isset($names[(int)$id])) {
             $entry = $names[(int)$id];
-            $out[(int)$id] = ['name' => $entry['name'] ?? '', 'actor' => $entry['actor'] ?? 0, 'model' => $entry['model'] ?? ''];
+            $out[(int)$id] = ['name' => $entry['name'] ?? '', 'actor' => $entry['actor'] ?? 0, 'model' => $entry['model'] ?? '', 'ride' => $entry['ride'] ?? null, 'fight' => $entry['fight'] ?? ''];
         }
     }
     respond(['players' => (object)$out]);
+}
+
+// ---- Parties and news ----
+
+if ($action === 'party') {
+    $slot = player($secret);
+    $dir = dataDir($config);
+    $me = (string)(readNames($dir)[$slot]['name'] ?? '');
+    if ($me === '') fail(401, 'Unknown player.');
+    $body = jsonBody();
+    $do = (string)($body['do'] ?? '');
+    $lock = fopen($dir . '/parties.lock', 'c');
+    if (!$lock || !flock($lock, LOCK_EX)) fail(500, 'Could not reach the parties.');
+    $state = readParties($dir);
+    [$id, $party] = partyOf($state, $me);
+    $refuse = function (int $status, string $message) use ($lock): void { flock($lock, LOCK_UN); fail($status, $message); };
+    if ($do === 'invite') {
+        $to = slotNamed($dir, textStart(cleanText((string)($body['name'] ?? '')), 24), $slot);
+        $name = $to >= 0 ? (string)(readNames($dir)[$to]['name'] ?? '') : '';
+        if ($name === '' || $to === $slot) $refuse(404, 'Nobody by that name is here.');
+        if (partyOf($state, $name)[1]) $refuse(409, $name . ' is already in a party.');
+        if ($party && count($party['members']) >= PARTY_MOST) $refuse(409, 'Your party is full.');
+        $state['invites'][$name] = ['from' => $me, 'at' => time()];
+    } elseif ($do === 'accept') {
+        $invite = $state['invites'][$me] ?? null;
+        unset($state['invites'][$me]);
+        if (!$invite || $invite['at'] < time() - 120) $refuse(410, 'That invitation has lapsed.');
+        [$theirs, $group] = partyOf($state, (string)$invite['from']);
+        // Already in that party (both invited each other): nothing to do, and nobody is listed twice.
+        if ($party && $id === $theirs) { writeParties($dir, $state); flock($lock, LOCK_UN); respond(['ok' => true]); }
+        // Leaving another party for this one is a leave like any other: it keeps a leader who is in it, or ends.
+        if ($party) {
+            $left = array_values(array_diff($party['members'], [$me]));
+            if (count($left) < 2) unset($state['parties'][$id]);
+            else { $state['parties'][$id]['members'] = $left; if ($party['leader'] === $me) $state['parties'][$id]['leader'] = $left[0]; }
+        }
+        if (!$group) { $theirs = bin2hex(random_bytes(6)); $group = ['leader' => $invite['from'], 'members' => [$invite['from']]]; }
+        if (count($group['members']) >= PARTY_MOST) $refuse(409, 'That party is full.');
+        $group['members'][] = $me;
+        $state['parties'][$theirs] = $group;
+    } elseif ($do === 'set') {
+        // Values the project shares within a party. The last one in stands, as in the world lane.
+        if (!$party) $refuse(409, 'You are not in a party.');
+        $world = is_array($settings['world'] ?? null) ? $settings['world'] : [];
+        $switches = idList((string)($world['partySwitches'] ?? ''));
+        $variables = idList((string)($world['partyVariables'] ?? ''));
+        $values = is_array($party['values'] ?? null) ? $party['values'] : ['s' => [], 'v' => []];
+        foreach (is_array($body['changes'] ?? null) ? array_slice($body['changes'], 0, 64) : [] as $change) {
+            if (!is_array($change)) continue;
+            $changeId = (int)($change['id'] ?? 0);
+            $value = $change['value'] ?? null;
+            if (($change['kind'] ?? '') === 's' && isset($switches[$changeId])) $values['s'][$changeId] = (bool)$value;
+            elseif (($change['kind'] ?? '') === 'v' && isset($variables[$changeId]) && (is_int($value) || is_float($value) || is_bool($value) || (is_string($value) && strlen($value) <= 256))) $values['v'][$changeId] = $value;
+        }
+        $state['parties'][$id]['values'] = $values;
+    } elseif ($do === 'challenge') {
+        $to = slotNamed($dir, textStart(cleanText((string)($body['name'] ?? '')), 24), $slot);
+        $name = $to >= 0 ? (string)(readNames($dir)[$to]['name'] ?? '') : '';
+        if ($name === '') $refuse(404, 'Nobody by that name is here.');
+        $state['challenges'][$name] = ['from' => $me, 'at' => time(), 'accepted' => false];
+    } elseif ($do === 'answerChallenge') {
+        $challenge = $state['challenges'][$me] ?? null;
+        if (!$challenge || $challenge['at'] < time() - 120) { unset($state['challenges'][$me]); $refuse(410, 'That challenge has lapsed.'); }
+        if (!empty($body['yes'])) $state['challenges'][$me]['accepted'] = true;
+        else unset($state['challenges'][$me]);
+    } elseif ($do === 'decline') {
+        unset($state['invites'][$me]);
+    } elseif ($do === 'leave') {
+        if ($party) {
+            $left = array_values(array_diff($party['members'], [$me]));
+            if (count($left) < 2) unset($state['parties'][$id]);
+            else {
+                // Everything else the party holds (the values it shares) stays with those who remain.
+                $state['parties'][$id]['members'] = $left;
+                if ($party['leader'] === $me) $state['parties'][$id]['leader'] = $left[0];
+            }
+        }
+    } else $refuse(400, 'Unknown party request.');
+    writeParties($dir, $state);
+    flock($lock, LOCK_UN);
+    respond(['ok' => true]);
+}
+
+if ($action === 'news') {
+    // Every few seconds: this player's party, anyone inviting them, and the battles on this map.
+    $slot = player($secret);
+    $dir = dataDir($config);
+    $names = readNames($dir);
+    $me = (string)($names[$slot]['name'] ?? '');
+    $map = intParam('m', 1, 9999);
+    $state = readParties($dir);
+    [$id, $party] = partyOf($state, $me);
+    $invite = $state['invites'][$me] ?? null;
+    $out = ['battles' => []];
+    $out['party'] = $party ? ['id' => $id, 'leader' => $party['leader'], 'values' => $party['values'] ?? null, 'members' => array_map(function (string $name) use ($dir, $names): array {
+        $at = slotNamed($dir, $name, -1, $names);
+        return ['name' => $name, 'online' => $at >= 0, 'place' => $at >= 0 ? ($names[$at]['place'] ?? null) : null];
+    }, $party['members'])] : null;
+    $out['invite'] = $invite && $invite['at'] >= time() - 120 ? (string)$invite['from'] : '';
+    // A fight between two players: the one asked sees who asks; the one who asked hears the answer once.
+    $challenge = $state['challenges'][$me] ?? null;
+    $out['challenge'] = $challenge && !$challenge['accepted'] && $challenge['at'] >= time() - 120 ? (string)$challenge['from'] : '';
+    $out['duel'] = '';
+    foreach ($state['challenges'] ?? [] as $target => $entry) {
+        if (($entry['from'] ?? '') !== $me || empty($entry['accepted'])) continue;
+        $out['duel'] = (string)$target;
+        $lock = fopen($dir . '/parties.lock', 'c');
+        if ($lock && flock($lock, LOCK_EX)) { $fresh = readParties($dir); unset($fresh['challenges'][$target]); writeParties($dir, $fresh); flock($lock, LOCK_UN); }
+        break;
+    }
+    foreach (readBattles($dir) as $battle => $entry) {
+        if ((int)$entry['map'] === $map && (int)$entry['at'] >= time() - BATTLE_SECONDS) $out['battles'][] = ['id' => $battle] + $entry;
+    }
+    respond($out);
+}
+
+// ---- Shared battles ----
+
+if ($action === 'bOpen' || $action === 'bBeat') {
+    $slot = player($secret);
+    $dir = dataDir($config);
+    $body = jsonBody();
+    $lock = lockBattles($dir);
+    $battles = readBattles($dir);
+    foreach ($battles as $battle => $entry) {
+        if ((int)$entry['at'] >= time() - 300) continue;
+        unset($battles[$battle]);
+        @unlink($dir . '/battles/' . $battle . '.log');
+    }
+    $id = $action === 'bOpen' ? bin2hex(random_bytes(8)) : (string)($body['id'] ?? '');
+    if ($action === 'bBeat' && (!isset($battles[$id]) || (int)$battles[$id]['host'] !== $slot)) { flock($lock, LOCK_UN); fail(404, 'That battle has ended.'); }
+    if (!is_dir($dir . '/battles')) @mkdir($dir . '/battles', 0770, true);
+    $sides = [];
+    foreach (is_array($body['sides'] ?? null) ? array_slice($body['sides'], 0, 32, true) : [] as $who => $side) $sides[textStart(cleanText((string)$who), 24)] = preg_replace('/[^a-z0-9]/', '', (string)$side);
+    $battles[$id] = ['map' => intParam('m', 1, 9999), 'x' => max(0, min(9999, (int)($body['x'] ?? 0))), 'y' => max(0, min(9999, (int)($body['y'] ?? 0))),
+        'mode' => cleanFight((string)($body['mode'] ?? '')), 'host' => $slot, 'name' => (string)(readNames($dir)[$slot]['name'] ?? ''), 'sides' => (object)$sides, 'at' => time(),
+        'was' => preg_replace('/[^a-f0-9]/', '', (string)($body['was'] ?? ($battles[$id]['was'] ?? ''))),
+        // The players the host's game has let in (their slots): only they, and the host, may write more than a join.
+        'members' => array_values(array_unique(array_map('intval', array_filter(is_array($body['members'] ?? null) ? array_slice($body['members'], 0, 64) : [], 'is_numeric'))))];
+    writeBattles($dir, $battles);
+    flock($lock, LOCK_UN);
+    respond(['id' => $id]);
+}
+
+if ($action === 'bClose') {
+    $slot = player($secret);
+    $dir = dataDir($config);
+    $lock = lockBattles($dir);
+    $battles = readBattles($dir);
+    $id = (string)(jsonBody()['id'] ?? '');
+    if (isset($battles[$id]) && (int)$battles[$id]['host'] === $slot) { $battles[$id]['at'] = 0; writeBattles($dir, $battles); }
+    flock($lock, LOCK_UN);
+    respond(['ok' => true]);
+}
+
+if ($action === 'bSay') {
+    // Messages for a battle's log, stamped with who sent them. Only the host's game believes anything in them.
+    $slot = player($secret);
+    $dir = dataDir($config);
+    // (More than other bodies: one message alone, a large battle's roster, may be up to 200,000 bytes; `bRead` reads 262,144.)
+    $body = jsonBody(262144);
+    $id = (string)($body['id'] ?? '');
+    $file = battleFile($dir, $id);
+    // Only a battle still listed has a log, and only its host and the players it let in say more than asking to
+    // join or leave: a made-up id cannot fill the disk, and a stranger cannot speak in someone else's battle.
+    $battle = readBattles($dir)[$id] ?? null;
+    if (!$battle || (int)$battle['at'] < time() - 300) fail(404, 'That battle has ended.');
+    $member = (int)$battle['host'] === $slot || in_array($slot, array_map('intval', (array)($battle['members'] ?? [])), true);
+    $sent = is_array($body['lines'] ?? null) ? array_slice($body['lines'], 0, 64) : [];
+    if (!$member) {
+        $sent = array_slice($sent, 0, 2);
+        foreach ($sent as $message) if (!is_array($message) || !in_array($message['t'] ?? '', ['join', 'leave'], true)) fail(403, 'You are not in this battle.');
+        // A request to join carries one party, not a flood: a stranger cannot fill the battle's log.
+        if (strlen((string)json_encode($sent)) > 16384) fail(413, 'That is too much to ask.');
+    }
+    $lines = '';
+    foreach ($sent as $message) $lines .= jsonText(['from' => $slot, 'm' => $message]) . "\n";
+    if ((int)@filesize($file) + strlen($lines) > BATTLE_LOG_BYTES) fail(413, 'This battle has said too much.');
+    file_put_contents($file, $lines, FILE_APPEND | LOCK_EX);
+    respond(['ok' => true]);
+}
+
+if ($action === 'bRead') {
+    // From a place in the log to its last whole line. A place below zero asks only where the end is.
+    player($secret);
+    $dir = dataDir($config);
+    $file = battleFile($dir, (string)($_GET['id'] ?? ''));
+    clearstatcache();
+    $size = (int)@filesize($file);
+    $after = (int)($_GET['after'] ?? -1);
+    if ($after < 0 || $after >= $size) { header('Content-Type: application/json'); echo '{"next":' . ($after < 0 ? $size : $after) . ',"lines":[]}'; exit; }
+    $in = fopen($file, 'rb');
+    fseek($in, $after);
+    $bytes = (string)fread($in, 262144);
+    fclose($in);
+    $end = strrpos($bytes, "\n");
+    if ($end === false) { header('Content-Type: application/json'); echo '{"next":' . $after . ',"lines":[]}'; exit; }
+    header('Content-Type: application/json');
+    echo '{"next":', $after + $end + 1, ',"lines":[', str_replace("\n", ',', substr($bytes, 0, $end)), ']}';
+    exit;
 }
 
 // ---- Accounts ----
@@ -194,7 +412,10 @@ if ($action === 'wake') {
     if (!$account) fail(401, 'Please sign in again.');
     $number = function (string $name, int $high) use ($body): int { return max(0, min($high, (int)($body[$name] ?? 0))); };
     $character = $account['character'] ?? [];
-    noteWake($dir, (string)$account['key'], ['map' => max(1, $number('map', 9999)), 'x' => $number('x', 9999), 'y' => $number('y', 9999), 'd' => $number('d', 9), 'slot' => $number('slot', SLOTS - 1)],
+    $note = ['map' => max(1, $number('map', 9999)), 'x' => $number('x', 9999), 'y' => $number('y', 9999), 'd' => $number('d', 9), 'slot' => $number('slot', SLOTS - 1)];
+    // The floor slept on (a roof over a room is one tile): kept as given, a height in tiles.
+    if (isset($body['g']) && is_numeric($body['g']) && is_finite((float)$body['g'])) $note['g'] = round(max(-1000.0, min(10000.0, (float)$body['g'])), 3);
+    noteWake($dir, (string)$account['key'], $note,
         ['name' => (string)($character['name'] ?? $account['username']), 'actor' => (int)($character['actorId'] ?? 0), 'model' => (string)($character['id'] ?? ''), 'account' => (string)$account['username']]);
     respond(['ok' => true]);
 }
@@ -218,7 +439,8 @@ if ($action === 'sleepers') {
         if (!is_array($entry) || (int)($entry['at'] ?? 0) < $oldest || isset($awake[$entry['account'] ?? ''])) continue;
         unset($entry['slot'], $entry['account']);
         $out[] = $entry;
-        if (count($out) >= 64) break;
+        // Every one, small: the game picks the few nearest its player to draw.
+        if (count($out) >= 200) break;
     }
     respond(['sleepers' => $out]);
 }
@@ -252,6 +474,8 @@ if ($action === 'set') {
     $world = is_array($settings['world'] ?? null) ? $settings['world'] : [];
     $switches = idList((string)($world['switches'] ?? ''));
     $variables = idList((string)($world['variables'] ?? ''));
+    // The events the project shares ("map,event"), listed at deploy; a server deployed before the list takes any.
+    $events = is_array($world['events'] ?? null) ? array_flip(array_map('strval', $world['events'])) : null;
     $changes = jsonBody()['changes'] ?? [];
     if (!is_array($changes) || count($changes) > 64) fail(422, 'Too many changes at once.');
     // While the Engine runs it is the world's only writer, so changes keep one order.
@@ -264,6 +488,7 @@ if ($action === 'set') {
     $state = @json_decode((string)@file_get_contents($dir . '/world.json'), true);
     $state = is_array($state) ? $state : [];
     foreach ($changes as $change) {
+        if (!is_array($change)) continue;
         $kind = (string)($change['kind'] ?? '');
         $id = (string)($change['id'] ?? '');
         $value = $change['value'] ?? null;
@@ -274,10 +499,11 @@ if ($action === 'set') {
             $state['v'][(int)$id] = (is_numeric($base) ? $base : 0) + $change['delta'];
         }
         elseif ($kind === 'v' && isset($variables[(int)$id]) && (is_int($value) || is_float($value) || is_bool($value) || (is_string($value) && strlen($value) <= 256))) $state['v'][(int)$id] = $value;
-        elseif ($kind === 'e' && preg_match('/^\d{1,4},\d{1,6},[A-Da-d]$/', $id) && count($state['e'] ?? []) < 5000) $state['e'][$id] = (bool)$value;
+        elseif ($kind === 'e' && preg_match('/^\d{1,4},\d{1,6},[A-Da-d]$/', $id) && ($events === null || isset($events[substr($id, 0, (int)strrpos($id, ','))]))
+            && (isset($state['e'][$id]) || count($state['e'] ?? []) < 5000)) $state['e'][$id] = (bool)$value;
     }
     $temporary = $dir . '/world.' . getmypid() . '.tmp';
-    file_put_contents($temporary, json_encode($state));
+    file_put_contents($temporary, jsonText($state));
     rename($temporary, $dir . '/world.json');
     $count = worldCount($dir) + 1;
     $temporary = $dir . '/worldseq.' . getmypid() . '.tmp';
@@ -327,6 +553,7 @@ if ($action === 'say') {
     if ($text === '') fail(422, 'There is nothing to say.');
     $map = intParam('m', 1, 9999);
     $world = !empty($body['world']) && !empty($settings['chat']['world']);
+    $party = !empty($body['party']) ? partyOf(readParties($dir), (string)($known['name'] ?? ''))[0] : '';
     // Each slot's last message time, in one small file.
     $times = fopen($dir . '/chattime.bin', 'c+b');
     fseek($times, $slot * 4);
@@ -337,8 +564,9 @@ if ($action === 'say') {
     fwrite($times, pack('V', time()));
     fclose($times);
     $message = ['t' => time(), 'name' => (string)($known['name'] ?? ''), 'slot' => $slot, 'text' => filterChat($text, (string)$settings['chat']['blockedWords']), 'world' => $world];
-    if (!$world) $message['map'] = $map;
-    respond(postChat($dir, $world ? 'w' : 'm' . $map, $message, max(10, min(500, (int)$settings['chat']['history']))));
+    if ($party !== '') { $message['party'] = true; $message['world'] = false; }
+    elseif (!$world) $message['map'] = $map;
+    respond(postChat($dir, $party !== '' ? 'p' . $party : ($world ? 'w' : 'm' . $map), $message, max(10, min(500, (int)$settings['chat']['history']))));
 }
 
 if ($action === 'chat') {
@@ -346,6 +574,8 @@ if ($action === 'chat') {
     $dir = dataDir($config);
     $after = max(0, (int)($_GET['after'] ?? 0));
     $messages = array_merge(readChat($dir, 'w'), readChat($dir, 'm' . intParam('m', 1, 9999)));
+    $partyId = (string)($_GET['p'] ?? '');
+    if (preg_match('/^[a-f0-9]{12}$/', $partyId)) $messages = array_merge($messages, readChat($dir, 'p' . $partyId));
     usort($messages, function (array $a, array $b): int { return $a['id'] <=> $b['id']; });
     $fresh = array_values(array_filter($messages, function (array $message) use ($after): bool { return $message['id'] > $after; }));
     $gone = @json_decode((string)@file_get_contents($dir . '/chatgone.json'), true);
@@ -365,10 +595,17 @@ if ($action === 'upload') {
     $part = $models . '/up-' . $id;
     $index = intParam('i', 0, 4096);
     $count = intParam('n', 1, 4096);
-    $limit = (int)($config['maxModelBytes'] ?? 33554432);
+    // Database › Online › Server: the largest character and the room for all of them, in megabytes and
+    // gigabytes; 0, the default, is no limit. A piece is a request's size, which hosts limit themselves.
+    $characterMb = (float)$settings['storage']['characterMB'];
+    $limit = $characterMb > 0 ? (int)($characterMb * 1048576) : PHP_INT_MAX;
     $piece = (string)file_get_contents('php://input');
     if ($piece === '' || strlen($piece) > 4194304) fail(413, 'That piece is the wrong size.');
-    if ($index === 0) @unlink($part);
+    if ($index === 0) {
+        @unlink($part);
+        // Unfinished uploads from over an hour ago go whenever a new one starts, not only when one completes.
+        foreach (glob($models . '/up-*') ?: [] as $old) { if ((int)@filemtime($old) < time() - 3600) @unlink($old); }
+    }
     clearstatcache();
     $held = is_file($part) ? (int)filesize($part) : 0;
     if (($index > 0 && $held === 0) || $held + strlen($piece) > $limit) { @unlink($part); fail(413, 'That character is too large.'); }
@@ -379,14 +616,23 @@ if ($action === 'upload') {
     $rules = json_decode((string)($config['rules'] ?? '{}'), true);
     checkPackage($part, is_array($rules) ? $rules : []);
     foreach (glob($models . '/up-*') ?: [] as $old) { if (filemtime($old) < time() - 3600) @unlink($old); }
-    $used = 0;
-    foreach (glob($models . '/*.rrch') ?: [] as $kept) $used += (int)filesize($kept);
-    if ($used + filesize($part) > (int)($config['maxStorageBytes'] ?? 2147483648)) fail(507, 'This server has no room for more characters.');
+    $roomGb = (float)$settings['storage']['totalGB'];
+    if ($roomGb > 0) {
+        $used = 0;
+        // Everything in the folder takes room: each character, its squeezed twin, and uploads under way.
+        foreach (glob($models . '/*') ?: [] as $kept) if ($kept !== $part) $used += (int)@filesize($kept);
+        if ($used + filesize($part) > $roomGb * 1073741824) fail(507, 'This server has no room for more characters.');
+    }
     $hash = hash_file('sha256', $part);
     $target = $models . '/' . $hash . '.rrch';
     if (!is_file($target)) {
         // Kept squeezed too: everyone who meets this player downloads it once.
-        @file_put_contents($target . '.gz', gzencode((string)file_get_contents($part), 6));
+        // A piece at a time, so a character of any size never has to fit in PHP's memory.
+        $in = fopen($part, 'rb');
+        $out = gzopen($target . '.gz.' . getmypid(), 'wb6');
+        if ($in && $out) { while (!feof($in)) gzwrite($out, (string)fread($in, 1048576)); }
+        if ($in) fclose($in);
+        if ($out) { gzclose($out); @rename($target . '.gz.' . getmypid(), $target . '.gz'); }
         rename($part, $target);
     }
     respond(['hash' => $hash]);

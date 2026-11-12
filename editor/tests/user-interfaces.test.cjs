@@ -313,16 +313,33 @@ test('auto-sized dynamic Text asks the scene to remeasure and reposition when re
     let refreshes = 0;
     window._uiNode = { type: 'text', width: 0, height: 0 };
     window._uiLastText = 'old';
-    window._uiScene = { refreshNodeLayouts() { layouts++; } };
+    window._uiDynamicText = true;
+    // The text marks the scene, and the scene lays out once after its windows have updated.
+    const owner = window._uiScene = { _layoutDirty: false, refreshNodeLayouts() { layouts++; this._layoutDirty = false; } };
+    const frame = () => { window.update(); if (owner._layoutDirty) owner.refreshNodeLayouts(); };
     window.currentText = () => resolved;
     window.refresh = () => { refreshes++; window._uiLastText = resolved; };
     window.update();
+    assert.deepEqual([layouts, refreshes, owner._layoutDirty], [0, 1, true], 'the layout waits for the scene');
+    owner.refreshNodeLayouts();
     assert.deepEqual([layouts, refreshes], [1, 1]);
-    window.update();
+    frame();
     assert.deepEqual([layouts, refreshes], [1, 1], 'unchanged resolved content does no layout work');
     resolved = 'a much longer value';
-    window.update();
+    frame();
     assert.deepEqual([layouts, refreshes], [2, 2]);
+    // A label with no token or escape code cannot change: it is not resolved again, and a hidden node does no work.
+    window._uiDynamicText = false;
+    resolved = 'never read';
+    frame();
+    assert.deepEqual([layouts, refreshes], [2, 2]);
+    window._uiDynamicText = true;
+    window.visible = false;
+    frame();
+    assert.deepEqual([layouts, refreshes, window._uiStale], [2, 2, true]);
+    window.visible = true;
+    window.updateShown();
+    assert.deepEqual([refreshes, window._uiStale, owner._layoutDirty], [3, false, true], 'shown again, it catches up at once');
 
     sandbox.Graphics = { width: 400, height: 200, boxWidth: 400, boxHeight: 200 };
     const node = sandbox.ReactorUI.normalizeNode({ id: 1, type: 'text', anchor: 'center', width: 0, height: 0 });
@@ -712,7 +729,7 @@ test('Use As holds every bounded replacement role; the System pages hold none', 
         assert.doesNotMatch(source, /reactor[A-Za-z]+InterfaceId/, page + ' neither reads nor writes a binding');
         assert.doesNotMatch(source, /Stock \(default\)/, page);
     }
-    assert.match(read('runtime/reactor_ui.js'), /record\.roles \|\| \[\]\)\.includes\(role\)/);
+    assert.match(read('runtime/reactor_ui.js'), /this\.storedMode\(raw\) === "scene" && roles\.includes\(role\)/);
 });
 
 test('Call User Interface is a Reactor plugin command with its own dialog', () => {
@@ -777,7 +794,7 @@ test('nodes draw parents-first, opacity cascades, text can wrap, and reorder car
     assert.match(source, /entry\.nodes = DatabaseUserInterfaceEditor\.orderNodes\(entry\.nodes\);/);
     assert.match(source, /this\.current\.nodes = DatabaseUserInterfaceEditor\.orderNodes\(this\.current\.nodes\);/, 'moving a node re-establishes draw order');
     assert.match(source, /candidate\.type !== 'box' && candidate\.type !== 'image'/, 'images can parent');
-    assert.match(source, /wrapRuns\(lines, maxWidth\)/);
+    assert.match(source, /wrapRuns\(lines, maxWidth, node\)/);
     assert.match(source, /ctx\.globalAlpha = opacityOf\(node, new Set\(\)\);/);
 });
 
@@ -1132,6 +1149,21 @@ test('options rows mirror MZ symbols and mutate booleans and volumes with stock 
     delete sandbox.ConfigManager.touchUI;
     rows = sandbox.ReactorUI.listRows(node);
     assert.equal(rows.some(row => row.symbol === 'touchUI'), false, 'Touch UI is absent where the runtime has no setting');
+
+    // Graphics, as the stock Options window offers it: only once this machine has drawn a 3D map.
+    assert.equal(rows.some(row => row.symbol === 'graphicsQuality'), false);
+    let resets = 0;
+    sandbox.Window_Options = { GRAPHICS_VALUES: ['auto', 'high', 'medium', 'low'], GRAPHICS_TEXT: { name: 'Graphics', auto: 'Auto', high: 'High', medium: 'Medium', low: 'Low' } };
+    sandbox.Reactor3D = { Quality: { reset() { resets++; } } };
+    Object.assign(sandbox.ConfigManager, { reactor3dSeen: true, graphicsQuality: 'medium' });
+    rows = sandbox.ReactorUI.listRows(node);
+    assert.equal(rows.map(row => row.symbol).slice(0, 3).join(), 'alwaysDash,commandRemember,graphicsQuality', 'ahead of the volumes, as in the stock window');
+    assert.equal(rows.find(row => row.symbol === 'graphicsQuality').text, 'graphicsQuality:Medium');
+    assert.equal(sandbox.ReactorUI.changeOption('graphicsQuality', true, false), true);
+    assert.equal(sandbox.ConfigManager.graphicsQuality, 'low');
+    assert.equal(sandbox.ReactorUI.changeOption('graphicsQuality', true, false), false, 'right stops at the last level');
+    assert.equal(sandbox.ReactorUI.changeOption('graphicsQuality', true, true), true);
+    assert.deepEqual([sandbox.ConfigManager.graphicsQuality, resets], ['auto', 1], 'OK goes round, and Auto starts from the full picture');
 });
 
 test('custom Options saves ConfigManager on termination after pointer or directional changes', () => {
@@ -1917,6 +1949,11 @@ test('HUD pictures load softly by folder reference, and a two-row meter draws it
     assert.strictEqual(ui.softImage('Hero Face').url, 'img/pictures/Hero%20Face.png', 'a bare name is a picture');
     ui.softImage('system/BattleHud_HP_Meter');
     assert.strictEqual(loads.length, 2, 'loaded once');
+    // A picture picked with its own extension is loaded as written, as the game's own loader does.
+    sandbox.ImageManager = Object.assign(sandbox.ImageManager || {}, { _imageExtensions: ['.png', '.jpg', '.jpeg', '.webp'] });
+    assert.strictEqual(ui.softImage('Poster.JPG').url, 'img/pictures/Poster.JPG');
+    assert.strictEqual(ui.softImage('system/Back.webp').url, 'img/system/Back.webp');
+    loads.length = 2;
     const blits = [];
     const target = { blt: (...args) => blits.push(args.slice(1, 9)) };
     const box = { x: 10, y: 20, width: 130, height: 5 };
@@ -2177,4 +2214,45 @@ test('the name grid is placed under a typing field whose parents name each other
     // The box and the frame name each other as parent (a record written by hand or by a script), and a field that names itself.
     assert.equal(place([[1, 2, 100, 40], [2, 3, 80, 120], [3, 2, 60, 200]]), 60 + 200 + 8);
     assert.equal(place([[1, 1, 100, 40]]), 100 + 40 + 8);
+});
+
+test('an interface that opens with no transition and closes with a fade or a slide is shown while it is open', () => {
+    const sandbox = loadRuntimeUI({ globals: { Graphics: { width: 816, height: 624, boxWidth: 816, boxHeight: 624 } } });
+    const made = (openTransition, closeTransition) => {
+        const scene = Object.create(sandbox.Scene_ReactorUI.prototype);
+        const window = { syncVisualState() {} };
+        scene._interfaceId = 1;
+        scene._transitionPhase = 'idle';
+        scene._nodeWindows = [window];
+        sandbox.ReactorUI.interface = () => ({ mode: 'scene', openTransition, closeTransition, transitionDuration: 10, nodes: [] });
+        sandbox.Scene_MenuBase.prototype.create = function() {};
+        scene.createNodes = () => {};
+        scene.create();
+        // (+ 0: a slide's start works out as a negative zero, which is the same place.)
+        return [scene._transitionPhase, window._uiTransitionAlpha, window._uiTransitionX + 0, window._uiTransitionY + 0];
+    };
+    // As made, before any update: in place and opaque, whatever it will do when it closes.
+    assert.deepEqual(made('none', 'fade'), ['idle', 1, 0, 0]);
+    assert.deepEqual(made('none', 'slideLeft'), ['idle', 1, 0, 0]);
+    assert.deepEqual(made('none', 'slideUp'), ['idle', 1, 0, 0]);
+    assert.deepEqual(made('none', 'none'), ['idle', 1, 0, 0]);
+    // With an opening transition it starts where that transition starts.
+    assert.deepEqual(made('fade', 'none'), ['opening', 0, 0, 0]);
+    assert.deepEqual(made('slideLeft', 'fade'), ['opening', 1, 816, 0]);
+});
+
+test('picture fills and motion are part of a node: off by default, and a list or a text takes only what it can show', () => {
+    const { ReactorUI } = loadRuntimeUI();
+    const record = ReactorUI.normalizeInterface({ id: 1, coordinateSpace: 'screen', nodes: [
+        { id: 1, type: 'box' },
+        { id: 2, type: 'box', fill: 'picture', fillImage: 'system/Panel', fillFit: 'slice', sliceLeft: 12, motion: { floatY: 6, floatPeriod: 90 } },
+        { id: 3, type: 'list', fill: 'picture', fillImage: 'Back', rowImage: 'Row', motion: { spin: 45, appearX: -100 } },
+        { id: 4, type: 'text', fill: 'picture', fillImage: 'Nope', motion: { swayAngle: 10 } }
+    ] });
+    const [plain, box, list, text] = record.nodes;
+    assert.deepEqual([plain.fill, plain.fillImage, plain.fillFit, plain.motion], ['window', '', 'stretch', null]);
+    assert.deepEqual([box.fill, box.fillImage, box.fillFit, box.sliceLeft, box.motion.floatY, box.motion.floatPeriod, box.motion.spin], ['picture', 'system/Panel', 'slice', 12, 6, 90, 0]);
+    assert.deepEqual([list.fill, list.rowImage, list.motion.spin, list.motion.appearX], ['picture', 'Row', 0, -100], 'a list does not turn');
+    assert.deepEqual([text.fill, text.motion.swayAngle], ['none', 10], 'a text has no surface to fill, and can sway');
+    assert.deepEqual([...ReactorUI.Motion.MOTION_TYPES], ['box', 'image', 'text', 'button', 'list', 'gauge', 'input']);
 });

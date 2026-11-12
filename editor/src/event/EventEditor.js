@@ -40,6 +40,8 @@ class EventEditor {
      */
     showEventEditor(container, event, options = null) {
         const sameEvent = this.currentEvent === event && !options;
+        // Drawn again for the same event (a page added, a type changed): what was typed in Position and Size is kept.
+        if (sameEvent) this._readPositionFields();
         if (!sameEvent) {
             this.sourceEvent = event;
             this.cancelBaseline = this._clone(event);
@@ -132,13 +134,6 @@ class EventEditor {
         return this._commitChanges();
     }
 
-    /**
-     * Close the editor
-     */
-    closeEditor() {
-        this.cancelChanges();
-    }
-
     cancelChanges() {
         if (this.cancelBaseline) this.currentEvent = this._clone(this.cancelBaseline);
         this.pendingModels = this._clone(this.pendingModelsBaseline);
@@ -229,7 +224,11 @@ class EventEditor {
         for (const target of [this.currentEvent, this.cancelBaseline]) {
             if (target) { target.x = event.x; target.y = event.y; }
         }
-        for (const [id, value] of [['event-position-x', event.x], ['event-position-y', event.y]]) {
+        // Its height too (a 3D drag): OK writes pendingZ, which still held the height the window opened with.
+        const z = this._eventZ(event.id);
+        this.pendingZ = z;
+        this.pendingZBaseline = z;
+        for (const [id, value] of [['event-position-x', event.x], ['event-position-y', event.y], ['event-position-z', z]]) {
             const field = document.getElementById(id);
             if (field) field.value = String(value);
         }
@@ -1071,20 +1070,7 @@ class EventEditor {
         contentsArea.style.overflowY = 'auto';
         contentsArea.style.minHeight = '0';
 
-        // Placeholder content
-        const currentPage = event.pages[this.currentPageIndex];
-        if (currentPage && currentPage.list && currentPage.list.length > 0) {
-            contentsArea.innerHTML = `
-                <div style="color: var(--color-text-muted);">
-                    ${this._t('event.commandListPlaceholder', { count: currentPage.list.length })}
-                    <br><br>
-                    ${this._t('event.commandEditorPlaceholder')}
-                </div>
-            `;
-        } else {
-            contentsArea.innerHTML = `<div style="color: var(--color-text-muted);">${this._t('event.noCommandsDefined')}</div>`;
-        }
-
+        // Filled by updateContentsColumn (renderCurrentPage) before it is shown.
         column.appendChild(header);
         column.appendChild(contentsArea);
 
@@ -1221,7 +1207,6 @@ class EventEditor {
         if (typeof ReactorClipboard !== 'undefined') {
             ReactorClipboard.write('eventPage', { page: this.clipboard, model: this.clipboardModel });
         }
-        console.log('Page copied to clipboard');
     }
 
     /**

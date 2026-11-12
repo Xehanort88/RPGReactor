@@ -114,7 +114,7 @@ test('the shadow variant of the light shader reads two atlases, however many lig
     assert.match(Reactor3D.lightGlsl(true, 1), /float s = texture\(rrShadowAtlas, vec3\(base \+ q \* scale, dp\)\);\n\tif \(dynamic\) s = min\(s, texture\(rrShadowDynAtlas, vec3\(dynBase \+ q \* dynScale, dp\)\)\);/);
     assert.equal((soft.match(/face = d\.x > 0\.0/g) || []).length, 1, 'one face selection, not one per atlas');
     // Sampled inside the light loop, before the light adds in.
-    assert.match(soft, /float sh = rrLightShadow\[i\];\n\t\tif \(sh > 63\.5\) \{ float sv = rrSunShadowAt\(p\); rrSunShaded = fall \* \(1\.0 - sv\); fall \*= sv; \}\n\t\telse if \(sh >= 0\.0\) fall \*= rrShadowAt\(int\(sh \+ 0\.5\), p\);\n\t\tif \(rrFace > 0\.0\) \{[\s\S]*?\n\t\t\}\n\t\tsum \+= lc\.rgb \* fall;/);
+    assert.match(soft, /float sh = rrLightShadow\[i\];\n\t\tif \(sh > 63\.5\) \{ float rrSF = 1\.0;\n#ifdef RR_SUN_FACING\n[^#]*#endif\n\t\t\tfloat sv = rrSF > 0\.0 \? rrSF \* rrSunShadowAt\(p\) : 0\.0; rrSunShaded = fall \* \(1\.0 - sv\); fall \*= sv; \}\n\t\telse if \(sh >= 0\.0\) fall \*= rrShadowAt\(int\(sh \+ 0\.5\), p\);\n\t\tif \(rrFace > 0\.0\) \{[\s\S]*?\n\t\t\}\n\t\tsum \+= lc\.rgb \* fall;/);
     // Each row measures from where it was rendered, not from the light.
     assert.match(soft, /vec3 d = p - rrShadowPos\[slot\]\.xyz;/);
 
@@ -139,7 +139,7 @@ test('a lit material takes the shadow variant only while shadows are active, and
         material.onBeforeCompile(shader, null);
         return shader;
     };
-    assert.equal(material.customProgramCacheKey(), '|reactor3d-lit');
+    assert.equal(material.customProgramCacheKey(), '|reactor3d-lit' + Reactor3D.SceneUniformBlock.programKey(material));
     assert.doesNotMatch(compile().fragmentShader, /samplerCubeShadow/);
     const uniforms = Reactor3D.lightUniforms();
     assert.equal(uniforms.rrLightShadow.value.length, Reactor3D.SHADER_LIGHTS);
@@ -151,7 +151,7 @@ test('a lit material takes the shadow variant only while shadows are active, and
     shadows._active = true;
     shadows._quality = null;
     try {
-        assert.equal(material.customProgramCacheKey(), '|reactor3d-lit|shadows5');
+        assert.equal(material.customProgramCacheKey(), '|reactor3d-lit|shadows5' + Reactor3D.SceneUniformBlock.programKey(material));
         const shader = compile();
         assert.match(shader.fragmentShader, /sampler2DShadow rrShadowAtlas/);
         assert.equal(shader.uniforms.rrShadowAtlas, uniforms.rrShadowAtlas, 'the shared value object, not a copy');
@@ -303,7 +303,6 @@ test('the static rows re-render when a prop moves, hides or arrives, and not for
     const a = prop(1);
     shadows._static.clear();
     shadows._static.add(a);
-    shadows._staticHash = NaN;
     assert.equal(shadows._staticChanged(), true, 'the first look is a change');
     assert.equal(shadows._staticChanged(), false, 'nothing moved');
     a.matrixWorld.elements[12] = 2;
@@ -324,7 +323,6 @@ test('the static rows re-render when a prop moves, hides or arrives, and not for
     shadows.invalidate();
     assert.equal(shadows._staticChanged(), true, 'asked outright');
     shadows._static.clear();
-    shadows._staticHash = NaN;
 });
 
 test('a slot keeps its far plane while the reach breathes inside the band', () => {
@@ -371,11 +369,16 @@ test('both atlases are real depth textures in compare mode from the moment they 
     // The tier says how many rows each atlas holds; a weak GPU gets fewer lights, not blurrier faces.
     const full = Reactor3D.SHADOW_QUALITY.full, weak = Reactor3D.SHADOW_QUALITY.weak;
     assert.ok(full.slots > 4 && full.slots <= Reactor3D.SHADOW_SLOTS, 'more than the four cube slots the samplers used to cap');
-    assert.ok(weak.slots < full.slots && weak.dynamicSlots < full.dynamicSlots);
+    // One moving-caster row on either tier since 2026-11-05 (the light that matters most to the player).
+    assert.ok(weak.slots < full.slots && weak.dynamicSlots <= full.dynamicSlots && full.dynamicSlots >= 1);
     assert.ok(full.staticPerFrame >= 1 && full.dynamicPerFrame >= 1 && weak.staticPerFrame >= 1 && weak.dynamicPerFrame >= 1);
+    // Every moving-character row on the full tier is redrawn the refresh its casters move: one left a frame old
+    // drew a walking player's shadow behind them, from a different light each refresh (a flicker).
+    assert.ok(full.dynamicPerFrame >= full.dynamicSlots, 'the full tier redraws every dynamic row a frame');
     // Before PIXI draws through the shared context, the atlases leave every 2D unit: its batch
     // shader names sixteen plain samplers and a compare texture on any of them fails the draw.
-    assert.match(three, /textures\._boundTextures\.fill\(null\);\n[\s\S]{0,600}?Reactor3D\.Shadows\.unbindFrom\(this\._renderer\);\n\};/);
+    // Last in the hand-back, but for the scene uniform block's release of its binding point (SceneUniformBlock).
+    assert.match(three, /textures\._boundTextures\.fill\(null\);\n[\s\S]{0,600}?Reactor3D\.Shadows\.unbindFrom\(this\._renderer\);\n(?:[^\n]*\n\s*if \(Reactor3D\.SceneUniformBlock\) Reactor3D\.SceneUniformBlock\.releaseTo\(pixi, this\._renderer\);\n)?\};/);
     const unbind = three.slice(three.indexOf('    unbindFrom(renderer) {'), three.indexOf('\n    },', three.indexOf('    unbindFrom(renderer) {')));
     assert.match(unbind, /gl\.activeTexture\(gl\.TEXTURE0 \+ unit\);\s*gl\.bindTexture\(gl\.TEXTURE_2D, null\);/);
     // The bind, and the grid the shader maps a face into.
@@ -483,7 +486,7 @@ test('the dynamic budget is measured from the player, and a party of two reduced
 
 test('both viewports render the maps once a frame before the first pass, and the game marks its casters', () => {
     const three = source3D();
-    assert.match(three, /scene\.updateMatrixWorld\(\);\n\s*\/\/ The shadow maps, while every group is still visible, then the reflections\.\n\s*Reactor3D\.prepareWorldFrame\(this\._renderer, mapScene, scene, this\._camera, undefined, this\.upscaled\(\) \? this\._scale : 1\);/);
+    assert.match(three, /scene\.updateMatrixWorld\(\);[\s\S]{0,700}?if \(!freshScene && this\.spreadsUpdateWork\(\)\) \{[\s\S]{0,1400}?this\._owedWork = \[shadowWork, reflectionWork\];\n\s*\} else \{\n\s*Reactor3D\.prepareWorldFrame\(this\._renderer, mapScene, scene, this\._camera, undefined, scale\);/, 'the maps before the reflections, spread over the spare refreshes or in the update');
     assert.match(three, /if \(shadows !== false && mapScene\.renderShadows\) mapScene\.renderShadows\(renderer, \(shadows && shadows\.mapData\) \|\| null, shadows \|\| undefined\);/);
     assert.match(three, /Reactor3D\.Shadows\.markCaster\(object, Reactor3D\.modelCasterMoves\(character, current\.rules\)\);/);
     // The depth passes run from the sentinel's hook, inside the pass.
@@ -510,7 +513,9 @@ test('both viewports render the maps once a frame before the first pass, and the
     assert.ok(face.indexOf('renderer.clear(false, true, false);') < face.indexOf('for (let face = 0;'), 'all faces are cleared before selective drawing');
     assert.match(face, /camera\.up\.set\(spec\.up\[0\], spec\.up\[1\], spec\.up\[2\]\);\s*camera\.lookAt\(origin\.x \+ spec\.dir\[0\], origin\.y \+ spec\.dir\[1\], origin\.z \+ spec\.dir\[2\]\);/);
     assert.match(face, /Reactor3D\.Shadows\.renderFace\(renderer, scene, camera\);/);
-    assert.match(three, /renderFace\(renderer, scene, camera\) \{\s*const cull = Reactor3D\.InstanceCull, hidden = cull \? cull\.hide\(scene, camera\) : null;[\s\S]{0,400}?try \{ renderer\.render\(scene, camera\); \} finally \{ renderer\.sortObjects = sorted; if \(hidden\) cull\.show\(hidden\); \}/, 'a face skins only the characters it can see');
+    assert.match(three, /renderFace\(renderer, scene, camera\) \{\s*const cull = Reactor3D\.InstanceCull, hidden = cull \? cull\.hide\(scene, camera\) : null;\s*const standIns = hidden && this\._liveStandIns && this\._liveStandIns\.length \? Reactor3D\.CasterMerge\.follow\(this\._liveStandIns\) : null;[\s\S]{0,700}?try \{ renderer\.render\(scene, camera\); \} finally \{ renderer\.sortObjects = sorted; if \(hidden\) cull\.show\(hidden\); if \(standIns\) Reactor3D\.CasterMerge\.unfollow\(standIns\);(?: if \(crowdOff\) Reactor3D\.CasterCrowd\.unface\(crowdOff\);)? \}/, 'a face skins only the characters it can see');
+    // The crowd's ranges are worked out after the face's cull, and its pools put back after the draw (CasterCrowd).
+    assert.match(three, /const crowdOff = Reactor3D\.CasterCrowd\._active \? Reactor3D\.CasterCrowd\.face\(\) : null;/);
 
     const editor = read('editor/src/MapEditor3D.js');
     // The world matrices once, then the shadow rows and the volume, before any pass.

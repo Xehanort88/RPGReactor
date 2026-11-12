@@ -44,6 +44,7 @@ class RPGReactor {
 
     async init() {
         if (this.relaunchFramelessForWine()) return;
+        if (this.relaunchOnMachineBackend()) return;
 
         this.centerWindowOnStartup();
 
@@ -427,10 +428,13 @@ class RPGReactor {
         this.mapImageLayersManager = new MapImageLayersManager(this.projectController, this.databaseManager);
         this.mediaSurfacePreviewManager.setEnabled(this.optionsManager.getShowVideoPreviews());
         document.getElementById('map-3d-view')?.addEventListener('change', async (event) => {
-            const active = await this.applyMap3DViewPreference(event.currentTarget.checked);
-            // Ticked or unticked by hand: that is the map's preference from now on.
-            this.projectController.rememberMap3DView(
-                this.projectController.tilemapManager?.currentMap?.id, active);
+            // Ticked or unticked by hand: that is the map's preference from now on. The map is the one open when the
+            // box was clicked (the view takes a moment to come up, and another map may be open by then), and a view
+            // that was asked for and did not come up (a failure, or another request overtaking it) is not a choice
+            // of 2D: remembered as one, the map opened flat ever after with its box cleared.
+            const mapId = this.projectController.tilemapManager?.currentMap?.id, asked = event.currentTarget.checked === true;
+            const active = await this.applyMap3DViewPreference(asked);
+            if (active === asked) this.projectController.rememberMap3DView(mapId, active);
         });
         document.getElementById('map-video-previews')?.addEventListener('change', (event) => {
             this.optionsManager.setShowVideoPreviews(event.currentTarget.checked);
@@ -680,6 +684,8 @@ class RPGReactor {
         // code, the next launch still starts in 2D.
         this.optionsManager.setMap3DView(false);
         let active = false;
+        // (What this attempt reports, not an earlier one's.)
+        this.mapEditor3D.lastError = null;
         try {
             active = await this.mapEditor3D.setEnabled(requested);
         } catch (error) {
@@ -688,6 +694,9 @@ class RPGReactor {
         }
 
         if (active) this.optionsManager.setMap3DView(true);
+        // Overtaken by a later request (a map loading asks again; a second one is now in charge of the view and of
+        // the box): this one neither clears the box nor reports a failure that did not happen.
+        if (requested && !active && !this.mapEditor3D.lastError && (this.mapEditor3D.enabled || this.mapEditor3D._activationPromise || this.mapEditor3D._desiredEnabled !== requested)) return this.mapEditor3D.enabled === true;
 
         const checkbox = document.getElementById('map-3d-view');
         if (checkbox) checkbox.checked = active;
@@ -699,8 +708,10 @@ class RPGReactor {
         this.optionsManager.setMap3DView(false);
         const checkbox = document.getElementById('map-3d-view');
         if (checkbox) checkbox.checked = false;
-        this.uiManager.updateStatus(message ||
-            (window.I18n ? window.I18n.tText('3D view unavailable') : '3D view unavailable'));
+        const reason = message || (window.I18n ? window.I18n.tText('3D view unavailable') : '3D view unavailable');
+        this.uiManager.updateStatus(reason);
+        // The box unticking itself said nothing of why.
+        this.uiManager.showMapNote?.(reason);
     }
 
     // Playtest orchestration
@@ -726,6 +737,7 @@ class RPGReactor {
         const saved = await this.projectController.saveAll();
         if (!saved) {
             this.uiManager.updateStatus(window.I18n ? window.I18n.t('status.playtestSaveFailed') : 'Playtest cancelled: project could not be saved');
+            // (saveAll says itself what could not be saved.)
             return;
         }
 
@@ -929,8 +941,9 @@ class RPGReactor {
         if (!note) { note = document.createElement('div'); note.className = 'rr-history-note'; note.setAttribute('role', 'status'); stage.appendChild(note); }
         note.textContent = text;
         note.classList.add('is-shown');
-        clearTimeout(this._historyNoteTimer);
-        this._historyNoteTimer = setTimeout(() => note.classList.remove('is-shown'), 2200);
+        // The timer is kept on the note: a failure said there (UIManager.showMapNote) shares it.
+        clearTimeout(note._rrHideTimer);
+        note._rrHideTimer = setTimeout(() => note.classList.remove('is-shown'), 2200);
     }
 
     toggleEventMode() {
@@ -1004,7 +1017,7 @@ class RPGReactor {
                 if (!moved) return;
                 this.tilesetPaletteViewer.renderCurrentLayer?.();
                 const openMap = tilemapManager?.currentMap?.id;
-                if (openMap != null) this.projectController?.loadMap(openMap, { force: true });
+                if (openMap != null) this.projectController?.loadMap(openMap, { forceReload: true });
             };
             this.projectController.setTilesetPaletteViewer(this.tilesetPaletteViewer);
 
@@ -1017,8 +1030,10 @@ class RPGReactor {
                 const regionManager = this.projectController.getRegionManager();
                 if (regionContainer && regionManager) {
                     regionManager.initializeUI(regionContainer);
-                    regionManager.createRegionLayer();
-                    regionManager.setVisible(true);
+                    // Selecting the tab has usually just drawn every cell
+                    // (claimMapTool shows the overlay): those are kept, not
+                    // drawn a second time.
+                    regionManager.showOnTop();
                 }
                 // Only one overlay of numbered cells at a time: two sets of
                 // coloured squares over the same map, answering different
@@ -1576,6 +1591,13 @@ class RPGReactor {
 
     isWineRuntime() {
         if (typeof process === 'undefined' || process.platform !== 'win32') return false;
+        // Asked from more than one place at start: on real Windows the answer costs up to four `reg` processes, each
+        // waited for on the window's own thread. Worked out once.
+        if (this._wineRuntime !== undefined) return this._wineRuntime;
+        return (this._wineRuntime = this._detectWineRuntime());
+    }
+
+    _detectWineRuntime() {
 
         const env = process.env || {};
         if (env.WINEPREFIX || env.WINEARCH || env.WINELOADERNOEXEC || env.WINESERVER || env.WINEDEBUG || env.WINEESYNC || env.WINEFSYNC ||
@@ -1644,6 +1666,50 @@ class RPGReactor {
             try { win.setShowInTaskbar(true); } catch (error) {}
         } catch (error) {
             // Running under Wine should not prevent the app from loading.
+        }
+    }
+
+    /**
+     * Under Windows, leaves the launcher a note of the graphics backend the game found best for this machine
+     * (PlaytestManager.editorBackend), so the next start is on it from the first frame; this session stays as it
+     * started. Only a start the launcher put on a backend that then has no WebGL at all withdraws the note and
+     * starts again on the browser's own, once. Returns whether this window is on its way out.
+     */
+    relaunchOnMachineBackend() {
+        try {
+            if (typeof nw === 'undefined' || typeof process === 'undefined' || process.platform !== 'win32' || typeof PlaytestManager === 'undefined') return false;
+            const fs = require('fs'), path = require('path'), args = (nw.App.fullArgv || []).map(String);
+            const base = process.env.LOCALAPPDATA || process.env.APPDATA;
+            if (!base) return false;
+            const folder = path.join(base, 'RPGReactor'), note = path.join(folder, PlaytestManager.EDITOR_ANGLE_FILE);
+            const renderer = PlaytestManager.rendererDescription(), hop = PlaytestManager.editorHop(args);
+            if (hop && hop !== 'default' && !renderer && !navigator.webdriver) {
+                try { fs.rmSync(note, { force: true }); } catch (error) { /* the next start asks again */ }
+                const keep = args.filter(a => !/^--(use-angle|rr-editor-angle)=/.test(a));
+                const main = process.mainModule && process.mainModule.filename ? path.dirname(process.mainModule.filename) : '';
+                const next = [...(main && !keep.some(a => !a.startsWith('--')) ? [main] : []), ...keep, '--rr-editor-angle=default'];
+                const quote = a => '"' + String(a).replace(/"/g, '') + '"';
+                // After a moment: two windows on one profile at once would be taken for a second start of the same editor.
+                const line = 'ping -n 2 127.0.0.1 >nul & start "" ' + quote(process.execPath) + ' ' + next.map(quote).join(' ');
+                require('child_process').spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', '"' + line + '"'],
+                    { cwd: nw.App.startPath || process.cwd(), detached: true, stdio: 'ignore', windowsVerbatimArguments: true, windowsHide: true }).unref();
+                try { nw.Window.get().hide(); } catch (error) { /* shown a moment longer */ }
+                setTimeout(() => nw.App.quit(), 100);
+                return true;
+            }
+            let choice = null;
+            try { choice = window.localStorage.getItem('rr.editorBackend'); } catch (error) { /* no storage: no choice made */ }
+            const wanted = PlaytestManager.editorBackend(process.platform, renderer, args, PlaytestManager.backendPlan(renderer, fs, path), nw.App.manifest || {}, !!navigator.webdriver, choice);
+            if (wanted === null) return false;
+            let held = '';
+            try { held = fs.readFileSync(note, 'utf8').trim(); } catch (error) { held = ''; }
+            if (wanted === held) return false;
+            if (wanted) { fs.mkdirSync(folder, { recursive: true }); fs.writeFileSync(note, wanted + '\r\n'); }
+            else fs.rmSync(note, { force: true });
+            console.log('Editor WebGL backend for the next start:', wanted || 'the default');
+            return false;
+        } catch (error) {
+            return false;
         }
     }
 

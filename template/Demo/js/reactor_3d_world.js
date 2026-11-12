@@ -562,7 +562,8 @@ Reactor3D.normalizePiece = function(raw, mapData) {
     const material = typeof raw.material === "string" ? raw.material.trim() : "";
     const id = Number(raw.id);
     const piece = { id: Number.isFinite(id) && id > 0 ? Math.floor(id) : 0, kind, x, y, z, rot, material };
-    if (tall && tall !== this.PIECE_STOREY) piece.height = tall;
+    // A fence stands FENCE_HEIGHT when it has none, so a storey is a height of its own for it and is kept.
+    if (tall && (tall !== this.PIECE_STOREY || kind === "fence")) piece.height = tall;
     const group = Number(raw.group);
     if (Number.isFinite(group) && group > 0) piece.group = Math.floor(group);
     if (typeof raw.finish === "string" && Object.prototype.hasOwnProperty.call(this.PIECE_FINISHES, raw.finish)) piece.finish = raw.finish;
@@ -1677,8 +1678,13 @@ Reactor3D.emitPiece = function(piece, base, out, hidden) {
             quad(p(0, 0, 0), p(0, 1, 1), p(1, 1, 1), p(1, 0, 0)); // slope
             quad(p(0, 0, 0), p(1, 0, 0), p(1, 0, 1), p(0, 0, 1)); // bottom
             quad(p(0, 0, 1), p(1, 0, 1), p(1, 1, 1), p(0, 1, 1)); // back wall
-            tri(p(1, 0, 0), p(1, 1, 1), p(1, 0, 1)); // east
-            tri(p(0, 0, 0), p(0, 0, 1), p(0, 1, 1)); // west
+            // A side another ramp carries the slope on across is kept (the sun's shadows are drawn from
+            // the far faces of solids, and without it a gable's ramps let the light through and lit a strip
+            // under the verge), its slope edge tucked RAMP_SEAM_TUCK under the slope: back to back with
+            // the neighbour's, edges in the roof's own surface took turns with it as the view moved.
+            const te = skip.rampEast ? Reactor3D.RAMP_SEAM_TUCK : 0, tw = skip.rampWest ? Reactor3D.RAMP_SEAM_TUCK : 0;
+            tri(p(1, 0, te), p(1, 1 - te, 1), p(1, 0, 1)); // east
+            tri(p(0, 0, tw), p(0, 0, 1), p(0, 1 - tw, 1)); // west
         } else if (shape.gable) {
             const p = place;
             const r = shape.rise > 0 ? shape.rise : 1;
@@ -1915,7 +1921,31 @@ Reactor3D.visibleSpans = function(y0, y1, covered) {
     if (at < y1 - 1e-6) spans.push([at, y1]);
     return spans;
 };
+/**
+ * A ramp's two side triangles (its own east and west, u 1 and u 0) tucked under the slope where another ramp carries
+ * the same slope on across that side: same level, same height, same turn. Back to back there, their top edges lay in
+ * the roof's own surface, and the two pieces' materials took turns along the seam as the view moved (a plaster
+ * gable's edge flickering through the tiles beside it). Tucked, not left out: the sun's shadow pass draws the far
+ * faces of solids, and a gable's ramps without theirs let light through (a lit strip under the verge).
+ * `{ rampEast, rampWest }`, or null when both stay as they are.
+ */
+Reactor3D.RAMP_SEAM_TUCK = 0.03;
+Reactor3D.rampHiddenSides = function(piece, mapData) {
+    if (!mapData || piece.kind !== "ramp") return null;
+    const r = ((piece.rot % 4) + 4) % 4, east = [[1, 0], [0, 1], [-1, 0], [0, -1]][r];
+    const here = this.pieceBaseAt(mapData, piece.x, piece.y);
+    const continues = (dx, dy) => {
+        const stack = this.piecesAt(mapData, piece.x + dx, piece.y + dy);
+        if (!stack || Math.abs(this.pieceBaseAt(mapData, piece.x + dx, piece.y + dy) - here) > 0.02) return false;
+        return stack.some(other => other !== piece && other.kind === "ramp" && Math.abs(other.z - piece.z) < 1e-6
+            && ((((other.rot % 4) + 4) % 4) === r) && !other.rise);
+    };
+    const rampEast = continues(east[0], east[1]), rampWest = continues(-east[0], -east[1]);
+    return rampEast || rampWest ? { rampEast, rampWest } : null;
+};
+
 Reactor3D.hiddenFacesOf = function(piece, mapData) {
+    if (piece.kind === "ramp") return piece.rise ? null : this.rampHiddenSides(piece, mapData);
     if (!this.HIDDEN_FACE_KINDS.includes(piece.kind) && piece.kind !== "floor") return null;
     const height = this.pieceHeight(piece.kind, piece);
     // What a neighbouring cell covers of a shared face, as height ranges from
@@ -2043,7 +2073,8 @@ Reactor3D.pieceGeometry = function(pieces, mapData) {
         }
         const hidden = this.hiddenFacesOf(piece, mapData);
         const from = out.positions.length;
-        this.emitPiece(hidden ? Object.assign({}, piece, { rot: 0 }) : piece, base, out, hidden);
+        // A cube's hidden faces are named in world terms and it is emitted unturned; a ramp's in its own.
+        this.emitPiece(hidden && piece.kind !== "ramp" ? Object.assign({}, piece, { rot: 0 }) : piece, base, out, hidden);
         // A ladder's level as drawn: narrowed across its cell (`span`), cut short (`rise`), shifted over (`offset`).
         if (piece.kind === "ladder" && (piece.offset || piece.span || piece.rise)) {
             const [ax, ay] = this.stairAxis(piece.rot), lx = -ay, lz = ax;
@@ -2374,6 +2405,7 @@ Reactor3D.triplanarMaterial = function(material, tiles) {
     const earlier = material.onBeforeCompile;
     material.onBeforeCompile = function(shader, renderer) {
         if (typeof earlier === "function") earlier.call(this, shader, renderer);
+        if (Reactor3D.MipBias) Reactor3D.MipBias.install();
         shader.uniforms.rrTriScale = this.__rrTriScale || (this.__rrTriScale = { value: this.__reactorTriplanar });
         shader.vertexShader = shader.vertexShader
             .replace("#include <common>", "#include <common>\nvarying vec3 vRRTriPos;\nvarying vec3 vRRTriNormal;")
@@ -2384,7 +2416,7 @@ Reactor3D.triplanarMaterial = function(material, tiles) {
                 "#ifdef USE_MAP",
                 "\tvec3 rrTriW = pow(abs(normalize(vRRTriNormal)), vec3(4.0));",
                 "\trrTriW /= max(rrTriW.x + rrTriW.y + rrTriW.z, 1e-4);",
-                "\tvec4 sampledDiffuseColor = texture2D(map, vRRTriPos.zy * rrTriScale) * rrTriW.x + texture2D(map, vRRTriPos.xz * rrTriScale) * rrTriW.y + texture2D(map, vRRTriPos.xy * rrTriScale) * rrTriW.z;",
+                "\tvec4 sampledDiffuseColor = texture2D(map, vRRTriPos.zy * rrTriScale, rrMipBias) * rrTriW.x + texture2D(map, vRRTriPos.xz * rrTriScale, rrMipBias) * rrTriW.y + texture2D(map, vRRTriPos.xy * rrTriScale, rrMipBias) * rrTriW.z;",
                 "\tdiffuseColor *= sampledDiffuseColor;",
                 "#endif"
             ].join("\n"));
@@ -2667,7 +2699,9 @@ Reactor3D.Arrival = {
             return false;
         }
         // (Built a few a frame meanwhile, Reactor3D.ModelJoins: several landing together were one long frame.)
-        if (job.stage === 4) { this.pacing = true; if (job.models) job.models(); job.stage = 5; return false; }
+        // (The wait for them is counted from here: counted from the first step, a machine that took MODELS_MS over the
+        // land had none of it left, and the map showed with its models unbuilt.)
+        if (job.stage === 4) { this.pacing = true; if (job.models) job.models(); job.since = clock(); job.stage = 5; return false; }
         const joins = Reactor3D.ModelJoins;
         if (joins) joins.drain();
         const held = scene._modelInstances;
@@ -2856,6 +2890,28 @@ Reactor3D.neutralDetailTexture = function() {
  * so it lines up with the material's own image (three flips that one on upload).
  */
 Reactor3D.packMaterialDetail = function(normal, rough, maxSize) {
+    // One texture for the same pictures at the same size, whichever scene asks: every neighboring map's world
+    // packed its cliff's maps again, 7 ms of a 20 ms frame as the party rode toward a border (2026-11-07).
+    const cacheKey = normal || rough;
+    if (cacheKey && typeof cacheKey === "object") {
+        const cache = this._packedDetails || (this._packedDetails = new WeakMap());
+        let bySize = cache.get(cacheKey);
+        if (!bySize) cache.set(cacheKey, bySize = new Map());
+        const key = (maxSize || 1024) + "|" + (normal && rough ? this._detailId(rough) : "");
+        const kept = bySize.get(key);
+        if (kept && kept.image) return kept;
+        const made = this._packMaterialDetail(normal, rough, maxSize);
+        if (made) { made.userData = made.userData || {}; made.userData.rrSharedDetail = true; bySize.set(key, made); }
+        return made;
+    }
+    return this._packMaterialDetail(normal, rough, maxSize);
+};
+Reactor3D._detailId = function(object) {
+    const ids = this._detailIds || (this._detailIds = new WeakMap());
+    if (!ids.has(object)) { this._detailSerial = (this._detailSerial || 0) + 1; ids.set(object, this._detailSerial); }
+    return ids.get(object);
+};
+Reactor3D._packMaterialDetail = function(normal, rough, maxSize) {
     const source = normal || rough;
     if (!source || typeof document === "undefined" || !document) return null;
     const width = source.naturalWidth || source.width, height = source.naturalHeight || source.height;
@@ -2946,7 +3002,8 @@ Reactor3D.MapScene.prototype.materialDetail = function(name, load) {
                 console.warn(`Reactor3D: the maps of material "${name}" could not be read.`, error);
             }
             if (!texture) return;
-            this._textures.push(texture);
+            // (Shared between scenes, it is not this scene's to dispose of.)
+            if (!(texture.userData && texture.userData.rrSharedDetail)) this._textures.push(texture);
             detail.map.value = texture;
             detail.params.value.w = 1;
         };
@@ -3111,8 +3168,9 @@ Reactor3D.MapScene.prototype.pieceMaterial = function(name, load, surface, both)
     if (look.glass) material.forceSinglePass = true;
     material.__reactorShaded = true;
     material.__reactorPieces = true;
+    // A rock's faces (and its caps): many small facets, lit by the sun whichever way each turns (no RR_SUN_FACING).
+    if (both === "rock" || both === "both") material.__reactorRock = true;
     material.__reactorSelfLit = look.glow;
-    material.userData.rrPieceMaterial = name;
     // Its normal and roughness maps and settings, when it has any; a rock's cap keeps its own repeat.
     const detail = texture && !look.glow ? this.materialDetail(name, load) : null;
     if (detail) { material.userData.rrDetail = detail; material.userData.rrDetailUv = both !== "both"; }
@@ -3192,7 +3250,6 @@ Reactor3D.MapScene.prototype.pieceGhostMaterial = function(name, load) {
     material.__reactorPieces = true;
     material.__reactorGhost = true;
     material.__reactorSelfLit = look.glow;
-    material.userData.rrPieceMaterial = name;
     // Laid at the wall's own repeat, so the wall seen through keeps its stones where they were.
     const detail = texture && !look.glow ? this.materialDetail(name, load) : null;
     if (detail) material.userData.rrDetail = detail;
@@ -3291,7 +3348,9 @@ Reactor3D.MapScene.prototype.layRockChunks = function(mapData, load, rocks, want
         let buckets = cache.get(key);
         if (!buckets || buckets.sig !== sig) {
             const distance = focus ? Math.hypot(Math.max(box.x0 - focus.x, 0, focus.x - box.x1), Math.max(box.z0 - focus.z, 0, focus.z - box.z1)) : 0;
-            if (pool && distance > Reactor3D.ROCK_NEAR) { jobs.push({ key, box, reaching, sig, distance }); continue; }
+            // A neighboring map's rocks are all meshed in the background: the chunks near the party lie by the
+            // border it rides toward, and meshing them here was one frame of a quarter second (2026-11-07).
+            if (pool && (this._staged || distance > Reactor3D.ROCK_NEAR)) { jobs.push({ key, box, reaching, sig, distance }); continue; }
             buckets = Reactor3D.rockChunkBuckets(reaching, box, floor);
             buckets.sig = sig;
             cache.set(key, buckets);
@@ -3496,7 +3555,9 @@ Reactor3D.rockWorkerSource = function() {
 /**
  * The background meshers, shared by every map: up to three workers (one core is the game's), made
  * on first use. Null where workers cannot run. A worker that fails hands its work back: the rest
- * is meshed here, a chunk a turn.
+ * is meshed here, a chunk a turn. While the game in play is short of its frames (Reactor3D.FramePressure)
+ * the work is handed to one mesher at a time, until what is queued is done: three beside the game were
+ * more threads than a four-core processor had to give, and it was the game that waited.
  */
 Reactor3D.rockWorkerPool = function() {
     if (this._rockPool !== undefined) return this._rockPool && !this._rockPool.broken ? this._rockPool : null;
@@ -3526,7 +3587,10 @@ Reactor3D.rockWorkerPool = function() {
     });
     const pump = () => {
         if (pool.broken) { runHere(); return; }
-        while (pool.idle.length && pool.queue.length) {
+        if (!pool.queue.length && !pool.jobs.size) pool.pressed = false;
+        else if (!pool.pressed && Reactor3D.FramePressure && Reactor3D.FramePressure.short()) pool.pressed = true;
+        const most = pool.pressed ? 1 : Infinity;
+        while (pool.idle.length && pool.queue.length && pool.jobs.size < most) {
             const worker = pool.idle.pop(), job = pool.queue.shift();
             pool.jobs.set(job.id, job);
             job.worker = worker;
@@ -3720,7 +3784,10 @@ Reactor3D.DrawBatches = {
             this._restored = false;
             for (const mapScene of this._scenes) {
                 const state = mapScene._drawBatches;
-                if (state) { for (const batch of state.batches.values()) batch.dirty = true; state.tick = -1; }
+                // Lost as well as dirty: a batch the time budget leaves for a later frame must not be drawn meanwhile.
+                // Its arrays were let go once sent (FREE_ARRAYS), and the new context has nothing of it: three read
+                // the missing array in the draw and the game stopped. Its chunks draw as themselves until it is made.
+                if (state) { for (const batch of state.batches.values()) { batch.dirty = true; if (batch.mesh) batch.lost = true; } state.tick = -1; }
             }
         }
         for (const mapScene of this._scenes) this.flushScene(mapScene);
@@ -3753,8 +3820,9 @@ Reactor3D.DrawBatches = {
         const queue = this.COALESCE_STREAMING && mapScene._foliageQueue;
         const queueLength = queue ? queue.length : 0;
         const advanced = state.pending && (state.pendingQueue !== queue || state.pendingLength !== queueLength);
-        if (!state.fresh.length && !advanced && ++state.tick % this.CHECK_EVERY !== 0 && !this.groupsChanged(state)) return;
+        if (!state.fresh.length && !advanced && !state.more && ++state.tick % this.CHECK_EVERY !== 0 && !this.groupsChanged(state)) return;
         state.pending = false;
+        state.more = false;
         state.pendingQueue = queue;
         state.pendingLength = queueLength;
         // A chunk taken away (an edit, the plants laid again) or given another material leaves its batch.
@@ -3766,6 +3834,8 @@ Reactor3D.DrawBatches = {
                 if (m.parent === batch.parent && m.material === batch.material && m.userData.rrBatchedIn === batch) { members[kept++] = m; continue; }
                 this.leave(m, batch);
                 batch.dirty = true;
+                batch.lost = true;
+                batch.job = null;
                 // Still standing (a new material): it may join another batch.
                 if (m.parent) state.fresh.push(m);
             }
@@ -3783,37 +3853,70 @@ Reactor3D.DrawBatches = {
                 batch.members.push(m);
                 m.userData.rrBatchedIn = batch;
                 batch.dirty = true;
+                batch.job = null;
             }
         }
-        const pendingRegions = queue && queue.length ? new Set(queue.map(job => Math.floor(job[0] * Reactor3D.FOLIAGE_CHUNK / this.REGION)
-            + "," + Math.floor(job[1] * Reactor3D.FOLIAGE_CHUNK / this.REGION))) : null;
-        let made = 0;
+        // The regions the queue still has plants to lay in, each as one number (no text made for every job), in a set kept for this.
+        const regionKey = (rx, ry) => (rx + 32768) * 65536 + (ry + 32768);
+        let pendingRegions = null;
+        if (queue && queue.length) {
+            pendingRegions = state.pendingRegions || (state.pendingRegions = new Set());
+            pendingRegions.clear();
+            for (const job of queue) pendingRegions.add(regionKey(Math.floor(job[0] * Reactor3D.FOLIAGE_CHUNK / this.REGION), Math.floor(job[1] * Reactor3D.FOLIAGE_CHUNK / this.REGION)));
+        }
+        let made = 0, built = 0;
+        const builtMeshes = [];
+        const clock = () => (typeof performance !== "undefined" ? performance.now() : Date.now()), started = clock();
         for (const [key, batch] of state.batches) {
             if (!batch.dirty) continue;
+            // At most BUILD_MS of merging a refresh (one batch at least): after a border crossing every region's
+            // batches were made again in one frame, 8 to 19 ms a frame for several frames (2026-11-07). One left
+            // for a later frame draws as it did, or, having lost a chunk, as its chunks until it is made again.
+            if (made && clock() - started >= this.BUILD_MS) {
+                if (batch.mesh && batch.lost) { this.drop(batch); for (const member of batch.members) this.reveal(member); }
+                state.more = true;
+                continue;
+            }
             const first = batch.members[0], cell = first && first.userData.rrBatchCell;
             if (batch.members.length > 1 && (first.userData.rrFoliageChunk || first.userData.rrBushChunk !== undefined) && pendingRegions
-                && pendingRegions.has(Math.floor(cell.x / this.REGION) + "," + Math.floor(cell.y / this.REGION))) {
+                && pendingRegions.has(regionKey(Math.floor(cell.x / this.REGION), Math.floor(cell.y / this.REGION)))) {
                 if (batch.mesh) { this.drop(batch); for (const member of batch.members) this.reveal(member); }
                 state.pending = true;
                 continue;
             }
+            // Plants merge as a job over as many refreshes as it takes (mergeInstancedJob), their chunks drawn
+            // as themselves meanwhile if the batch lost one, else under the batch as it stood.
+            let ready = null;
+            if (batch.members.length > 1 && batch.members[0].geometry.isInstancedBufferGeometry) {
+                if (batch.mesh && batch.lost) { this.drop(batch); for (const member of batch.members) this.reveal(member); batch.lost = false; }
+                if (!batch.job) batch.job = this.mergeInstancedJob(batch.members);
+                made++;
+                if (!batch.job.step(started + this.BUILD_MS)) { state.more = true; continue; }
+                ready = batch.job.geometry;
+                batch.job = null;
+            }
             batch.dirty = false;
+            batch.lost = false;
             const hidden = !!batch.mesh;
             this.drop(batch);
             if (!batch.members.length) { state.batches.delete(key); continue; }
             // One chunk alone in its region is drawn as itself, and stays listed for a neighbour to join.
             if (batch.members.length < 2) { if (hidden) this.reveal(batch.members[0]); continue; }
-            this.build(batch);
+            this.build(batch, ready);
             made++;
+            built++;
+            if (batch.mesh) builtMeshes.push(batch.mesh);
         }
-        if (made && Reactor3D.Shadows && Reactor3D.Shadows.invalidate) Reactor3D.Shadows.invalidate();
-        if (made) state.builds = (state.builds || 0) + made;
+        if (builtMeshes.length && Reactor3D.Shadows && Reactor3D.Shadows.invalidate) Reactor3D.Shadows.invalidate(builtMeshes);
+        if (built) state.builds = (state.builds || 0) + built;
         state.counts.clear();
         for (const batch of state.batches.values()) state.counts.set(batch.parent, batch.parent.children.length);
     },
 
     /** Refreshes between looks at a scene's batches when nothing seemed to change. */
     CHECK_EVERY: 60,
+    /** Milliseconds of batches made in one refresh; the rest on the refreshes after. */
+    BUILD_MS: 2,
 
     /** Whether a group holding batches has another number of children than at the last look, or has left its scene. */
     groupsChanged(state) {
@@ -3822,9 +3925,9 @@ Reactor3D.DrawBatches = {
     },
 
     /** A batch's mesh made from its members' arrays, the members hidden. */
-    build(batch) {
+    build(batch, made) {
         const members = batch.members, first = members[0];
-        const geometry = first.geometry.isInstancedBufferGeometry ? this.mergeInstanced(members) : this.merge(members);
+        const geometry = made || (first.geometry.isInstancedBufferGeometry ? this.mergeInstanced(members) : this.merge(members));
         if (this.FREE_ARRAYS) {
             // Only the batch's own arrays: an instanced template is the chunks' shared one.
             for (const name in geometry.attributes) {
@@ -3864,6 +3967,11 @@ Reactor3D.DrawBatches = {
         if (casts) S.markCaster(mesh, false);
         for (const m of members) {
             m.visible = false;
+            // Its batch draws it: three's walk of the scene's matrices passes it by until it is drawn as itself again
+            // (`reveal`). North Haven holds 1,476 such chunks, each a call of that walk every frame for a matrix that
+            // never moves (the laptop, 2026-11-08). Its world matrix is brought up to date first.
+            m.updateMatrixWorld(true);
+            m.matrixWorldAutoUpdate = false;
             if (casts && S._static) S._static.delete(m);
         }
     },
@@ -3887,8 +3995,9 @@ Reactor3D.DrawBatches = {
     /** A chunk drawn as itself, and casting as itself. */
     reveal(m) {
         m.visible = true;
+        if (m.matrixWorldAutoUpdate === false) { m.matrixWorldAutoUpdate = true; m.updateMatrixWorld(true); }
         const S = Reactor3D.Shadows;
-        if (m.parent && m.userData.reactorShadowCaster === "static" && S && S._static) { S._static.add(m); if (S.invalidate) S.invalidate(); }
+        if (m.parent && m.userData.reactorShadowCaster === "static" && S && S._static) { S._static.add(m); if (S.invalidate) S.invalidate(m); }
     },
 
     /** Every batch of a scene taken apart: its chunks drawn as themselves (`forget`: the scene is going, and nothing is kept). */
@@ -3896,7 +4005,13 @@ Reactor3D.DrawBatches = {
         const state = mapScene && mapScene._drawBatches;
         if (state) {
             for (const batch of state.batches.values()) {
-                for (const m of batch.members) { this.leave(m, batch); if (!forget && m.parent) state.fresh.push(m); }
+                // A scene that is going keeps nothing: its chunks are not shown again, nor handed back to the shadows'
+                // list of still casters (they were, after the shadows had already forgotten the scene, and stayed).
+                for (const m of batch.members) {
+                    if (forget) { if (m.userData.rrBatchedIn === batch) delete m.userData.rrBatchedIn; continue; }
+                    this.leave(m, batch);
+                    if (m.parent) state.fresh.push(m);
+                }
                 this.drop(batch);
             }
             state.batches.clear();
@@ -3941,39 +4056,85 @@ Reactor3D.DrawBatches = {
      * the sort component (each chunk's already are: a k-way merge), so a
      * share of the region drawn from the front is the same share of each.
      */
+    /** The members' instances in one geometry, in order of their thinning share: the whole job at once. */
     mergeInstanced(members) {
+        const job = this.mergeInstancedJob(members);
+        job.step(Infinity);
+        return job.geometry;
+    },
+
+    /**
+     * The same merge as a job that can stop and go on (`step(deadline)`, true once done, then `geometry`): each
+     * chunk is in order already, so a heap of the chunks' next shares picks the next instance; the order is worked
+     * out first and each attribute copied after. A region of grass was 9 to 11 ms in one frame, frame after frame
+     * after a border crossing (2026-11-07).
+     */
+    mergeInstancedJob(members) {
         const first = members[0].geometry, sort = members[0].userData.rrBatchCell.sort;
-        const geometry = new THREE.InstancedBufferGeometry();
-        const instanced = [];
-        for (const name of Object.keys(first.attributes)) {
-            const a = first.attributes[name];
-            if (a.isInstancedBufferAttribute) instanced.push(name);
-            else geometry.setAttribute(name, a);
-        }
-        if (first.index) geometry.setIndex(first.index);
-        const lists = members.map(m => ({ g: m.geometry, n: m.geometry.attributes[sort.name].count, i: 0 }));
+        const n = members.length, counts = new Int32Array(n), at = new Int32Array(n), keys = [];
         let total = 0;
-        for (const l of lists) total += l.n;
-        const out = instanced.map(name => {
-            const a = first.attributes[name];
-            return { name, size: a.itemSize, src: lists.map(l => l.g.attributes[name].array), array: new a.array.constructor(total * a.itemSize), a };
-        });
-        const keys = lists.map(l => l.g.attributes[sort.name].array), stride = first.attributes[sort.name].itemSize, c = sort.component;
-        for (let k = 0; k < total; k++) {
-            let best = -1, value = Infinity;
-            for (let j = 0; j < lists.length; j++) {
-                const l = lists[j];
-                if (l.i >= l.n) continue;
-                const v = keys[j][l.i * stride + c];
-                if (best < 0 || v < value) { best = j; value = v; }
+        for (let j = 0; j < n; j++) { const a = members[j].geometry.attributes[sort.name]; counts[j] = a.count; keys.push(a.array); total += a.count; }
+        const stride = first.attributes[sort.name].itemSize, c = sort.component;
+        const heap = new Int32Array(n), value = new Float64Array(n);
+        let size = 0;
+        const less = (x, y) => value[x] < value[y] || (value[x] === value[y] && x < y);
+        const down = i => {
+            for (;;) {
+                const l = 2 * i + 1, r = l + 1;
+                let m = i;
+                if (l < size && less(heap[l], heap[m])) m = l;
+                if (r < size && less(heap[r], heap[m])) m = r;
+                if (m === i) return;
+                const t = heap[i]; heap[i] = heap[m]; heap[m] = t; i = m;
             }
-            const from = lists[best].i++;
-            for (const o of out) for (let s = 0; s < o.size; s++) o.array[k * o.size + s] = o.src[best][from * o.size + s];
-        }
-        for (const o of out) geometry.setAttribute(o.name, new THREE.InstancedBufferAttribute(o.array, o.size, o.a.normalized, o.a.meshPerAttribute));
-        geometry.instanceCount = total;
-        this.bound(geometry, members);
-        return geometry;
+        };
+        for (let j = 0; j < n; j++) if (counts[j] > 0) { value[j] = keys[j][c]; heap[size++] = j; }
+        for (let i = (size >> 1) - 1; i >= 0; i--) down(i);
+        const fromList = new Uint16Array(total), fromIndex = new Int32Array(total);
+        const names = Object.keys(first.attributes).filter(name => first.attributes[name].isInstancedBufferAttribute);
+        let k = 0, attribute = 0, copied = 0, done = false, built = null;
+        const outs = names.map(name => { const a = first.attributes[name]; return { name, a, size: a.itemSize, src: members.map(m => m.geometry.attributes[name].array), array: new a.array.constructor(total * a.itemSize) }; });
+        const clock = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+        const job = {
+            members: members.slice(),
+            geometry: null,
+            step(deadline) {
+                if (done) return true;
+                // The order, a thousand instances between looks at the clock.
+                while (k < total) {
+                    const end = Math.min(total, k + 1024);
+                    for (; k < end; k++) {
+                        const j = heap[0];
+                        fromList[k] = j; fromIndex[k] = at[j]++;
+                        if (at[j] < counts[j]) value[j] = keys[j][at[j] * stride + c];
+                        else heap[0] = heap[--size];
+                        down(0);
+                    }
+                    if (k < total && clock() >= deadline) return false;
+                }
+                // Each attribute after it.
+                while (attribute < outs.length) {
+                    const o = outs[attribute], w = o.size, src = o.src, array = o.array;
+                    const end = Math.min(total, copied + 8192);
+                    for (; copied < end; copied++) {
+                        const s = src[fromList[copied]], f = fromIndex[copied] * w, t = copied * w;
+                        for (let q = 0; q < w; q++) array[t + q] = s[f + q];
+                    }
+                    if (copied >= total) { attribute++; copied = 0; }
+                    if (attribute < outs.length && clock() >= deadline) return false;
+                }
+                const geometry = new THREE.InstancedBufferGeometry();
+                for (const name of Object.keys(first.attributes)) if (!first.attributes[name].isInstancedBufferAttribute) geometry.setAttribute(name, first.attributes[name]);
+                if (first.index) geometry.setIndex(first.index);
+                for (const o of outs) geometry.setAttribute(o.name, new THREE.InstancedBufferAttribute(o.array, o.size, o.a.normalized, o.a.meshPerAttribute));
+                geometry.instanceCount = total;
+                Reactor3D.DrawBatches.bound(geometry, members);
+                job.geometry = geometry;
+                done = true;
+                return true;
+            }
+        };
+        return job;
     },
 
     /** The merged bounds: the members' boxes joined (each measured once). */
@@ -4351,7 +4512,6 @@ Reactor3D.waterMaterial = function(texture, look) {
     const reflect = data.rrWaterLook.x;
     // A river: its image runs along it (the vertices carry the way and speed) and whitens in rapids.
     const flowing = !!(look && Array.isArray(look.path));
-    material.userData.rrFlowing = flowing;
     if (reflect > 0 && this.Reflections) { this.Reflections.wanted = true; this.Reflections.hook(material); }
     const env = this.Reflections ? this.Reflections.uniforms() : null;
     material.onBeforeCompile = function(shader) {
@@ -5092,7 +5252,6 @@ Reactor3D.MapScene.prototype.addFalls = function(region, load, sheet) {
         const texture = this.materialTexture(region.material, load);
         const curtain = new THREE.Mesh(Reactor3D.fallGeometry(fall), Reactor3D.fallMaterial(texture, region, fall.top - fall.bottom, sheet));
         curtain.renderOrder = 6;
-        curtain.userData.waterFall = fall;
         const foot = Reactor3D.fallFoot(fall);
         const disc = new THREE.CircleGeometry(foot.radius, 28);
         disc.rotateX(-Math.PI / 2);
@@ -5100,11 +5259,9 @@ Reactor3D.MapScene.prototype.addFalls = function(region, load, sheet) {
         const foam = new THREE.Mesh(disc, Reactor3D.foamMaterial(this.materialTexture(region.material, load), region, sheet));
         foam.position.set(foot.x, foot.y + 0.06, foot.z);
         foam.renderOrder = 7;
-        foam.userData.waterFall = fall;
         const spray = new THREE.Points(Reactor3D.fallSprayGeometry(fall, foot), Reactor3D.fallSprayMaterial(fall, foot, region, sheet));
         spray.onBeforeRender = Reactor3D.fallSprayBeforeRender;
         spray.renderOrder = 8;
-        spray.userData.waterFall = fall;
         for (const mesh of [curtain, foam, spray]) {
             this.piecesGroup().add(mesh);
             mesh.updateMatrix();
@@ -5292,6 +5449,7 @@ Reactor3D.MapScene.prototype.updateWaterSheets = function(mapData, load) {
     this.removeWaterHaze();
     for (const mesh of this._waterMeshes || []) {
         if (mesh.parent) mesh.parent.remove(mesh);
+        if (Reactor3D.WaterSight) Reactor3D.WaterSight.forget(mesh);
         mesh.geometry.dispose();
         const m = this._materials.indexOf(mesh.material);
         if (m >= 0) this._materials.splice(m, 1);

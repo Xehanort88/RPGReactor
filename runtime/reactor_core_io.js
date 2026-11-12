@@ -169,6 +169,8 @@ WebAudio._fadeOut = function(duration) {
  */
 WebAudio.prototype.clear = function() {
     this.stop();
+    // A request still running for what was here is let go (_onFetch, _startXhrLoading).
+    this._loadGeneration = (this._loadGeneration || 0) + 1;
     this._data = null;
     this._fetchedSize = 0;
     this._fetchedData = [];
@@ -500,6 +502,12 @@ WebAudio.prototype._startLoading = function() {
             if (mv !== this._url && Utils.localAssetExists(mv)) this._mvEncryptedUrl = Utils.correctFileCase(mv) || mv;
         }
         const url = this._realUrl();
+        // A retry starts from nothing: what an earlier, failed or stalled request
+        // brought must not be joined to the new one's bytes.
+        this._loadGeneration = (this._loadGeneration || 0) + 1;
+        this._fetchedData = [];
+        this._fetchedSize = 0;
+        this._data = null;
         if (Utils.isLocal()) {
             this._startXhrLoading(url);
         } else {
@@ -619,18 +627,20 @@ WebAudio.prototype._realUrl = function() {
 
 WebAudio.prototype._startXhrLoading = function(url) {
     const xhr = new XMLHttpRequest();
+    const generation = this._loadGeneration;
     xhr.open("GET", url);
     xhr.responseType = "arraybuffer";
-    xhr.onload = () => this._onXhrLoad(xhr);
-    xhr.onerror = this._onError.bind(this);
+    xhr.onload = () => { if (generation === this._loadGeneration) this._onXhrLoad(xhr); };
+    xhr.onerror = () => { if (generation === this._loadGeneration) this._onError(); };
     xhr.send();
 };
 
 WebAudio.prototype._startFetching = function(url) {
     const options = { credentials: "same-origin" };
+    const generation = this._loadGeneration;
     fetch(url, options)
-        .then(response => this._onFetch(response))
-        .catch(() => this._onError());
+        .then(response => this._onFetch(response, generation))
+        .catch(() => { if (generation === this._loadGeneration) this._onError(); });
 };
 
 WebAudio.prototype._onXhrLoad = function(xhr) {
@@ -643,10 +653,20 @@ WebAudio.prototype._onXhrLoad = function(xhr) {
     }
 };
 
-WebAudio.prototype._onFetch = function(response) {
+WebAudio.prototype._onFetch = function(response, generation) {
+    // A request a retry replaced (or the buffer destroyed) is let go.
+    const stale = () => generation !== undefined && generation !== this._loadGeneration;
+    if (stale()) {
+        try { response.body && response.body.cancel(); } catch (error) { /* already closed */ }
+        return;
+    }
     if (response.ok) {
         const reader = response.body.getReader();
         const readChunk = ({ done, value }) => {
+            if (stale()) {
+                try { reader.cancel(); } catch (error) { /* already closed */ }
+                return 0;
+            }
             if (done) {
                 this._isLoaded = true;
                 if (this._fetchedSize > 0) {
@@ -663,7 +683,7 @@ WebAudio.prototype._onFetch = function(response) {
         reader
             .read()
             .then(readChunk)
-            .catch(() => this._onError());
+            .catch(() => { if (!stale()) this._onError(); });
     } else {
         this._onError();
     }
@@ -677,12 +697,20 @@ WebAudio.prototype._onError = function() {
     const noData = this._fetchedSize === 0 && (!this._data || !this._data.length);
     // An encrypted MV game names its audio .rpgmvo / .rpgmvm where MZ adds "_"
     // (the bytes are encrypted the same way): ask for that name once.
-    if (noData && Utils.hasEncryptedAudio() && !this._mvEncryptedUrl) {
-        const mv = String(this._url || "").replace(/\.ogg$/i, ".rpgmvo").replace(/\.m4a$/i, ".rpgmvm");
-        if (mv !== this._url) {
-            this._mvEncryptedUrl = Utils.correctFileCase(mv) || mv;
-            this._startLoading();
-            return;
+    if (noData && Utils.hasEncryptedAudio()) {
+        if (this._mvEncryptedUrl) {
+            // That name failed too. Let it go, or every extension tried below
+            // would ask for it again instead of its own name (_realUrl).
+            this._mvEncryptedUrl = null;
+        } else {
+            const mv = String(this._url || "").replace(/\.ogg$/i, ".rpgmvo").replace(/\.m4a$/i, ".rpgmvm");
+            this._triedMvUrls = this._triedMvUrls || [];
+            if (mv !== this._url && !this._triedMvUrls.includes(mv)) {
+                this._triedMvUrls.push(mv);
+                this._mvEncryptedUrl = Utils.correctFileCase(mv) || mv;
+                this._startLoading();
+                return;
+            }
         }
     }
     if (noData && !Utils.isNwjs()) {
@@ -1773,7 +1801,24 @@ Input._onLostFocus = function() {
     this.clear();
 };
 
+/**
+ * With no pad seen yet, the pads are asked for once every GAMEPAD_IDLE_POLL updates, not every update: Chromium's
+ * `navigator.getGamepads` cost 0.13 ms an update on the Iris Xe laptop (2026-11-08) with nothing plugged in. A pad
+ * shows itself to a page by its first press ("gamepadconnected"), and from then on, or once a poll finds one, it
+ * is read every update as before. 1 asks every update.
+ */
+Input.GAMEPAD_IDLE_POLL = 15;
 Input._pollGamepads = function() {
+    if (!this._gamepadListening && typeof window !== "undefined" && window.addEventListener) {
+        this._gamepadListening = true;
+        window.addEventListener("gamepadconnected", () => { this._gamepadSeen = true; });
+    }
+    if (!this._gamepadSeen && this.GAMEPAD_IDLE_POLL > 1) {
+        let held = false;
+        for (let s = 0; s < this._gamepadStates.length; s++) if (this._gamepadStates[s] && this._gamepadStates[s].length) { held = true; break; }
+        this._gamepadIdle = ((this._gamepadIdle || 0) + 1) % this.GAMEPAD_IDLE_POLL;
+        if (!held && this._gamepadIdle !== 1) return;
+    }
     // Every frame: the connected list is reused and the pads are walked by index, so polling allocates nothing.
     const connected = this._connectedScratch || (this._connectedScratch = []);
     connected.length = 0;
@@ -1783,6 +1828,7 @@ Input._pollGamepads = function() {
             for (let i = 0; i < gamepads.length; i++) {
                 const gamepad = gamepads[i];
                 if (gamepad && gamepad.connected) {
+                    this._gamepadSeen = true;
                     connected[gamepad.index] = true;
                     this._updateGamepadState(gamepad);
                 }

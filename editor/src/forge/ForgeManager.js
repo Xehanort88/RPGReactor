@@ -38,6 +38,9 @@ const FORGE_ICONS = {
     // A figure in front of a cube's edges: a body built in 3D.
     character3dBuilder: (size) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="display: block;" aria-hidden="true"><path d="M3 7.5 L9 4.5 L15 7.5"/><path d="M3 7.5 V15"/><circle cx="15" cy="9" r="2.6"/><path d="M10.5 21v-1.5a4.5 4.5 0 0 1 9 0V21"/><path d="M15 13.5v3"/></svg>`,
 
+    // Three figures side by side: many characters made at once.
+    characterGroups: (size) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="display: block;"><circle cx="12" cy="7" r="3"/><path d="M6.5 20v-1.5a5.5 5.5 0 0 1 11 0V20"/><circle cx="4.8" cy="9.5" r="2.1"/><path d="M1.5 19v-1a3.6 3.6 0 0 1 3.4-3.6"/><circle cx="19.2" cy="9.5" r="2.1"/><path d="M22.5 19v-1a3.6 3.6 0 0 0-3.4-3.6"/></svg>`,
+
     // A flag flying from its pole.
     propBuilder: (size) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="display: block;" aria-hidden="true"><path d="M5 21V3"/><path d="M5 4c3-1.5 5 1.5 8 0s4.5-.5 6 .5v8c-1.5-1-3-1.5-6 0s-5-1.5-8 0"/></svg>`,
 
@@ -69,6 +72,14 @@ const FORGE_TOOLS = [
         icon: FORGE_ICONS.character3dBuilder,
         ctor: () => new Character3DBuilder(),
         getter: 'character3dBuilder'
+    },
+    {
+        id: 'character-groups',
+        nameKey: 'menu.characterGroups',
+        descriptionKey: 'forge.characterGroups.description',
+        icon: FORGE_ICONS.characterGroups,
+        ctor: () => new RRCharacterGroups.Tool(),
+        getter: 'characterGroups'
     },
     {
         id: 'prop-builder',
@@ -142,6 +153,11 @@ class ForgeManager {
         return window.I18n ? window.I18n.t(key) : key;
     }
 
+    /** A phrase (not a key) in the editor's language. */
+    _tx(text) {
+        return window.I18n && typeof window.I18n.tText === 'function' ? window.I18n.tText(text) : text;
+    }
+
     /** Open the workspace (called by toolbar button + File>Forge>Forge Launcher). */
     showLauncher() {
         this._open();
@@ -182,17 +198,26 @@ class ForgeManager {
      */
     async requestClose() {
         if (!this.workspaceModal || this.workspaceModal.style.display === 'none') return false;
-        const tool = FORGE_TOOLS.find(entry => entry.id === this.activeToolId);
-        const instance = tool && this[tool.getter];
-        if (instance && typeof instance.holdsWork === 'function' && instance.holdsWork()) {
-            const tt = text => (window.I18n ? window.I18n.tText(text) : text);
-            const discard = typeof RRDialog === 'undefined' ? false : await RRDialog.confirm(
-                `${tt('Discard the unsaved changes in')} ${this._t(tool.nameKey)}?`,
-                { title: tt('Unsaved Changes'), ok: tt('Discard Changes'), danger: true });
-            if (!discard) return false;
-        }
+        if (this._holdsWork() && !await this._confirmDiscard()) return false;
         this.close();
         return true;
+    }
+
+    /** The open tool has work a close or a switch to another tool would throw away. */
+    _holdsWork() {
+        const tool = FORGE_TOOLS.find(entry => entry.id === this.activeToolId);
+        const instance = tool && this[tool.getter];
+        return !!(instance && typeof instance.holdsWork === 'function' && instance.holdsWork());
+    }
+
+    /** Asks whether to drop the open tool's unsaved work. Resolves true to go on. */
+    async _confirmDiscard() {
+        const tool = FORGE_TOOLS.find(entry => entry.id === this.activeToolId);
+        const tt = text => (window.I18n ? window.I18n.tText(text) : text);
+        if (typeof RRDialog === 'undefined') return false;
+        return RRDialog.confirm(
+            `${tt('Discard the unsaved changes in')} ${this._t(tool.nameKey)}?`,
+            { title: tt('Unsaved Changes'), ok: tt('Discard Changes'), danger: true });
     }
 
     /**
@@ -205,6 +230,8 @@ class ForgeManager {
             if (!instance) continue;
             if (typeof instance.detach === 'function') instance.detach();
             if ('projectPath' in instance) instance.projectPath = null;
+            // The design last opened was another project's: saving under its name here must ask, and never move (delete) a file.
+            if ('_openedDesign' in instance) instance._openedDesign = null;
             if (instance.imageCache && typeof instance.imageCache.clear === 'function') instance.imageCache.clear();
         }
         this._mountedTool = null;
@@ -227,7 +254,7 @@ class ForgeManager {
                         <span class="rr-forge-brand">${FORGE_ICONS.forge(22)}</span>
                         <div class="rr-modal-title"></div>
                     </div>
-                    <button type="button" class="rr-forge-close" aria-label="${this._t('common.close')}">&times;</button>
+                    <button type="button" class="rr-forge-close" aria-label="${this._tx('Close')}">&times;</button>
                 </div>
                 <div class="rr-forge-workspace-body"></div>
             </div>`;
@@ -254,7 +281,7 @@ class ForgeManager {
         const titleSuffix = activeTool ? ` | ${this._t(activeTool.nameKey)}` : '';
 
         this.workspaceModal.querySelector('.rr-modal-title').textContent = this._t('menu.forge') + titleSuffix;
-        this.workspaceModal.querySelector('.rr-forge-close').setAttribute('aria-label', this._t('common.close'));
+        this.workspaceModal.querySelector('.rr-forge-close').setAttribute('aria-label', this._tx('Close'));
         this.workspaceModal.querySelector('.rr-forge-workspace-body').innerHTML = `
                     <div class="rr-forge-sidebar">
                         <div class="rr-forge-tools-header lit-section-header">${this._t('forge.tools')}</div>
@@ -294,8 +321,16 @@ class ForgeManager {
         const tool = FORGE_TOOLS.find(t => t.id === toolId);
         if (!tool || this.activeToolId === toolId) return;
 
-        if (!this[tool.getter]) this[tool.getter] = tool.ctor();
-        this.activeToolId = toolId;
-        this._renderWorkspace();
+        const from = this.activeToolId;
+        const leave = () => {
+            if (!this[tool.getter]) this[tool.getter] = tool.ctor();
+            this.activeToolId = toolId;
+            this._renderWorkspace();
+        };
+        // A running project tool is closed by the switch: ask first, as closing the Forge does.
+        if (!this._holdsWork()) { leave(); return; }
+        this._confirmDiscard().then(discard => {
+            if (discard && this.activeToolId === from && this.workspaceModal) leave();
+        });
     }
 }

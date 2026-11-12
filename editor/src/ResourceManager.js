@@ -205,8 +205,8 @@ class ResourceManager {
             const invalid = ['.png', '.apng'].includes(extension)
                 ? bytes.length < png.length || png.some((value, index) => bytes[index] !== value)
                 : ['.jpg', '.jpeg'].includes(extension)
+                    // (Its start only: cameras and exporters write bytes after the end marker, and such files are valid.)
                     ? bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff
-                        || bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9
                     : extension === '.webp'
                         ? bytes.length < 12 || ascii(0, 4) !== 'RIFF' || ascii(8, 4) !== 'WEBP'
                         : extension === '.gif'
@@ -1095,7 +1095,10 @@ class ResourceManager {
     }
 
     handleKeyDown(event) {
-        if (this.overlay?.style.display === 'none' || document.getElementById('rr-themed-dialog')) return;
+        // A dialog opened over it (a themed question, the 3D model import options) takes its own keys: Escape closes
+        // that one, not the Resource Manager under it.
+        if (this.overlay?.style.display === 'none' || document.getElementById('rr-themed-dialog')
+            || document.getElementById('rr-model-optimize-dialog')) return;
         if (document.querySelector('.rr-shim-popup')?.contains(event.target)
             || event.target.closest?.('.rr-search-select-panel')) return;
         if (event.key === 'Escape') {
@@ -1185,7 +1188,12 @@ class ResourceManager {
         const toggle = Boolean(event?.ctrlKey || event?.metaKey);
         const range = Boolean(event?.shiftKey && this.selectionAnchor);
         if (range) {
-            const names = this.records.map(item => item.displayName);
+            // The rows between the two clicks as the list shows them: a search hides files, and a folder's
+            // own files come before its subfolders', so the order of the records is not the order on screen.
+            const rows = this.browser?.list?.querySelectorAll('.rr-resource-file');
+            const names = rows
+                ? Array.from(rows, item => item.dataset.fileName)
+                : this.records.map(item => item.displayName);
             const from = names.indexOf(this.selectionAnchor);
             const to = names.indexOf(name);
             if (!toggle) this.selectedNames.clear();
@@ -1193,6 +1201,10 @@ class ResourceManager {
                 for (let index = Math.min(from, to); index <= Math.max(from, to); index++) {
                     this.selectedNames.add(names[index]);
                 }
+            } else {
+                // The first click is no longer shown (searched away, or its folder closed): start from this one.
+                this.selectedNames.add(name);
+                this.selectionAnchor = name;
             }
         } else if (toggle) {
             if (this.selectedNames.has(name)) this.selectedNames.delete(name);

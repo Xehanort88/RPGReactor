@@ -7,6 +7,7 @@ const path = require('node:path');
 const { copyWebForgeAssets } = require('./web-forge-assets.cjs');
 
 const SERVER_FOLDER = 'reactor-online';
+const BUILDER_FOLDER = 'reactor-builder';
 const API_PATH = SERVER_FOLDER + '/api.php';
 const ENGINE_DEFAULTS = Object.freeze({ enabled: true, rate: 15, movement: 'speed', maxSpeed: 16 });
 
@@ -38,7 +39,42 @@ function stampOnlineClient(stagingDir, publicAddress, settings = {}, characters 
  */
 function stageCharacterBuilder(stagingDir, appRoot) {
     if (readData(stagingDir, 'ReactorCharacters.json').mode !== 'build') return false;
-    copyWebForgeAssets(appRoot, path.join(stagingDir, 'reactor-builder'), path.join(stagingDir, 'js'));
+    copyWebForgeAssets(appRoot, path.join(stagingDir, BUILDER_FOLDER), path.join(stagingDir, 'js'));
+    return true;
+}
+
+/** What the Forge's files are right now, by name, size and date, to tell a copy that is still current. */
+function forgeFingerprint(appRoot, stagingDir) {
+    const folders = [path.join(appRoot, 'src/forge/Character3D'), path.join(appRoot, 'src/forge/Character3D/data')];
+    const hash = crypto.createHash('sha256');
+    for (const folder of folders) {
+        for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+            if (!entry.isFile()) continue;
+            const stat = fs.statSync(path.join(folder, entry.name));
+            hash.update(`${entry.name}:${stat.size}:${stat.mtimeMs}\n`);
+        }
+    }
+    for (const name of ['ModelRigger.js', 'ModelAutoRig.js']) {
+        const stat = fs.statSync(path.join(appRoot, 'src/database', name));
+        hash.update(`${name}:${stat.size}:${stat.mtimeMs}\n`);
+    }
+    const motions = path.join(stagingDir, 'js/reactor_3d_motions.bin');
+    if (fs.existsSync(motions)) hash.update(String(fs.statSync(motions).size));
+    return hash.digest('hex');
+}
+
+/**
+ * A playtest runs from the project's own folder, so a project that builds characters needs the
+ * Forge there too: a game's page may only start a worker from its own folder. Only the first
+ * playtest after the Forge changes copies anything. The folder is never part of a build.
+ */
+function stagePlaytestCharacterBuilder(projectPath, appRoot) {
+    if (readData(projectPath, 'ReactorCharacters.json').mode !== 'build') return false;
+    const target = path.join(projectPath, BUILDER_FOLDER), stamp = path.join(target, '.forge-version');
+    const version = forgeFingerprint(appRoot, projectPath);
+    if (fs.existsSync(stamp) && fs.readFileSync(stamp, 'utf8') === version) return false;
+    copyWebForgeAssets(appRoot, target, path.join(projectPath, 'js'));
+    fs.writeFileSync(stamp, version);
     return true;
 }
 
@@ -84,6 +120,28 @@ function phpString(value) {
 }
 
 /**
+ * The events whose self switches the project shares (`<world>` in an event's note), as "map,event". The server takes a
+ * shared self switch only for these: without the list any player could set any event's switches for everyone. Nothing
+ * (no restriction, as before) when the maps cannot be read.
+ */
+function worldEvents(dataFolder) {
+    try {
+        const out = [];
+        for (const name of fs.readdirSync(dataFolder)) {
+            const id = /^Map(\d+)\.json$/.exec(name);
+            if (!id) continue;
+            const map = JSON.parse(fs.readFileSync(path.join(dataFolder, name), 'utf8').replace(/^\uFEFF/, ''));
+            for (const event of Array.isArray(map.events) ? map.events : []) {
+                if (event && /<world(?::[^>]*)?>/i.test(String(event.note || ''))) out.push(`${Number(id[1])},${Number(event.id)}`);
+            }
+        }
+        return out;
+    } catch (error) {
+        return null;
+    }
+}
+
+/**
  * Writes reactor-online/ into the deployed folder. The secret is made once and kept, so a rebuild
  * updates the server without signing players out; only api.php and the config's labels change.
  */
@@ -99,7 +157,9 @@ function writeOnlineServer(folder, { appRoot, project, title, runtime, maxPlayer
     const enginePort = 20000 + (parseInt(secret.slice(0, 8), 16) % 9000);
     const keptAdmin = /'adminKey'\s*=>\s*'([0-9a-f]{20,})'/.exec(before);
     const adminKey = keptAdmin ? keptAdmin[1] : crypto.randomBytes(12).toString('hex');
-    const config = `<?php\nreturn [\n    'secret' => '${secret}',\n    'project' => ${phpString(project)},\n    'title' => ${phpString(title)},\n    'runtime' => ${phpString(runtime)},\n    'maxPlayers' => ${Math.max(1, Math.min(1024, Number(maxPlayers) || 64))},\n    'rules' => ${phpString(JSON.stringify(rules || {}))},\n    'settings' => ${phpString(JSON.stringify({ accounts: settings.accounts, chat: settings.chat, world: settings.world, engine: settings.engine, voice: { enabled: !!settings.voice?.enabled, who: settings.voice?.who || 'all' } }))},\n    'adminKey' => '${adminKey}',\n    'enginePort' => ${enginePort},\n];\n`;
+    const events = worldEvents(dataFolder);
+    const sharedWorld = events ? { ...(settings.world || {}), events } : settings.world;
+    const config = `<?php\nreturn [\n    'secret' => '${secret}',\n    'project' => ${phpString(project)},\n    'title' => ${phpString(title)},\n    'runtime' => ${phpString(runtime)},\n    'maxPlayers' => ${Math.max(1, Math.min(1024, Number(maxPlayers) || 64))},\n    'rules' => ${phpString(JSON.stringify(rules || {}))},\n    'settings' => ${phpString(JSON.stringify({ accounts: settings.accounts, chat: settings.chat, world: sharedWorld, engine: settings.engine, storage: settings.storage, voice: { enabled: !!settings.voice?.enabled, who: settings.voice?.who || 'all' } }))},\n    'adminKey' => '${adminKey}',\n    'enginePort' => ${enginePort},\n];\n`;
     // In place, then swapped, so a player's request never reads half a file.
     const swap = (name, contents) => {
         const temporary = path.join(target, `.${name}.${process.pid}.tmp`);
@@ -114,4 +174,4 @@ function writeOnlineServer(folder, { appRoot, project, title, runtime, maxPlayer
     return { folder: target, newSecret: !kept, adminKey: keptAdmin ? '' : adminKey, grids };
 }
 
-module.exports = { SERVER_FOLDER, API_PATH, ENGINE_DEFAULTS, apiUrl, readData, stampOnlineClient, stageCharacterBuilder, passabilityGrid, writeOnlineServer };
+module.exports = { worldEvents, SERVER_FOLDER, BUILDER_FOLDER, API_PATH, ENGINE_DEFAULTS, apiUrl, readData, stampOnlineClient, stageCharacterBuilder, stagePlaytestCharacterBuilder, passabilityGrid, writeOnlineServer };

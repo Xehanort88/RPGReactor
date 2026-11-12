@@ -5,6 +5,112 @@ class PlaytestManager {
     // Battle test = playtest + battle test. See battleTest() for why both.
     static BATTLE_TEST_MODE = 'test&btest';
 
+    /**
+     * On Windows a weak GPU (integrated graphics through Direct3D 11) runs the game's WebGL through D3D11-on-12:
+     * Chromium's GPU process translates every call on the same few cores, and on the Iris Xe laptop (i5-1145G7) the
+     * game's frames waited on it. With D3D11-on-12 its main thread did half the work per frame and ran 35-50% faster
+     * (North Haven 29-33 -> 45-50 fps, the Reactor Room 39-40 -> 50-60, the same picture; 2026-11-09). A project
+     * opts out with "reactorAngle": "default" in its package.json; any other GPU, or another system, is left alone.
+     */
+    static WEAK_ANGLE_ARGS = Object.freeze(['--use-angle=d3d11on12']);
+    static WEAK_GPU_PATTERN = /\b(Intel|UHD|Iris|HD Graphics|Radeon\(TM\) Graphics|Radeon Graphics|Vega \d+ Graphics)\b/i;
+    static weakAngleArgs(platform, rendererDescription, packageData) {
+        if (platform !== 'win32' || !rendererDescription) return [];
+        if (packageData && packageData.reactorAngle === 'default') return [];
+        const description = String(rendererDescription);
+        // Plain Direct3D 11 only: already another backend (or a project's own --use-angle) is not touched.
+        if (!/Direct3D11 /.test(description) || /Direct3D11on12/.test(description)) return [];
+        if (packageData && typeof packageData['chromium-args'] === 'string' && /--use-angle=/.test(packageData['chromium-args'])) return [];
+        return PlaytestManager.WEAK_GPU_PATTERN.test(description) ? PlaytestManager.WEAK_ANGLE_ARGS.slice() : [];
+    }
+
+    /**
+     * The backend a playtest starts on: this machine's own plan where the game has learned one by playing
+     * (runtime/reactor_main.js, ReactorBackend: %LOCALAPPDATA%\RPGReactor\graphics-backend.json, per graphics
+     * card), else the guess above for a weak GPU. The game is told which it was started on and that the editor
+     * started it (`--rr-angle`, `--rr-angle-host=editor`): it records how that backend does and writes the plan for
+     * the next playtest, and never starts itself again, since the editor watches this process.
+     */
+    static BACKENDS = Object.freeze(['d3d11', 'd3d11on12', 'gl']);
+    /** As ReactorBackend.gpuKey: the card a renderer string names, whatever backend it is reached through. */
+    static gpuKey(rendererDescription) {
+        const s = String(rendererDescription || '').trim().replace(/^ANGLE \(/i, '').replace(/\)$/, '');
+        const comma = s.indexOf(',');
+        const vendor = comma >= 0 ? s.slice(0, comma).trim() : '';
+        let device = comma >= 0 ? s.slice(comma + 1).trim() : s;
+        device = device.replace(/\s*\(0x[0-9a-f]+\).*$/i, '').replace(/\s+Direct3D.*$/i, '').replace(/,\s*(OpenGL|Vulkan|Metal|D3D).*$/i, '').trim();
+        return (vendor + '|' + device).toLowerCase();
+    }
+    /** The plan the game left for this card, or null (none yet, another version's file, nothing readable). */
+    static backendPlan(rendererDescription, fs, path, env = (typeof process !== 'undefined' ? process.env : {})) {
+        try {
+            const base = env.LOCALAPPDATA || env.APPDATA;
+            if (!base || !rendererDescription) return null;
+            const store = JSON.parse(fs.readFileSync(path.join(base, 'RPGReactor', 'graphics-backend.json'), 'utf8'));
+            const entry = store && store.version === 1 && store.gpus ? store.gpus[PlaytestManager.gpuKey(rendererDescription)] : null;
+            if (!entry || !PlaytestManager.BACKENDS.includes(entry.plan)) return null;
+            if (Array.isArray(entry.failed) && entry.failed.includes(entry.plan)) return null;
+            return entry.plan;
+        } catch (error) { return null; }
+    }
+    /**
+     * What the editor's launcher should be told for its next start: a backend name ("gl", "d3d11on12"), "" for the
+     * browser's own, or null to leave what it was told alone. The browser takes its backend from its command line
+     * before any of the editor runs, so the editor cannot change its own: it leaves a note in the user's folder
+     * (`EDITOR_ANGLE_FILE`) and the launcher (RPGReactor.bat) starts the next session with it, on the right backend
+     * from the first frame. The editor draws the same maps through the same engine as the game, and where the game
+     * found by playing that this card runs it better on another backend than the browser's Direct3D 11
+     * (backendPlan), the editor's 3D view does too: North Haven's whole map on the Iris Xe laptop turned at 36-38
+     * frames a second on OpenGL and 3-21 on Direct3D 11, with stops of seconds (2026-11-11). Windows only; never
+     * under automation; a backend someone named on the command line or in the package is theirs; localStorage
+     * `rr.editorBackend` = "default" keeps the browser's own. `args`: nw.App.fullArgv.
+     */
+    static EDITOR_ANGLE_FILE = 'editor-angle.txt';
+    static editorBackend(platform, rendererDescription, args, plan, packageData, automated, choice) {
+        if (platform !== 'win32' || automated || !rendererDescription) return null;
+        const list = (args || []).map(String);
+        if (list.some(a => /^--use-angle=/.test(a)) && PlaytestManager.editorHop(list) === null) return null;
+        if (packageData && typeof packageData['chromium-args'] === 'string' && /--use-angle=/.test(packageData['chromium-args'])) return null;
+        if (choice === 'default') return '';
+        return plan === 'gl' || plan === 'd3d11on12' ? plan : '';
+    }
+    /** The backend the launcher started this editor on from that note (its marker among the arguments), or null. */
+    static editorHop(args) {
+        for (const a of (args || []).map(String)) { const m = /^--rr-editor-angle=(.+)$/.exec(a); if (m) return m[1]; }
+        return null;
+    }
+    static backendArgs(platform, rendererDescription, packageData, plan, ownHop = false) {
+        if (platform !== 'win32' || !rendererDescription) return [];
+        if (packageData && packageData.reactorAngle === 'default') return [];
+        if (packageData && typeof packageData['chromium-args'] === 'string' && /--use-angle=/.test(packageData['chromium-args'])) return [];
+        const description = String(rendererDescription);
+        // The editor itself on another backend than plain Direct3D 11: someone set this machine up by hand. Not when
+        // the editor put itself there from the game's own record (editorBackend): the playtest follows the same plan.
+        if (!ownHop && (!/Direct3D11 /.test(description) || /Direct3D11on12/.test(description))) return [];
+        const host = '--rr-angle-host=editor';
+        if (PlaytestManager.BACKENDS.includes(plan)) return plan === 'd3d11' ? ['--rr-angle=d3d11', host] : [`--use-angle=${plan}`, `--rr-angle=${plan}`, host];
+        const guess = PlaytestManager.weakAngleArgs(platform, rendererDescription, packageData);
+        return guess.length ? [...guess, '--rr-angle=d3d11on12', host] : ['--rr-angle=d3d11', host];
+    }
+
+    /** The editor's own WebGL renderer, as the game will see it on this machine ("" when it will not say). */
+    static rendererDescription() {
+        if (PlaytestManager._renderer !== undefined) return PlaytestManager._renderer;
+        let description = '';
+        try {
+            const canvas = typeof document !== 'undefined' ? document.createElement('canvas') : null;
+            const gl = canvas && (canvas.getContext('webgl2') || canvas.getContext('webgl'));
+            if (gl) {
+                const info = gl.getExtension('WEBGL_debug_renderer_info');
+                description = String((info && gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) || gl.getParameter(gl.RENDERER) || '');
+                const lose = gl.getExtension('WEBGL_lose_context');
+                if (lose) lose.loseContext();
+            }
+        } catch (error) { description = ''; }
+        PlaytestManager._renderer = description;
+        return description;
+    }
+
     constructor(projectManager = null) {
         this.projectManager = projectManager;
         this.playtestProcess = null;
@@ -191,6 +297,29 @@ class PlaytestManager {
         }
     }
 
+    /**
+     * Character Creation builds with the Forge's own files, which a deployed game carries.
+     * A playtest runs from the project's folder, so they go there first. A failure here
+     * still lets the game start; its creator then says it could not load them.
+     */
+    stageCharacterBuilder(projectPath) {
+        try {
+            const path = require('path'), fs = require('fs');
+            const appRoot = [__dirname, path.resolve(__dirname, '..'), process.cwd()]
+                .find(root => fs.existsSync(path.join(root, 'build-scripts', 'online-deploy.cjs')));
+            if (appRoot) require(path.join(appRoot, 'build-scripts', 'online-deploy.cjs')).stagePlaytestCharacterBuilder(projectPath, appRoot);
+        } catch (error) {
+            console.error('Could not make the character builder ready for this playtest:', error);
+        }
+    }
+
+    /** Said where it is seen: the status bar this used to write to is gone, so a failed launch did nothing visible. */
+    _tellLaunchFailed(message) {
+        // The reason is technical and stays in English (an install problem, or the system's own error text).
+        const tt = text => (typeof window !== 'undefined' && window.I18n ? window.I18n.tText(text) : text);
+        if (typeof RRDialog !== 'undefined' && RRDialog.alert) RRDialog.alert(String(message), { title: tt('Playtest'), kind: 'error' });
+    }
+
     launchPlaytestWindow(projectPath, mode) {
         if (mode === undefined) mode = 'test';
         const tt = text => (typeof window !== 'undefined' && window.I18n) ? window.I18n.tText(text) : text;
@@ -207,6 +336,8 @@ class PlaytestManager {
                 return false;
             }
         }
+
+        this.stageCharacterBuilder(projectPath);
 
         // Close existing playtest process if any
         if (this.playtestProcess) {
@@ -230,6 +361,7 @@ class PlaytestManager {
             if (this.lastResolveDebug) {
                 console.error('NW.js playtest resolver diagnostics:', this.lastResolveDebug);
             }
+            this._tellLaunchFailed('No NW.js program was found to run the game. A packaged editor needs nw.exe or nw beside it, or an nwjs-* folder.');
             return false;
         }
 
@@ -253,6 +385,17 @@ class PlaytestManager {
             launchArgs.unshift(`--user-data-dir=${userDataDir}`);
             console.log('Playtest user data dir:', userDataDir);
         }
+        // A weak GPU on Windows: the faster WebGL backend for this machine (WEAK_ANGLE_ARGS), after the profile path.
+        let packageData = null;
+        try { packageData = JSON.parse(fs.readFileSync(path.join(projectPath, 'package.json'), 'utf8')); } catch (error) { packageData = null; }
+        // This machine's own backend where the game has learned one (backendPlan), else the weak-GPU guess.
+        const renderer = PlaytestManager.rendererDescription();
+        const ownHop = typeof nw !== 'undefined' && nw.App ? PlaytestManager.editorHop(nw.App.fullArgv) : null;
+        const angle = PlaytestManager.backendArgs(process.platform, renderer, packageData, PlaytestManager.backendPlan(renderer, fs, path), !!ownHop && ownHop !== 'default');
+        if (angle.length) {
+            launchArgs.splice(userDataDir ? 1 : 0, 0, ...angle);
+            console.log('Playtest WebGL backend:', angle.join(' '));
+        }
 
         const child = spawn(nwPath, launchArgs, {
             cwd: projectPath,
@@ -265,6 +408,7 @@ class PlaytestManager {
         child.on('error', (err) => {
             console.error('Failed to launch playtest:', err);
             if (this.playtestProcess === child) this.playtestProcess = null;
+            this._tellLaunchFailed(`The game could not be started: ${err && err.message ? err.message : err}`);
         });
 
         child.on('exit', (code, signal) => {
@@ -484,22 +628,6 @@ class PlaytestManager {
         }
 
         return path.dirname(process.execPath);
-    }
-
-    stopPlaytest() {
-        if (this.playtestProcess) {
-            console.log('Stopping playtest...');
-            try {
-                this.playtestProcess.kill();
-            } catch (e) {
-                console.error('Error stopping playtest:', e);
-            }
-            this.playtestProcess = null;
-        }
-    }
-
-    isPlaytesting() {
-        return this.playtestProcess !== null;
     }
 }
 

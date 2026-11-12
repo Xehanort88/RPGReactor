@@ -101,8 +101,10 @@ class ModelPropsPreview2D {
             const spec = Reactor3D.normalizeModelSpec(ModelPropsManager.specOf(entry.prop));
             const template = await RREventPreviewModels.templateFor(this.manager.project(), spec, this.manager.mapEditor3D());
             if (!template || this.entries.get(entry.prop.id) !== entry) return;
-            entry.object = RREventPreviewModels.instance(template, spec, entry.prop.direction);
+            // A vehicle faces along its heading, as the 3D view stands it (MapEditor3D.previewEventModel).
             const vehicle = entry.prop.vehicle;
+            const direction = vehicle && typeof RRVehicles !== 'undefined' && RRVehicles.dir8OfYaw ? RRVehicles.dir8OfYaw(vehicle.yaw) : entry.prop.direction;
+            entry.object = RREventPreviewModels.instance(template, spec, direction);
             if (vehicle && Reactor3D.Vehicles?.pose) {
                 Reactor3D.Vehicles.pose({ object: entry.object, spec }, { _rrVehicle: vehicle.type, _rrYaw: vehicle.yaw * Math.PI / 180 }, entry.object, spec, 0);
             }
@@ -146,6 +148,10 @@ class ModelPropsPreview2D {
     isolateLighting(object) {
         // Each retained texture owns its light field. Other viewports can
         // update the runtime singleton without changing this model's pixels.
+        // That takes every switch the light loop reads, not only the list: the 3D view leaves its baked
+        // volumes on in the shared set (rrDynOn, rrVolumeOn) with masks that take lights out of the loop
+        // (rrLightDynamic, rrLightCached), and its sun's shadow. Left shared, a model here, which stands at
+        // its own origin, read the volume at the map's corner and lost most of its lights.
         const count = Reactor3D.SHADER_LIGHTS;
         const uniforms = {
             rrLightCount: { value: 0 }, rrAmbient: { value: new Float32Array([1, 1, 1]) },
@@ -153,7 +159,12 @@ class ModelPropsPreview2D {
             rrLightColor: { value: new Float32Array(count * 4) },
             rrLightAim: { value: new Float32Array(count * 4) },
             rrLightShadow: { value: new Float32Array(count).fill(-1) },
-            rrLightGridEnabled: { value: 0 }
+            rrLightGridEnabled: { value: 0 }, rrLightGridSpill: { value: 0 },
+            rrVolumeOn: { value: 0 }, rrDynOn: { value: 0 }, rrWaterFarEdge: { value: 0 },
+            rrLightCached: { value: 0 }, rrLightDynamic: { value: 0 }, rrLightAll: { value: 0 },
+            rrKeyLight: { value: new Float32Array(Reactor3D.KEY_LIGHT_DEFAULT || [0.35, 1, 0.3, 0]) },
+            rrKeyColor: { value: new Float32Array(3) },
+            rrSunShade: { value: 0 }, rrSunShadowInfo: { value: new Float32Array([1 / 512, 1, 0, 0]) }
         };
         const materials = new Set();
         object.traverse(node => [node.material].flat().filter(Boolean).forEach(material => materials.add(material)));
@@ -161,7 +172,15 @@ class ModelPropsPreview2D {
             if (!material.__reactorLit) continue;
             const earlier = material.onBeforeCompile, key = material.customProgramCacheKey;
             material.onBeforeCompile = function(shader, renderer) {
-                earlier.call(this, shader, renderer);
+                // The scene's shared uniform block (Reactor3D.SceneUniformBlock) is the last step of the compile and
+                // would read the shared lights whatever is assigned afterwards; it steps aside for a material that
+                // already holds values of its own, so they are in place before it looks.
+                const block = Reactor3D.SceneUniformBlock, apply = block && block.apply;
+                if (apply) block.apply = function(owner, target, drawn) {
+                    Object.assign(target.uniforms, uniforms);
+                    return apply.call(this, owner, target, drawn);
+                };
+                try { earlier.call(this, shader, renderer); } finally { if (apply) block.apply = apply; }
                 Object.assign(shader.uniforms, uniforms);
             };
             material.customProgramCacheKey = function() { return key.call(this) + '|flat-preview-light-field'; };

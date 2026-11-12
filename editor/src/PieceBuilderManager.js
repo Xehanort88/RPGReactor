@@ -939,7 +939,6 @@ class PieceBuilderManager {
         this.selectedIds = ids.length > 1 ? ids : [];
     }
 
-    /** Change the selected piece in place (a material, a turn, a size, a move); the list keeps its ids. */
     /** A placed ladder is a stack of one-level pieces: every ladder level joined to this one on its cell. */
     ladderStack(piece) {
         const map = this.currentMap(), elevation = this.elevation();
@@ -1101,6 +1100,7 @@ class PieceBuilderManager {
         return true;
     }
 
+    /** Change the selected piece in place (a material, a turn, a size, a move); the list keeps its ids. */
     updateSelected(patch, record = true) {
         const map = this.currentMap(), elevation = this.elevation();
         const piece = this.selectedPiece();
@@ -1262,7 +1262,8 @@ class PieceBuilderManager {
     _effectsChanged() {
         window.reactor?.lightingManager?.render?.();
         window.reactor?.mediaSurfaceManager?.render?.();
-        this.projectController?.mediaSurfacePreviewManager?.refresh?.();
+        // (`rescan`: the preview manager has no `refresh`, so this did nothing and a removed screen stayed drawn.)
+        this.projectController?.mediaSurfacePreviewManager?.rescan?.();
         window.reactor?.mapEditor3D?.refreshLights?.();
         this.announce(false);
     }

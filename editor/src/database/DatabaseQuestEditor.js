@@ -56,8 +56,11 @@ class DatabaseQuestEditor {
     }
 
     /** The project's quest log settings, stored on System.json. */
-    settings() {
+    settings(forWriting = true) {
         const system = this.databaseManager.getSystem() || {};
+        // Only read (drawing the page): the defaults are not written into System.json, or opening the page was a
+        // change (Cancel asked to discard it, OK rewrote System.json).
+        if (!forWriting && (!system.reactorQuests || typeof system.reactorQuests !== 'object')) return { menuCommand: true, commandName: 'Quests' };
         if (!system.reactorQuests || typeof system.reactorQuests !== 'object') system.reactorQuests = {};
         const stored = system.reactorQuests;
         if (stored.menuCommand === undefined) stored.menuCommand = true;
@@ -118,7 +121,7 @@ class DatabaseQuestEditor {
         const tt = text => this._t(text);
         if (this.parentEditor && typeof this.parentEditor.normalizeOnView === 'function') this.parentEditor.normalizeOnView('quests', quest, DatabaseQuestEditor.normalize);
         else DatabaseQuestEditor.normalize(quest);
-        const settings = this.settings();
+        const settings = this.settings(false);
         container.innerHTML = '';
         const wrapper = document.createElement('div');
         wrapper.className = 'database-detail-wrapper db-page';
@@ -600,7 +603,9 @@ class DatabaseQuestEditor {
         container.querySelectorAll('.quest-give-amount').forEach(input => input.addEventListener('change', () => {
             const entry = (quest.rewards || [])[Number(input.dataset.index)];
             if (!entry) return;
-            entry.amount = parseInt(input.value, 10) || 0;
+            // The game gives 1 for an amount of 0 or none (ReactorQuests.rewardAmount), so the page stores and shows 1.
+            entry.amount = parseInt(input.value, 10) || 1;
+            input.value = String(entry.amount);
             this.databaseManager.updateQuest(quest.id, quest);
         }));
         const settingsButton = container.querySelector('.quest-log-settings');

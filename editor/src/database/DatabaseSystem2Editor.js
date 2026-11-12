@@ -165,10 +165,20 @@ class DatabaseSystem2Editor {
         return true;
     }
 
+    /**
+     * The weapon pictures MZ draws: ids 1-12 from Weapons1, 13-24 from Weapons2, 25-36 from Weapons3
+     * (Sprite_Weapon). Only 0-12 were offered, and a row using 13 or more was saved back as None.
+     */
+    static weaponImageNames() {
+        const names = ['None', 'Dagger', 'Sword', 'Flail', 'Axe', 'Whip', 'Staff', 'Bow', 'Crossbow', 'Gun', 'Claw', 'Glove', 'Spear'];
+        for (let id = 13; id <= 36; id++) names.push(`Weapons${Math.floor((id - 1) / 12) + 1} #${(id - 1) % 12 + 1}`);
+        return names;
+    }
+
     createAttackMotionsSection(system) {
         const tt = text => window.I18n ? window.I18n.tText(text) : text;
         const motionNames = ['Thrust', 'Swing', 'Missile'];
-        const weaponImageNames = ['None', 'Dagger', 'Sword', 'Flail', 'Axe', 'Whip', 'Staff', 'Bow', 'Crossbow', 'Gun', 'Claw', 'Glove', 'Spear'];
+        const weaponImageNames = DatabaseSystem2Editor.weaponImageNames();
         const weaponTypes = system.weaponTypes || [''];
         const attackMotions = system.attackMotions || [];
 
@@ -184,7 +194,9 @@ class DatabaseSystem2Editor {
                     </thead>
                     <tbody>`;
 
-        for (let i = 0; i < attackMotions.length; i++) {
+        // A row for every weapon type (a type added in Types had none, and the game drew no swing for it).
+        const rows = Math.max(attackMotions.length, weaponTypes.length);
+        for (let i = 0; i < rows; i++) {
             const typeName = weaponTypes[i] !== undefined ? weaponTypes[i] : `${tt('Type')} ${i}`;
             const motion = attackMotions[i] || { type: 0, weaponImageId: 0 };
             html += `
@@ -262,13 +274,13 @@ class DatabaseSystem2Editor {
             { label: 'UI Area Width', field: 'uiAreaWidth', value: adv.uiAreaWidth || 816, type: 'number' },
             { label: 'UI Area Height', field: 'uiAreaHeight', value: adv.uiAreaHeight || 624, type: 'number' },
             { label: 'Pixelated Rendering', field: 'pixelatedRendering', value: adv.pixelatedRendering === true, type: 'checkbox' },
-            { label: 'Screen Scale', field: 'screenScale', value: adv.screenScale || 1, type: 'number', step: '0.1' },
+            { label: 'Screen Scale', field: 'screenScale', value: adv.screenScale ?? 1, type: 'number', step: '0.1' },
             { label: '2D Camera Zoom', field: 'camera2DZoom', value: adv.camera2DZoom ?? 1, type: 'number', step: '0.25', min: 1, max: 8 },
             { label: '2D Camera Offset X (px)', field: 'camera2DOffsetX', value: adv.camera2DOffsetX ?? 0, type: 'number' },
             { label: '2D Camera Offset Y (px)', field: 'camera2DOffsetY', value: adv.camera2DOffsetY ?? 0, type: 'number' },
-            { label: 'Font Size', field: 'fontSize', value: adv.fontSize || 26, type: 'number' },
-            { label: 'Window Opacity', field: 'windowOpacity', value: adv.windowOpacity || 192, type: 'number' },
-            { label: 'Pictures Limit', field: 'picturesUpperLimit', value: adv.picturesUpperLimit || 100, type: 'number' },
+            { label: 'Font Size', field: 'fontSize', value: adv.fontSize ?? 26, type: 'number' },
+            { label: 'Window Opacity', field: 'windowOpacity', value: adv.windowOpacity ?? 192, type: 'number' },
+            { label: 'Pictures Limit', field: 'picturesUpperLimit', value: adv.picturesUpperLimit ?? 100, type: 'number' },
             { label: 'Main Font', field: 'mainFontFilename', value: adv.mainFontFilename || '', type: 'text' },
             { label: 'Number Font', field: 'numberFontFilename', value: adv.numberFontFilename || '', type: 'text' },
             { label: 'Fallback Fonts', field: 'fallbackFonts', value: adv.fallbackFonts || '', type: 'text' },
@@ -379,6 +391,8 @@ class DatabaseSystem2Editor {
         const last = keys[keys.length - 1];
         if (value === null || value === false) delete owner[last]; else owner[last] = value;
         if (keys.length === 3 && Object.keys(owner).length === 0) delete system[keys[0]][keys[1]];
+        // A value typed and cleared again in data that had no `advanced` block leaves none behind.
+        if (keys[0] === 'advanced' && system.advanced && Object.keys(system.advanced).length === 0) delete system.advanced;
     }
 
     /** A card that is named for the folding of the page's sections: `key` is the same in every language. */
@@ -508,7 +522,10 @@ class DatabaseSystem2Editor {
                 const editorField = e.target.dataset.editorField;
                 if (editorField) {
                     if (!system.editor) system.editor = {};
-                    system.editor[editorField] = parseFloat(e.target.value);
+                    // A cleared or unreadable number keeps the value it had (NaN would be saved as null).
+                    const number = parseFloat(e.target.value);
+                    if (!Number.isFinite(number)) { e.target.value = system.editor[editorField] ?? ''; return; }
+                    system.editor[editorField] = number;
                     console.debug(`Updated editor.${editorField} to:`, system.editor[editorField]);
                 }
             });
@@ -530,12 +547,13 @@ class DatabaseSystem2Editor {
 
         // Advanced Settings fields. MV-era System.json has no `advanced`
         // object — create it on first edit instead of silently dropping the
-        // change.
+        // change, with the screen and UI size the card shows: the game reads
+        // those from the block and has nothing to fall back on.
         container.querySelectorAll('.sys2-advanced-field').forEach(field => {
             field.addEventListener('change', (e) => {
                 const advField = e.target.dataset.advancedField;
                 if (advField) {
-                    if (!system.advanced) system.advanced = {};
+                    if (!system.advanced) system.advanced = { screenWidth: 816, screenHeight: 624, uiAreaWidth: 816, uiAreaHeight: 624 };
                     const val = e.target.type === 'checkbox' ? e.target.checked : e.target.type === 'number' ? parseFloat(e.target.value) : e.target.value;
                     if (advField.startsWith('camera2D')) {
                         if (!Number.isFinite(val)) {
@@ -544,6 +562,9 @@ class DatabaseSystem2Editor {
                         }
                         system.advanced[advField] = advField === 'camera2DZoom' ? Math.max(1, Math.min(8, val)) : val;
                         e.target.value = system.advanced[advField];
+                    } else if (e.target.type === 'number' && !Number.isFinite(val)) {
+                        // A cleared screen size or font size would be saved as null, and the game could not start.
+                        e.target.value = system.advanced[advField] ?? '';
                     } else system.advanced[advField] = val;
                 }
             });
@@ -553,9 +574,9 @@ class DatabaseSystem2Editor {
     showAttackMotionEditor(system, index, parentContainer) {
         const tt = text => window.I18n ? window.I18n.tText(text) : text;
         const motionNames = ['Thrust', 'Swing', 'Missile'];
-        const weaponImageNames = ['None', 'Dagger', 'Sword', 'Flail', 'Axe', 'Whip', 'Staff', 'Bow', 'Crossbow', 'Gun', 'Claw', 'Glove', 'Spear'];
+        const weaponImageNames = DatabaseSystem2Editor.weaponImageNames();
         const weaponTypes = system.weaponTypes || [''];
-        const motion = system.attackMotions[index] || { type: 0, weaponImageId: 0 };
+        const motion = (system.attackMotions || [])[index] || { type: 0, weaponImageId: 0 };
         const typeName = weaponTypes[index] !== undefined ? weaponTypes[index] : `${tt('Type')} ${index}`;
 
         const overlay = document.createElement('div');
@@ -610,6 +631,9 @@ class DatabaseSystem2Editor {
         modal.querySelector('.atk-modal-ok').addEventListener('click', () => {
             const newType = parseInt(modal.querySelector('#atk-motion-type').value);
             const newImage = parseInt(modal.querySelector('#atk-weapon-image').value);
+            if (!Array.isArray(system.attackMotions)) system.attackMotions = [];
+            // Rows past the stored list (newer weapon types) fill the gap with plain thrusts, so no hole is saved as null.
+            for (let i = system.attackMotions.length; i < index; i++) system.attackMotions[i] = { type: 0, weaponImageId: 0 };
             system.attackMotions[index] = { type: newType, weaponImageId: newImage };
             console.debug(`Updated attackMotions[${index}]:`, system.attackMotions[index]);
             close();
