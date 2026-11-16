@@ -68,7 +68,7 @@ function world() {
         event: () => ({ forceMoveRoute: route => log.routes.push(route), isMoveRouteForcing: () => false })
     };
     context.$gameMessage = {
-        isBusy: () => false, setFaceImage() {}, setBackground() {}, setPositionType() {}, setSpeakerName() {},
+        isBusy: () => false, setFaceImage() {}, setFacePlay() {}, setBackground() {}, setPositionType() {}, setSpeakerName() {},
         add: text => log.messages.push(text)
     };
     context.$gameSelfSwitches = { setValue: (key, value) => { log.selfSwitches[key.join(',')] = value; } };

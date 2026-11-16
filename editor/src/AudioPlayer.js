@@ -27,6 +27,12 @@ class AudioPlayer {
             this.stopExternal();
         }
         this.currentProject = project;
+        // The player's window stays open across projects: its list is the new project's.
+        const modal = typeof document !== 'undefined' ? document.getElementById('audio-player-modal') : null;
+        if (this.audioPlayer && this.uiInitialized && newPath !== oldPath && modal && modal.style.display === 'flex') {
+            this.updateTrackHeader(this.getCurrentChannel().currentTrack || null);
+            if (project) this.loadAudioTracks(this.audioPlayer.currentType);
+        }
     }
 
     initializeAudioPlayer() {
@@ -238,18 +244,26 @@ class AudioPlayer {
 
     showAudioPlayer() {
         const tt = (text) => (typeof window !== 'undefined' && window.I18n) ? window.I18n.tText(text) : text;
-        // Show modal: in the window it is opened from (the Database's, the event editor's, or the editor's).
-        const modal = window.RRPopoutBridge?.bringToWindowInUse?.(document.getElementById('audio-player-modal')) || document.getElementById('audio-player-modal');
+        // A window of its own (RRAudioPlayerWindow), as the Database and the Forge have: opened again, it comes to the front.
+        const modal = document.getElementById('audio-player-modal');
 
         if (!modal) {
             return;
         }
 
+        const shownBefore = modal.style.display === 'flex';
         modal.style.display = 'flex';
+        this.watchAudioPlayerWindow();
+        if (typeof RRAudioPlayerWindow !== 'undefined') {
+            RRAudioPlayerWindow.install(modal);
+            RRAudioPlayerWindow.open(modal, { shownBefore });
+        }
         // Tab stays inside, Escape closes as the cross does, and the focus goes back to what opened the player.
         window.RRKeyboardNavigation?.modal(modal, {
-            onEscape: () => { modal.style.display = 'none'; modal._rrModalKeys?.leave(); },
-            container: () => modal.querySelector('.modal-content') || modal
+            onEscape: () => this.hideAudioPlayer(),
+            container: () => modal.querySelector('.modal-content') || modal,
+            // The list, not the header's first button (the pin wore the focus ring as the window opened).
+            initialFocus: () => modal.querySelector('#audio-track-list')
         })?.enter();
 
         // Ensure audio player is initialized
@@ -282,6 +296,7 @@ class AudioPlayer {
         // Update UI to show the current track (or the "no track" state)
         const currentChannel = this.getCurrentChannel();
         this.updateTrackHeader(currentChannel.currentTrack || null);
+        this.updatePreviewHoldNote();
 
         // Load tracks for current type
         if (this.currentProject) {
@@ -301,7 +316,40 @@ class AudioPlayer {
         }
     }
 
+    /** Close the player's window. What is playing keeps playing, as it always has. */
+    hideAudioPlayer() {
+        const modal = document.getElementById('audio-player-modal');
+        if (!modal) return;
+        modal.style.display = 'none';
+        modal._rrModalKeys?.leave();
+        if (typeof RRAudioPlayerWindow !== 'undefined') RRAudioPlayerWindow.hidePopout();
+    }
+
+    /**
+     * Its own window destroyed under it (a crash, not its ×): the player comes back into the editor window
+     * with its handlers gone. Its body and its × are put back as copies, which carry none, and wired again.
+     */
+    watchAudioPlayerWindow() {
+        if (this._windowWatched || typeof window === 'undefined' || !window.addEventListener) return;
+        this._windowWatched = true;
+        window.addEventListener('rr-audio-player-docked', () => {
+            const modal = document.getElementById('audio-player-modal');
+            if (!modal) return;
+            for (const selector of ['.modal-body', '.modal-close']) {
+                const old = modal.querySelector(selector);
+                if (old) old.replaceWith(old.cloneNode(true));
+            }
+            modal.querySelector('.rr-window-controls')?.remove();
+            modal._rrModalKeys?.leave();
+            delete modal._rrModalKeys;
+            this.uiInitialized = false;
+            if (modal.style.display === 'flex') { modal.style.display = 'none'; this.showAudioPlayer(); }
+        });
+    }
+
     initializeUI() {
+        document.querySelector('#audio-player-modal .modal-close')?.addEventListener('click', () => this.hideAudioPlayer());
+
         // Set up button listeners
         document.getElementById('btn-play').addEventListener('click', () => {
             this.playAudio();
@@ -1013,9 +1061,64 @@ class AudioPlayer {
         this.playAudio();
     }
 
+    /**
+     * A track is being listened to somewhere else in the editor (the picker for a map's, a battle's or an
+     * event's music): what this player has playing waits, and the window says so. releasePreview brings it back.
+     * A channel the owner plays, pauses, stops or changes in between is theirs again and is left as they put it.
+     */
+    holdForPreview(label) {
+        if (!this.audioPlayer) return;
+        if (!this._previewHeld) this._previewHeld = new Set();
+        ['bgm', 'bgs', 'me', 'se'].forEach(type => {
+            const channel = this.getChannel(type);
+            if (!channel.playing || !channel.currentTrack || channel.audio.ended) return;
+            channel.audio.pause();
+            channel.playing = false;
+            this._previewHeld.add(type);
+        });
+        this._previewLabel = label || '';
+        this.updatePreviewHoldNote();
+    }
+
+    releasePreview() {
+        const held = this._previewHeld;
+        this._previewHeld = null;
+        this._previewLabel = '';
+        if (held && this.audioPlayer) {
+            if (held.size && this.audioPlayer.audioContext && this.audioPlayer.audioContext.state === 'suspended') {
+                this.audioPlayer.audioContext.resume();
+            }
+            held.forEach(type => {
+                const channel = this.getChannel(type);
+                if (channel.currentTrack && !channel.playing) this.playChannel(channel, channel.currentTrack.name);
+            });
+        }
+        this.updatePreviewHoldNote();
+    }
+
+    updatePreviewHoldNote() {
+        const note = typeof document !== 'undefined' ? document.getElementById('track-preview-hold') : null;
+        if (!note) return;
+        const waiting = !!(this._previewHeld && this._previewHeld.size);
+        note.hidden = !waiting;
+        if (!waiting) { note.textContent = ''; return; }
+        const tt = (text) => (typeof window !== 'undefined' && window.I18n) ? window.I18n.tText(text) : text;
+        note.textContent = this._previewLabel
+            ? tt('Waiting while you listen to {track}').replace('{track}', this._previewLabel)
+            : tt('Waiting while you listen to another track');
+    }
+
+    /** The owner took a channel in hand while it waited for a preview: it is not brought back for them. */
+    _dropPreviewHold(type) {
+        if (!this._previewHeld) return;
+        if (type) this._previewHeld.delete(type); else this._previewHeld.clear();
+        this.updatePreviewHoldNote();
+    }
+
     playAudio() {
         const currentChannel = this.getCurrentChannel();
         if (!currentChannel || !currentChannel.currentTrack) return;
+        this._dropPreviewHold(this.audioPlayer.currentType);
 
         // Resume audio context if it's suspended (required by browsers)
         if (this.audioPlayer.audioContext && this.audioPlayer.audioContext.state === 'suspended') {
@@ -1028,6 +1131,7 @@ class AudioPlayer {
     pauseAudio() {
         const currentChannel = this.getCurrentChannel();
         if (!currentChannel) return;
+        this._dropPreviewHold(this.audioPlayer.currentType);
 
         currentChannel.audio.pause();
         currentChannel.playing = false;
@@ -1036,6 +1140,7 @@ class AudioPlayer {
     stopAudio() {
         const currentChannel = this.getCurrentChannel();
         if (!currentChannel) return;
+        this._dropPreviewHold(this.audioPlayer.currentType);
 
         currentChannel.audio.pause();
         currentChannel.audio.currentTime = 0;
@@ -1194,6 +1299,7 @@ class AudioPlayer {
      */
     stopExternal(type = null) {
         if (!this.audioPlayer) return;
+        this._dropPreviewHold(type);
 
         if (type) {
             // Stop specific channel
