@@ -1,10 +1,10 @@
 //=============================================================================
 // reactor_main.js — RPG Reactor runtime entry point
 // RPG Reactor runtime version: 0.99.6
-// RPG Reactor runtime revision: 20261116.1
+// RPG Reactor runtime revision: 20261117.1
 // The same stamp, reachable from the F12 console: which engine is this
 // window actually running? Type RPG_REACTOR_RUNTIME_REVISION to see.
-globalThis.RPG_REACTOR_RUNTIME_REVISION = "20261116.1";
+globalThis.RPG_REACTOR_RUNTIME_REVISION = "20261117.1";
 //=============================================================================
 
 const scriptUrls = [
